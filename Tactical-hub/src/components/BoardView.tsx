@@ -1,5 +1,6 @@
 import { getMovementCandidates } from "../game/engine/movement";
-import type { Base, GameState, UnitPosition } from "../game/types";
+import { getAttackCandidates } from "../game/engine/battle";
+import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
 import { getUnitAtBoardCell, positionKey } from "../game/utils/position";
 import { TileView } from "./TileView";
 import { UnitToken } from "./UnitToken";
@@ -9,11 +10,14 @@ type Props = {
   selectedUnitId?: string;
   onSelectUnit: (unitId: string) => void;
   onChooseDestination: (position: UnitPosition) => void;
+  onChooseAttackTarget: (target: AttackTarget) => void;
 };
 
-export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination }: Props) {
+export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget }: Props) {
   const selectedCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
+  const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const candidateByKey = new Map(selectedCandidates.map((candidate) => [positionKey(candidate), candidate]));
+  const attackByUnitId = new Map(attackCandidates.map((candidate) => [candidate.unitId, candidate]));
 
   function getBaseUnitForTile(base: Base, x: number, y: number) {
     const minX = Math.min(...base.coords.map((coord) => coord.x));
@@ -28,6 +32,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
         const boardUnit = getUnitAtBoardCell(state, tile.x, tile.y);
         const base = tile.baseId ? state.bases.find((candidate) => candidate.id === tile.baseId) : undefined;
         const baseUnit = base ? getBaseUnitForTile(base, tile.x, tile.y) : undefined;
+        const attackTarget = boardUnit ? attackByUnitId.get(boardUnit.id) : baseUnit ? attackByUnitId.get(baseUnit.id) : undefined;
         const tileCandidate =
           candidateByKey.get(positionKey({ kind: "tile", x: tile.x, y: tile.y })) ??
           candidateByKey.get(positionKey({ kind: "water", x: tile.x, y: tile.y }));
@@ -39,8 +44,10 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
             key={`${tile.x}-${tile.y}`}
             tile={tile}
             highlighted={Boolean(destination)}
+            attackHighlighted={Boolean(attackTarget)}
             onClick={() => {
-              if (destination) onChooseDestination(destination);
+              if (attackTarget) onChooseAttackTarget(attackTarget);
+              else if (destination) onChooseDestination(destination);
             }}
           >
             {boardUnit && (
@@ -48,7 +55,12 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 unit={boardUnit}
                 team={state.teams.find((team) => team.id === boardUnit.ownerTeamId)}
                 selected={boardUnit.id === selectedUnitId}
-                onClick={() => onSelectUnit(boardUnit.id)}
+                attackTarget={attackByUnitId.has(boardUnit.id)}
+                onClick={() => {
+                  const target = attackByUnitId.get(boardUnit.id);
+                  if (target) onChooseAttackTarget(target);
+                  else onSelectUnit(boardUnit.id);
+                }}
               />
             )}
             {baseUnit && (
@@ -56,7 +68,12 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 unit={baseUnit}
                 team={state.teams.find((team) => team.id === baseUnit.ownerTeamId)}
                 selected={baseUnit.id === selectedUnitId}
-                onClick={() => onSelectUnit(baseUnit.id)}
+                attackTarget={attackByUnitId.has(baseUnit.id)}
+                onClick={() => {
+                  const target = attackByUnitId.get(baseUnit.id);
+                  if (target) onChooseAttackTarget(target);
+                  else onSelectUnit(baseUnit.id);
+                }}
               />
             )}
           </TileView>

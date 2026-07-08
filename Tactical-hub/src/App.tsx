@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { BoardView } from "./components/BoardView";
 import { GameDebugPanel } from "./components/GameDebugPanel";
+import { resolveBattle, saveAttackIntent } from "./game/engine/battle";
 import { saveMovementIntent, resolveMovement } from "./game/engine/movement";
 import { resolveProduction } from "./game/engine/production";
 import { createInitialGameState } from "./game/initialState";
-import type { UnitPosition } from "./game/types";
+import type { AttackTarget, UnitPosition } from "./game/types";
 
 export default function App() {
   const [state, setState] = useState(createInitialGameState);
@@ -27,6 +28,18 @@ export default function App() {
     );
   }
 
+  function chooseAttackTarget(target: AttackTarget) {
+    if (!selectedUnit) return;
+    setState(
+      saveAttackIntent(state, {
+        teamId: selectedUnit.ownerTeamId,
+        attackerUnitId: selectedUnit.id,
+        target,
+        pass: false,
+      }),
+    );
+  }
+
   return (
     <main className="app-shell">
       <div className="play-area">
@@ -40,6 +53,7 @@ export default function App() {
             selectedUnitId={selectedUnitId}
             onSelectUnit={setSelectedUnitId}
             onChooseDestination={chooseDestination}
+            onChooseAttackTarget={chooseAttackTarget}
           />
         </div>
       </div>
@@ -49,6 +63,10 @@ export default function App() {
         onResolveProduction={() => setState(resolveProduction(state))}
         onResolveMovement={() => {
           setState(resolveMovement(state));
+          setSelectedUnitId(undefined);
+        }}
+        onResolveBattle={() => {
+          setState(resolveBattle(state));
           setSelectedUnitId(undefined);
         }}
         onStateChange={setState}

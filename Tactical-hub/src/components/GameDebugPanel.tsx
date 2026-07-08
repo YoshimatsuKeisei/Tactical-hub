@@ -1,4 +1,5 @@
 import { UNIT_STATS } from "../game/constants";
+import { getAttackCandidates, saveAttackIntent } from "../game/engine/battle";
 import { getAvailableProductionTypes, saveProductionChoice } from "../game/engine/production";
 import type { GameState } from "../game/types";
 
@@ -6,14 +7,17 @@ type Props = {
   state: GameState;
   selectedUnitId?: string;
   onResolveMovement: () => void;
+  onResolveBattle: () => void;
   onResolveProduction: () => void;
   onStateChange: (state: GameState) => void;
 };
 
-export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onResolveProduction, onStateChange }: Props) {
+export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange }: Props) {
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
   const movementIntents = state.turnState.actionIntents.flatMap((intent) => intent.movementIntents);
+  const attackIntents = state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []);
   const productionIntents = state.turnState.actionIntents.flatMap((intent) => intent.productionChoices);
+  const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const activeTeam = state.teams.find((team) => team.id === "team-1")!;
   const controlledBases = state.bases.filter((base) => activeTeam.controlledBaseIds.includes(base.id));
 
@@ -30,6 +34,8 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
           <strong>{selectedUnit ? `${selectedUnit.id} (${selectedUnit.type})` : "none"}</strong>
           <span>Moves</span>
           <strong>{movementIntents.length}</strong>
+          <span>Attacks</span>
+          <strong>{attackIntents.length}</strong>
         </div>
         <button className="primary sticky-action" onClick={onResolveMovement}>
           Resolve Movement
@@ -93,8 +99,69 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
         </div>
         <details>
           <summary>Raw intents</summary>
-          <pre>{JSON.stringify({ productionIntents, movementIntents }, null, 2)}</pre>
+          <pre>{JSON.stringify({ productionIntents, movementIntents, attackIntents }, null, 2)}</pre>
         </details>
+      </section>
+
+      <section>
+        <h2>Attack</h2>
+        <div className="intent-list">
+          {attackCandidates.length ? (
+            attackCandidates.map((target) => (
+              <button
+                key={target.unitId}
+                className="intent-item command-item"
+                onClick={() => {
+                  if (!selectedUnit) return;
+                  onStateChange(
+                    saveAttackIntent(state, {
+                      teamId: selectedUnit.ownerTeamId,
+                      attackerUnitId: selectedUnit.id,
+                      target,
+                      pass: false,
+                    }),
+                  );
+                }}
+              >
+                <strong>{target.unitId}</strong>
+                <span>{target.baseId ? `${target.baseId}/${target.slotId}` : "board"}</span>
+              </button>
+            ))
+          ) : (
+            <p>No attack candidates.</p>
+          )}
+          {selectedUnit ? (
+            <button
+              className="secondary"
+              onClick={() =>
+                onStateChange(
+                  saveAttackIntent(state, {
+                    teamId: selectedUnit.ownerTeamId,
+                    attackerUnitId: selectedUnit.id,
+                    pass: true,
+                  }),
+                )
+              }
+            >
+              Save No Attack
+            </button>
+          ) : null}
+        </div>
+        <div className="intent-list">
+          {attackIntents.length ? (
+            attackIntents.map((intent) => (
+              <div key={intent.attackerUnitId} className="intent-item">
+                <strong>{intent.attackerUnitId}</strong>
+                <span>{intent.pass ? "no attack" : intent.target?.unitId}</span>
+              </div>
+            ))
+          ) : (
+            <p>No attack intents saved.</p>
+          )}
+        </div>
+        <button className="primary battle-action" onClick={onResolveBattle}>
+          Resolve Battle
+        </button>
       </section>
 
       <section>

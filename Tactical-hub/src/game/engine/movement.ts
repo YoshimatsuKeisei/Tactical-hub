@@ -102,7 +102,10 @@ export function saveMovementIntent(state: GameState, intent: MovementIntent): Ga
             }
           : candidate,
       )
-    : [...state.turnState.actionIntents, { teamId: intent.teamId, productionChoices: [], movementIntents: [intent] }];
+    : [
+        ...state.turnState.actionIntents,
+        { teamId: intent.teamId, productionChoices: [], movementIntents: [intent], attackIntents: [] },
+      ];
   return { ...state, turnState: { ...state.turnState, actionIntents } };
 }
 

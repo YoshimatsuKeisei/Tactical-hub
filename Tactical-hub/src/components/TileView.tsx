@@ -13,13 +13,14 @@ const terrainLabels: Record<Tile["terrain"], string> = {
 type Props = {
   tile: Tile;
   highlighted: boolean;
+  attackHighlighted?: boolean;
   onClick: () => void;
   children?: ReactNode;
 };
 
-export function TileView({ tile, highlighted, onClick, children }: Props) {
+export function TileView({ tile, highlighted, attackHighlighted = false, onClick, children }: Props) {
   return (
-    <button className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""}`} onClick={onClick}>
+    <button className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""} ${attackHighlighted ? "attack-highlighted" : ""}`} onClick={onClick}>
       <span className="terrain-label">{terrainLabels[tile.terrain]}</span>
       <div className="tile-units">{children}</div>
     </button>

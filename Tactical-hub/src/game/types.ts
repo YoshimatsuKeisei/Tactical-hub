@@ -1,4 +1,4 @@
-export type TeamStatus = "active" | "eliminated" | "neutral";
+export type TeamStatus = "active" | "defeated" | "eliminated" | "neutral";
 
 export type Team = {
   id: string;
@@ -97,22 +97,53 @@ export type MovementIntent = {
   stay: boolean;
 };
 
+export type AttackTarget = {
+  kind: "unit";
+  unitId: string;
+  baseId?: string;
+  slotId?: string;
+};
+
+export type AttackIntent = {
+  teamId: string;
+  attackerUnitId: string;
+  target?: AttackTarget;
+  pass: boolean;
+};
+
+export type HitResult = "hit" | "miss" | "invalid";
+
+export type BattleResult = {
+  hit: HitResult;
+  damage: number;
+  defeated: boolean;
+};
+
+export type BattleEvent = {
+  id: string;
+  attackerUnitId: string;
+  target: AttackTarget;
+  hitChance: number;
+  result?: BattleResult;
+};
+
 export type ActionIntent = {
   teamId: string;
   productionChoices: ProductionChoice[];
   movementIntents: MovementIntent[];
+  attackIntents: AttackIntent[];
 };
 
 export type TurnState = {
   turnNumber: number;
-  phase: "production" | "movement_input" | "movement_resolution";
+  phase: "production" | "movement_input" | "movement_resolution" | "attack_input" | "battle_resolution";
   actionIntents: ActionIntent[];
 };
 
 export type GameLog = {
   id: string;
   turnNumber: number;
-  type: "setup" | "production" | "movement";
+  type: "setup" | "production" | "movement" | "battle";
   message: string;
   relatedIds?: string[];
 };

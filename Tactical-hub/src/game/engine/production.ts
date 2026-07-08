@@ -33,7 +33,7 @@ export function saveProductionChoice(state: GameState, choice: ProductionChoice)
 function upsertProductionChoice(state: GameState, choice: ProductionChoice) {
   const existing = state.turnState.actionIntents.find((intent) => intent.teamId === choice.teamId);
   if (!existing) {
-    return [...state.turnState.actionIntents, { teamId: choice.teamId, productionChoices: [choice], movementIntents: [] }];
+    return [...state.turnState.actionIntents, { teamId: choice.teamId, productionChoices: [choice], movementIntents: [], attackIntents: [] }];
   }
   return state.turnState.actionIntents.map((intent) =>
     intent.teamId === choice.teamId
