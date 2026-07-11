@@ -102,6 +102,9 @@ export type AttackTarget = {
   unitId: string;
   baseId?: string;
   slotId?: string;
+  baseSuccessDenominator?: number;
+  finalSuccessDenominator?: number;
+  encouraged?: boolean;
 };
 
 export type AttackIntent = {
@@ -123,7 +126,9 @@ export type BattleEvent = {
   id: string;
   attackerUnitId: string;
   target: AttackTarget;
-  hitChance: number;
+  baseSuccessDenominator: number;
+  finalSuccessDenominator: number;
+  encouraged: boolean;
   result?: BattleResult;
 };
 

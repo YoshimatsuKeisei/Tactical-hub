@@ -21,6 +21,11 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
   const activeTeam = state.teams.find((team) => team.id === "team-1")!;
   const controlledBases = state.bases.filter((base) => activeTeam.controlledBaseIds.includes(base.id));
 
+  function attackIntentSummary(attackerUnitId: string, targetUnitId?: string) {
+    if (!targetUnitId) return undefined;
+    return getAttackCandidates(state, attackerUnitId).find((target) => target.unitId === targetUnitId);
+  }
+
   return (
     <aside className="debug-panel">
       <section className="status-card">
@@ -107,26 +112,37 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
         <h2>Attack</h2>
         <div className="intent-list">
           {attackCandidates.length ? (
-            attackCandidates.map((target) => (
-              <button
-                key={target.unitId}
-                className="intent-item command-item"
-                onClick={() => {
-                  if (!selectedUnit) return;
-                  onStateChange(
-                    saveAttackIntent(state, {
-                      teamId: selectedUnit.ownerTeamId,
-                      attackerUnitId: selectedUnit.id,
-                      target,
-                      pass: false,
-                    }),
-                  );
-                }}
-              >
-                <strong>{target.unitId}</strong>
-                <span>{target.baseId ? `${target.baseId}/${target.slotId}` : "board"}</span>
-              </button>
-            ))
+            attackCandidates.map((target) => {
+              const targetUnit = state.units.find((unit) => unit.id === target.unitId);
+              return (
+                <button
+                  key={target.unitId}
+                  className="intent-item command-item"
+                  onClick={() => {
+                    if (!selectedUnit) return;
+                    onStateChange(
+                      saveAttackIntent(state, {
+                        teamId: selectedUnit.ownerTeamId,
+                        attackerUnitId: selectedUnit.id,
+                        target,
+                        pass: false,
+                      }),
+                    );
+                  }}
+                >
+                  <strong>
+                    1/{target.finalSuccessDenominator ?? "-"} {target.unitId}
+                  </strong>
+                  <span>
+                    {targetUnit ? `${targetUnit.type} HP:${targetUnit.hp}` : "unknown"} /{" "}
+                    {target.baseId ? `${target.baseId}/${target.slotId}` : targetUnit?.position.kind ?? "board"}
+                  </span>
+                  <span>
+                    base: 1/{target.baseSuccessDenominator ?? "-"} / encouraged: {target.encouraged ? "yes" : "no"}
+                  </span>
+                </button>
+              );
+            })
           ) : (
             <p>No attack candidates.</p>
           )}
@@ -149,12 +165,21 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
         </div>
         <div className="intent-list">
           {attackIntents.length ? (
-            attackIntents.map((intent) => (
-              <div key={intent.attackerUnitId} className="intent-item">
-                <strong>{intent.attackerUnitId}</strong>
-                <span>{intent.pass ? "no attack" : intent.target?.unitId}</span>
-              </div>
-            ))
+            attackIntents.map((intent) => {
+              const summary = attackIntentSummary(intent.attackerUnitId, intent.target?.unitId);
+              return (
+                <div key={intent.attackerUnitId} className="intent-item">
+                  <strong>{intent.attackerUnitId}</strong>
+                  <span>{intent.pass ? "no attack" : intent.target?.unitId}</span>
+                  {summary ? (
+                    <span>
+                      base: 1/{summary.baseSuccessDenominator} / encouraged: {summary.encouraged ? "yes" : "no"} / final: 1/
+                      {summary.finalSuccessDenominator}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })
           ) : (
             <p>No attack intents saved.</p>
           )}
