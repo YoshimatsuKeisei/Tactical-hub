@@ -4,6 +4,7 @@ import { GameDebugPanel } from "./components/GameDebugPanel";
 import { resolveBattle, saveAttackIntent } from "./game/engine/battle";
 import { saveMovementIntent, resolveMovement } from "./game/engine/movement";
 import { resolveProduction } from "./game/engine/production";
+import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
 import type { AttackTarget, UnitPosition } from "./game/types";
 
@@ -30,6 +31,7 @@ export default function App() {
 
   function chooseAttackTarget(target: AttackTarget) {
     if (!selectedUnit) return;
+    if (isRetreating(selectedUnit)) return;
     setState(
       saveAttackIntent(state, {
         teamId: selectedUnit.ownerTeamId,

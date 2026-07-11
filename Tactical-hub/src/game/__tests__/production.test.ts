@@ -62,4 +62,19 @@ describe("production", () => {
     expect(getAvailableProductionTypes(state, "team-1", "home-1")).not.toContain("king");
     expect(getAvailableProductionTypes(state, "team-1", "home-1")).not.toContain("apprentice_ninja");
   });
+
+  it("produces replacement strategists as encourage strategists", () => {
+    const state = createInitialGameState();
+    const strategist = state.units.find((unit) => unit.id === "home-1-strategist")!;
+    const home = state.bases.find((base) => base.id === "home-1")!;
+    const oldSlot = home.slots.find((slot) => slot.unitId === strategist.id)!;
+    oldSlot.unitId = undefined;
+    strategist.position = { kind: "removed", reason: "defeated" };
+    strategist.hp = 0;
+
+    const resolved = resolveProduction(saveProductionChoice(state, { teamId: "team-1", baseId: "home-1", unitType: "strategist" }));
+    const produced = resolved.units.find((unit) => unit.id.startsWith("home-1-strategist-"));
+
+    expect(produced?.role).toBe("encourage");
+  });
 });

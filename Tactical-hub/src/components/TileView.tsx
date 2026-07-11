@@ -14,13 +14,26 @@ type Props = {
   tile: Tile;
   highlighted: boolean;
   attackHighlighted?: boolean;
+  encourageHighlighted?: boolean;
   onClick: () => void;
   children?: ReactNode;
 };
 
-export function TileView({ tile, highlighted, attackHighlighted = false, onClick, children }: Props) {
+export function TileView({
+  tile,
+  highlighted,
+  attackHighlighted = false,
+  encourageHighlighted = false,
+  onClick,
+  children,
+}: Props) {
   return (
-    <button className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""} ${attackHighlighted ? "attack-highlighted" : ""}`} onClick={onClick}>
+    <button
+      className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""} ${attackHighlighted ? "attack-highlighted" : ""} ${
+        encourageHighlighted ? "encourage-highlighted" : ""
+      }`}
+      onClick={onClick}
+    >
       <span className="terrain-label">{terrainLabels[tile.terrain]}</span>
       <div className="tile-units">{children}</div>
     </button>

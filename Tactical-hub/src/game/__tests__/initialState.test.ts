@@ -43,6 +43,17 @@ describe("initial base slots", () => {
     }
   });
 
+  it("sets every initial strategist as an encourage strategist", () => {
+    const state = createInitialGameState();
+
+    for (const base of state.bases.filter((candidate) => candidate.type === "home")) {
+      const strategist = state.units.find((unit) => unit.id === `${base.id}-strategist`);
+
+      expect(strategist?.type).toBe("strategist");
+      expect(strategist?.role).toBe("encourage");
+    }
+  });
+
   it("keeps exactly one unit id per occupied BaseSlot", () => {
     const state = createInitialGameState();
     const slotUnitIds = state.bases.flatMap((base) => base.slots.flatMap((slot) => (slot.unitId ? [slot.unitId] : [])));

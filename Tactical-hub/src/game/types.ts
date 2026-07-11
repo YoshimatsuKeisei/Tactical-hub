@@ -32,7 +32,10 @@ export type UnitPosition =
   | { kind: "water"; x: number; y: number }
   | { kind: "base"; baseId: string; slotId: string }
   | { kind: "bridge"; bridgeId: string; cellIndex: number }
-  | { kind: "removed"; reason: "defeated" | "water_trap" | "king_defeat_reset" };
+  | {
+      kind: "removed";
+      reason: "defeated" | "water_trap" | "king_defeat_reset";
+    };
 
 export type Unit = {
   id: string;
@@ -64,7 +67,13 @@ export type Base = {
   occupationPriorityTeamId?: string;
 };
 
-export type TerrainType = "outside" | "road" | "lake" | "base" | "baseGate" | "reorganize";
+export type TerrainType =
+  | "outside"
+  | "road"
+  | "lake"
+  | "base"
+  | "baseGate"
+  | "reorganize";
 
 export type Tile = {
   x: number;
@@ -72,8 +81,15 @@ export type Tile = {
   symbol: string;
   terrain: TerrainType;
   baseId?: string;
-};
 
+  /**
+   * 両端を拠点に囲まれた1本の道区間を表すID。
+   *
+   * road / baseGate / reorganize に設定する。
+   * base / lake / outside には設定しない。
+   */
+  roadSectionId?: string;
+};
 export type BoardMap = {
   id: string;
   name: string;
@@ -132,6 +148,20 @@ export type BattleEvent = {
   result?: BattleResult;
 };
 
+export type UnitTurnFlags = {
+  unitId: string;
+  battleTurnNumber: number;
+  positionAtBattleStart?: UnitPosition;
+  enemyBaseDistanceAtBattleStart?: number;
+  enemyBaseWithin3AtBattleStart?: boolean;
+  wasAliveAtBattleStart: boolean;
+  survivedPreviousBattle: boolean;
+  attackedInPreviousBattle: boolean;
+  wasTargetedInPreviousBattle: boolean;
+  retreatEligible: boolean;
+  retreatEligibilityReason?: string;
+};
+
 export type ActionIntent = {
   teamId: string;
   productionChoices: ProductionChoice[];
@@ -141,7 +171,12 @@ export type ActionIntent = {
 
 export type TurnState = {
   turnNumber: number;
-  phase: "production" | "movement_input" | "movement_resolution" | "attack_input" | "battle_resolution";
+  phase:
+    | "production"
+    | "movement_input"
+    | "movement_resolution"
+    | "attack_input"
+    | "battle_resolution";
   actionIntents: ActionIntent[];
 };
 
@@ -167,6 +202,7 @@ export type GameState = {
   teams: Team[];
   units: Unit[];
   bases: Base[];
+  unitTurnFlags: UnitTurnFlags[];
   turnState: TurnState;
   logs: GameLog[];
 };

@@ -11,7 +11,7 @@ const teams: Team[] = [
 ];
 
 function placeUnit(base: Base, ownerTeamId: string, type: UnitType, slotId: string): Unit {
-  return {
+  const unit: Unit = {
     id: `${base.id}-${type}`,
     ownerTeamId,
     type,
@@ -19,6 +19,8 @@ function placeUnit(base: Base, ownerTeamId: string, type: UnitType, slotId: stri
     position: { kind: "base", baseId: base.id, slotId },
     statuses: [],
   };
+  if (type === "strategist") unit.role = "encourage";
+  return unit;
 }
 
 const homeStrategistSlots: Record<string, { localRow: 0 | 1; localCol: 0 | 1 }> = {
@@ -67,9 +69,10 @@ export function createInitialGameState(): GameState {
     map: testMap4p,
     turnNumber: 1,
     phase: "movement_input",
-    teams,
+    teams: structuredClone(teams),
     units,
     bases,
+    unitTurnFlags: [],
     turnState: { turnNumber: 1, phase: "movement_input", actionIntents: [] },
     logs: [{ id: "log-setup", turnNumber: 1, type: "setup", message: "Phase 1 initial state created." }],
   };

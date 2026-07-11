@@ -1,5 +1,7 @@
 import { getMovementCandidates } from "../game/engine/movement";
 import { getAttackCandidates } from "../game/engine/battle";
+import { getEncourageAreaTileKeys } from "../game/engine/encouragement";
+import { getRetreatDirectionIndicators } from "../game/engine/retreat";
 import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
 import { getUnitAtBoardCell, positionKey } from "../game/utils/position";
 import { TileView } from "./TileView";
@@ -16,6 +18,12 @@ type Props = {
 export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget }: Props) {
   const selectedCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
+  const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
+  const encourageAreaKeys =
+    selectedUnit && selectedUnit.type === "strategist" && selectedUnit.role === "encourage"
+      ? getEncourageAreaTileKeys(state, selectedUnit)
+      : new Set<string>();
+  const retreatIndicators = getRetreatDirectionIndicators(state, selectedUnitId);
   const candidateByKey = new Map(selectedCandidates.map((candidate) => [positionKey(candidate), candidate]));
   const attackByUnitId = new Map(attackCandidates.map((candidate) => [candidate.unitId, candidate]));
 
@@ -45,6 +53,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
             tile={tile}
             highlighted={Boolean(destination)}
             attackHighlighted={Boolean(attackTarget)}
+            encourageHighlighted={encourageAreaKeys.has(`${tile.x},${tile.y}`)}
             onClick={() => {
               if (attackTarget) onChooseAttackTarget(attackTarget);
               else if (destination) onChooseDestination(destination);
@@ -56,6 +65,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 team={state.teams.find((team) => team.id === boardUnit.ownerTeamId)}
                 selected={boardUnit.id === selectedUnitId}
                 attackTarget={attackByUnitId.has(boardUnit.id)}
+                retreatIndicators={boardUnit.id === selectedUnitId ? retreatIndicators : []}
                 onClick={() => {
                   const target = attackByUnitId.get(boardUnit.id);
                   if (target) onChooseAttackTarget(target);
@@ -69,6 +79,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 team={state.teams.find((team) => team.id === baseUnit.ownerTeamId)}
                 selected={baseUnit.id === selectedUnitId}
                 attackTarget={attackByUnitId.has(baseUnit.id)}
+                retreatIndicators={baseUnit.id === selectedUnitId ? retreatIndicators : []}
                 onClick={() => {
                   const target = attackByUnitId.get(baseUnit.id);
                   if (target) onChooseAttackTarget(target);

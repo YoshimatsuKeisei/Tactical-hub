@@ -1,7 +1,18 @@
 import { UNIT_STATS } from "../constants";
-import type { AttackIntent, AttackTarget, BattleEvent, GameState, Unit, UnitPosition, UnitType } from "../types";
+import type {
+  AttackIntent,
+  AttackTarget,
+  BattleEvent,
+  GameState,
+  Unit,
+  UnitPosition,
+  UnitType,
+} from "../types";
 import { chebyshevDistance } from "../utils/distance";
 import { positionKey } from "../utils/position";
+import { canAttackAcrossRoadTopology } from "../utils/roadTopology";
+import { getEncouragedUnitIds } from "./encouragement";
+import { buildUnitTurnFlag, isRetreating } from "./retreat";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -13,7 +24,9 @@ type BattleLogDraft = {
   relatedIds?: string[];
 };
 
-const SUCCESS_DENOMINATORS: Partial<Record<UnitType, Partial<Record<UnitType, number>>>> = {
+const SUCCESS_DENOMINATORS: Partial<
+  Record<UnitType, Partial<Record<UnitType, number>>>
+> = {
   infantry: {
     archer: 5,
     cavalry: 7,
@@ -81,20 +94,34 @@ function isAlive(unit: Unit) {
 }
 
 function positionCells(state: GameState, position: UnitPosition) {
-  if (position.kind === "tile" || position.kind === "water") return [{ x: position.x, y: position.y }];
-  if (position.kind === "base") return state.bases.find((base) => base.id === position.baseId)?.coords ?? [];
+  if (position.kind === "tile" || position.kind === "water")
+    return [{ x: position.x, y: position.y }];
+  if (position.kind === "base")
+    return (
+      state.bases.find((base) => base.id === position.baseId)?.coords ?? []
+    );
   return [];
 }
 
-function minDistance(aCells: { x: number; y: number }[], bCells: { x: number; y: number }[]) {
+function minDistance(
+  aCells: { x: number; y: number }[],
+  bCells: { x: number; y: number }[],
+) {
   if (!aCells.length || !bCells.length) return Number.POSITIVE_INFINITY;
-  return Math.min(...aCells.flatMap((a) => bCells.map((b) => chebyshevDistance(a, b))));
+  return Math.min(
+    ...aCells.flatMap((a) => bCells.map((b) => chebyshevDistance(a, b))),
+  );
 }
 
 function targetForUnit(unit: Unit): AttackTarget {
   const position = unit.position;
   if (position.kind === "base") {
-    return { kind: "unit", unitId: unit.id, baseId: position.baseId, slotId: position.slotId };
+    return {
+      kind: "unit",
+      unitId: unit.id,
+      baseId: position.baseId,
+      slotId: position.slotId,
+    };
   }
   return { kind: "unit", unitId: unit.id };
 }
@@ -102,13 +129,18 @@ function targetForUnit(unit: Unit): AttackTarget {
 function isProtectedByOkuzashiki(state: GameState, target: Unit) {
   const position = target.position;
   if (position.kind !== "base") return false;
-  const base = state.bases.find((candidate) => candidate.id === position.baseId);
-  if (!base || base.type !== "home" || position.slotId !== base.protectedSlotId) return false;
+  const base = state.bases.find(
+    (candidate) => candidate.id === position.baseId,
+  );
+  if (!base || base.type !== "home" || position.slotId !== base.protectedSlotId)
+    return false;
 
   return base.slots.some((slot) => {
     if (!slot.unitId || slot.id === position.slotId) return false;
     const other = state.units.find((unit) => unit.id === slot.unitId);
-    return Boolean(other && isAlive(other) && other.ownerTeamId === target.ownerTeamId);
+    return Boolean(
+      other && isAlive(other) && other.ownerTeamId === target.ownerTeamId,
+    );
   });
 }
 
@@ -125,7 +157,10 @@ export function getBaseAttackDenominator(
   return SUCCESS_DENOMINATORS[attackerType]?.[targetType] ?? 6;
 }
 
-export function applyEncouragementToDenominator(denominator: number, encouraged: boolean) {
+export function applyEncouragementToDenominator(
+  denominator: number,
+  encouraged: boolean,
+) {
   return encouraged ? Math.max(1, denominator - 1) : denominator;
 }
 
@@ -134,26 +169,48 @@ export function getFinalAttackDenominator(
   targetType: UnitType,
   context: AttackDenominatorContext,
 ): number | null {
-  const baseDenominator = getBaseAttackDenominator(attackerType, targetType, context);
+  const baseDenominator = getBaseAttackDenominator(
+    attackerType,
+    targetType,
+    context,
+  );
   if (baseDenominator === null) return null;
-  return applyEncouragementToDenominator(baseDenominator, Boolean(context.encouraged));
+  return applyEncouragementToDenominator(
+    baseDenominator,
+    Boolean(context.encouraged),
+  );
 }
 
-function getAttackDenominators(attacker: Unit, target: Unit, encouraged = false) {
+function getAttackDenominators(
+  attacker: Unit,
+  target: Unit,
+  encouraged = false,
+) {
   const context = { targetInBase: target.position.kind === "base", encouraged };
-  const baseSuccessDenominator = getBaseAttackDenominator(attacker.type, target.type, context);
+  const baseSuccessDenominator = getBaseAttackDenominator(
+    attacker.type,
+    target.type,
+    context,
+  );
   if (baseSuccessDenominator === null) return undefined;
-  const finalSuccessDenominator = applyEncouragementToDenominator(baseSuccessDenominator, encouraged);
+  const finalSuccessDenominator = applyEncouragementToDenominator(
+    baseSuccessDenominator,
+    encouraged,
+  );
   return { baseSuccessDenominator, finalSuccessDenominator, encouraged };
 }
 
-function isEncouragedForBattle(_state: GameState, attacker: Unit) {
-  return attacker.position.kind !== "water" && attacker.statuses.some((status) => status.kind === "encouraged");
+function isEncouragedForBattle(encouragedUnitIds: Set<string>, attacker: Unit) {
+  return encouragedUnitIds.has(attacker.id);
 }
 
 function canAttackByPositionRule(attacker: Unit, target: Unit) {
   if (attacker.position.kind === "water") {
-    return attacker.type === "ninja" && target.type === "ninja" && target.position.kind === "water";
+    return (
+      attacker.type === "ninja" &&
+      target.type === "ninja" &&
+      target.position.kind === "water"
+    );
   }
   if (target.position.kind === "water") return false;
   return true;
@@ -161,17 +218,29 @@ function canAttackByPositionRule(attacker: Unit, target: Unit) {
 
 function canAttackUnit(state: GameState, attacker: Unit, target: Unit) {
   if (!canAttackByPositionRule(attacker, target)) return false;
-  if (!getAttackDenominators(attacker, target, isEncouragedForBattle(state, attacker))) return false;
+  if (!getAttackDenominators(attacker, target, false)) return false;
   return true;
 }
 
 function candidateDistance(state: GameState, attacker: Unit, target: Unit) {
-  return minDistance(positionCells(state, attacker.position), positionCells(state, target.position));
+  return minDistance(
+    positionCells(state, attacker.position),
+    positionCells(state, target.position),
+  );
 }
 
-function targetSortKey(state: GameState, attacker: Unit, target: Unit): [number, number, number, number, number, number, string] {
+function targetSortKey(
+  state: GameState,
+  attacker: Unit,
+  target: Unit,
+  encouragedUnitIds: Set<string>,
+): [number, number, number, number, number, number, string] {
   const baseHp = UNIT_STATS[target.type].hp;
-  const denominator = getAttackDenominators(attacker, target, isEncouragedForBattle(state, attacker))?.finalSuccessDenominator;
+  const denominator = getAttackDenominators(
+    attacker,
+    target,
+    encouragedUnitIds.has(attacker.id),
+  )?.finalSuccessDenominator;
   return [
     target.type === "king" ? 0 : 1,
     denominator ?? 99,
@@ -183,7 +252,10 @@ function targetSortKey(state: GameState, attacker: Unit, target: Unit): [number,
   ];
 }
 
-function compareSortKey(a: [number, number, number, number, number, number, string], b: [number, number, number, number, number, number, string]) {
+function compareSortKey(
+  a: [number, number, number, number, number, number, string],
+  b: [number, number, number, number, number, number, string],
+) {
   for (let index = 0; index < a.length - 1; index += 1) {
     const diff = (a[index] as number) - (b[index] as number);
     if (diff) return diff;
@@ -191,13 +263,27 @@ function compareSortKey(a: [number, number, number, number, number, number, stri
   return a[6].localeCompare(b[6]);
 }
 
-export function sortAttackCandidates(state: GameState, attacker: Unit, targets: Unit[]) {
-  return [...targets].sort((a, b) => compareSortKey(targetSortKey(state, attacker, a), targetSortKey(state, attacker, b)));
+export function sortAttackCandidates(
+  state: GameState,
+  attacker: Unit,
+  targets: Unit[],
+  encouragedUnitIds = getEncouragedUnitIds(state),
+) {
+  return [...targets].sort((a, b) =>
+    compareSortKey(
+      targetSortKey(state, attacker, a, encouragedUnitIds),
+      targetSortKey(state, attacker, b, encouragedUnitIds),
+    ),
+  );
 }
 
-export function getAttackCandidates(state: GameState, attackerUnitId: string): AttackTarget[] {
+export function getAttackCandidates(
+  state: GameState,
+  attackerUnitId: string,
+): AttackTarget[] {
   const attacker = state.units.find((unit) => unit.id === attackerUnitId);
   if (!attacker || !isAlive(attacker)) return [];
+  if (isRetreating(attacker)) return [];
 
   const range = UNIT_STATS[attacker.type].range;
   if (range <= 0) return [];
@@ -209,23 +295,44 @@ export function getAttackCandidates(state: GameState, attackerUnitId: string): A
     .filter((target) => target.ownerTeamId !== attacker.ownerTeamId)
     .filter((target) => !isProtectedByOkuzashiki(state, target))
     .filter((target) => canAttackUnit(state, attacker, target))
-    .filter((target) => minDistance(attackerCells, positionCells(state, target.position)) <= range);
+    .filter((target) =>
+      canAttackAcrossRoadTopology(state, attacker.position, target.position),
+    )
+    .filter(
+      (target) =>
+        minDistance(attackerCells, positionCells(state, target.position)) <=
+        range,
+    );
 
-  return sortAttackCandidates(state, attacker, targets).map((target) => ({
-    ...targetForUnit(target),
-    ...getAttackDenominators(attacker, target, isEncouragedForBattle(state, attacker)),
-  }));
+  const encouragedUnitIds = getEncouragedUnitIds(state);
+  return sortAttackCandidates(state, attacker, targets, encouragedUnitIds).map(
+    (target) => ({
+      ...targetForUnit(target),
+      ...getAttackDenominators(
+        attacker,
+        target,
+        encouragedUnitIds.has(attacker.id),
+      ),
+    }),
+  );
 }
 
-export function saveAttackIntent(state: GameState, intent: AttackIntent): GameState {
-  const existing = state.turnState.actionIntents.find((candidate) => candidate.teamId === intent.teamId);
+export function saveAttackIntent(
+  state: GameState,
+  intent: AttackIntent,
+): GameState {
+  const existing = state.turnState.actionIntents.find(
+    (candidate) => candidate.teamId === intent.teamId,
+  );
   const actionIntents = existing
     ? state.turnState.actionIntents.map((candidate) =>
         candidate.teamId === intent.teamId
           ? {
               ...candidate,
               attackIntents: [
-                ...(candidate.attackIntents ?? []).filter((attack) => attack.attackerUnitId !== intent.attackerUnitId),
+                ...(candidate.attackIntents ?? []).filter(
+                  (attack) => attack.attackerUnitId !== intent.attackerUnitId,
+                ),
                 intent,
               ],
             }
@@ -233,22 +340,40 @@ export function saveAttackIntent(state: GameState, intent: AttackIntent): GameSt
       )
     : [
         ...state.turnState.actionIntents,
-        { teamId: intent.teamId, productionChoices: [], movementIntents: [], attackIntents: [intent] },
+        {
+          teamId: intent.teamId,
+          productionChoices: [],
+          movementIntents: [],
+          attackIntents: [intent],
+        },
       ];
   return { ...state, turnState: { ...state.turnState, actionIntents } };
 }
 
 function clearBaseSlot(state: GameState, position: UnitPosition) {
   if (position.kind !== "base") return;
-  const base = state.bases.find((candidate) => candidate.id === position.baseId);
-  const slot = base?.slots.find((candidate) => candidate.id === position.slotId);
+  const base = state.bases.find(
+    (candidate) => candidate.id === position.baseId,
+  );
+  const slot = base?.slots.find(
+    (candidate) => candidate.id === position.slotId,
+  );
   if (slot) slot.unitId = undefined;
 }
 
 function defeatUnit(state: GameState, target: Unit) {
   clearBaseSlot(state, target.position);
   state.units = state.units.map((unit) =>
-    unit.id === target.id ? { ...unit, hp: 0, position: { kind: "removed", reason: "defeated" } } : unit,
+    unit.id === target.id
+      ? {
+          ...unit,
+          hp: 0,
+          position: { kind: "removed", reason: "defeated" },
+          statuses: unit.statuses.filter(
+            (status) => status.kind !== "retreating",
+          ),
+        }
+      : unit,
   );
 
   if (target.type === "king") {
@@ -265,17 +390,41 @@ function defeatUnit(state: GameState, target: Unit) {
   }
 }
 
-function targetStillLegal(state: GameState, attackerUnitId: string, target: AttackTarget) {
-  return getAttackCandidates(state, attackerUnitId).some((candidate) => candidate.unitId === target.unitId);
+function targetStillLegal(
+  state: GameState,
+  attackerUnitId: string,
+  target: AttackTarget,
+) {
+  return getAttackCandidates(state, attackerUnitId).some(
+    (candidate) => candidate.unitId === target.unitId,
+  );
 }
 
-function battleEventForIntent(state: GameState, intent: AttackIntent, index: number): BattleEvent[] {
+function battleEventForIntent(
+  state: GameState,
+  encouragedUnitIds: Set<string>,
+  intent: AttackIntent,
+  index: number,
+): BattleEvent[] {
   if (intent.pass || !intent.target) return [];
-  const attacker = state.units.find((unit) => unit.id === intent.attackerUnitId);
+  const attacker = state.units.find(
+    (unit) => unit.id === intent.attackerUnitId,
+  );
   const target = state.units.find((unit) => unit.id === intent.target?.unitId);
-  if (!attacker || !target || !isAlive(attacker) || !isAlive(target) || !targetStillLegal(state, attacker.id, intent.target)) return [];
+  if (
+    !attacker ||
+    !target ||
+    !isAlive(attacker) ||
+    !isAlive(target) ||
+    !targetStillLegal(state, attacker.id, intent.target)
+  )
+    return [];
 
-  const denominators = getAttackDenominators(attacker, target, isEncouragedForBattle(state, attacker));
+  const denominators = getAttackDenominators(
+    attacker,
+    target,
+    isEncouragedForBattle(encouragedUnitIds, attacker),
+  );
   if (!denominators) return [];
 
   return [
@@ -288,18 +437,53 @@ function battleEventForIntent(state: GameState, intent: AttackIntent, index: num
   ];
 }
 
-function battleLog(logs: BattleLogDraft[], message: string, relatedIds?: string[]) {
+function battleLog(
+  logs: BattleLogDraft[],
+  message: string,
+  relatedIds?: string[],
+) {
   logs.push({ message, relatedIds });
 }
 
-export function resolveBattle(state: GameState, rng: () => number = Math.random): GameState {
+export function resolveBattle(
+  state: GameState,
+  rng: () => number = Math.random,
+): GameState {
   const next = structuredClone(state) as GameState;
-  const intents = next.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []);
-  const events = intents.flatMap((intent, index) => battleEventForIntent(next, intent, index));
+  const intents = next.turnState.actionIntents.flatMap(
+    (intent) => intent.attackIntents ?? [],
+  );
+  const encouragedUnitIds = getEncouragedUnitIds(next);
   const battleLogs: BattleLogDraft[] = [];
+  const battleStartPositionsByUnitId = new Map(
+    next.units.map((unit) => [
+      unit.id,
+      structuredClone(unit.position) as UnitPosition,
+    ]),
+  );
+  const events = intents.flatMap((intent, index) => {
+    if (intent.pass || !intent.target) return [];
+    const attacker = next.units.find(
+      (unit) => unit.id === intent.attackerUnitId,
+    );
+    if (attacker && isRetreating(attacker)) {
+      battleLog(
+        battleLogs,
+        `${attacker.id} attack intent was invalid because the unit is retreating.`,
+        [attacker.id],
+      );
+      return [];
+    }
+    return battleEventForIntent(next, encouragedUnitIds, intent, index);
+  });
+  const aliveAtBattleStart = new Set(
+    next.units.filter(isAlive).map((unit) => unit.id),
+  );
 
   const hitEvents = events.filter((event) => {
-    const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+    const attacker = next.units.find(
+      (unit) => unit.id === event.attackerUnitId,
+    );
     const target = next.units.find((unit) => unit.id === event.target.unitId);
     const hit = rng() < 1 / event.finalSuccessDenominator;
     const prefix = `${event.attackerUnitId} -> ${event.target.unitId} base 1/${event.baseSuccessDenominator}, encouraged: ${
@@ -317,7 +501,10 @@ export function resolveBattle(state: GameState, rng: () => number = Math.random)
 
   const damageByUnitId = new Map<string, number>();
   for (const event of hitEvents) {
-    damageByUnitId.set(event.target.unitId, (damageByUnitId.get(event.target.unitId) ?? 0) + 1);
+    damageByUnitId.set(
+      event.target.unitId,
+      (damageByUnitId.get(event.target.unitId) ?? 0) + 1,
+    );
   }
 
   for (const [targetUnitId, damage] of damageByUnitId) {
@@ -325,7 +512,9 @@ export function resolveBattle(state: GameState, rng: () => number = Math.random)
     if (!target || !isAlive(target)) continue;
 
     const nextHp = target.hp - damage;
-    next.units = next.units.map((unit) => (unit.id === target.id ? { ...unit, hp: nextHp } : unit));
+    next.units = next.units.map((unit) =>
+      unit.id === target.id ? { ...unit, hp: nextHp } : unit,
+    );
 
     battleLog(
       battleLogs,
@@ -336,8 +525,47 @@ export function resolveBattle(state: GameState, rng: () => number = Math.random)
     if (nextHp <= 0) {
       const updatedTarget = next.units.find((unit) => unit.id === target.id)!;
       defeatUnit(next, updatedTarget);
-      battleLog(battleLogs, `${target.id} was defeated at ${positionKey(target.position)}.`, [target.id]);
+      battleLog(
+        battleLogs,
+        `${target.id} was defeated at ${positionKey(target.position)}.`,
+        [target.id],
+      );
     }
+  }
+
+  const attackedUnitIds = new Set(events.map((event) => event.attackerUnitId));
+  const targetedUnitIds = new Set(events.map((event) => event.target.unitId));
+  const participantUnitIds = new Set([...attackedUnitIds, ...targetedUnitIds]);
+  next.unitTurnFlags = [...participantUnitIds]
+    .map((unitId) => {
+      const unit = next.units.find((candidate) => candidate.id === unitId);
+      if (!unit) return undefined;
+      return buildUnitTurnFlag(
+        next,
+        unit,
+        next.turnNumber,
+        aliveAtBattleStart.has(unitId),
+        attackedUnitIds.has(unitId),
+        targetedUnitIds.has(unitId),
+        battleStartPositionsByUnitId.get(unitId) ?? unit.position,
+      );
+    })
+    .filter((flag): flag is NonNullable<typeof flag> => Boolean(flag));
+
+  for (const flag of next.unitTurnFlags.filter(
+    (candidate) => candidate.retreatEligible,
+  )) {
+    const role =
+      flag.attackedInPreviousBattle && flag.wasTargetedInPreviousBattle
+        ? "attacker and target"
+        : flag.attackedInPreviousBattle
+          ? "attacker"
+          : "target";
+    battleLog(
+      battleLogs,
+      `${flag.unitId} became retreat eligible as a valid battle ${role} near an enemy-controlled base.`,
+      [flag.unitId],
+    );
   }
 
   next.logs.push(
@@ -350,7 +578,10 @@ export function resolveBattle(state: GameState, rng: () => number = Math.random)
     })),
   );
 
-  next.turnState.actionIntents = next.turnState.actionIntents.map((intent) => ({ ...intent, attackIntents: [] }));
+  next.turnState.actionIntents = next.turnState.actionIntents.map((intent) => ({
+    ...intent,
+    attackIntents: [],
+  }));
   next.phase = "attack_input";
   next.turnState.phase = "attack_input";
   return next;

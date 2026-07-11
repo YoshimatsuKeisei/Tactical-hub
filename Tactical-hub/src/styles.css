@@ -119,6 +119,10 @@ p {
   z-index: 3;
 }
 
+.tile.encourage-highlighted {
+  box-shadow: inset 0 0 0 3px #2aa198;
+}
+
 .terrain-label {
   position: absolute;
   top: 1px;
@@ -170,6 +174,91 @@ p {
   background: #111827;
   color: white;
   font-size: 10px;
+}
+
+.retreat-badge {
+  position: absolute;
+  left: -5px;
+  bottom: -5px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f5f7ff;
+  color: #26327c;
+  border: 1px solid #26327c;
+  font-size: 10px;
+  text-shadow: none;
+}
+
+.retreat-indicator {
+  position: absolute;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 86px;
+  padding: 2px 4px;
+  border: 1px solid #56606d;
+  border-radius: 4px;
+  background: rgba(248, 250, 252, 0.96);
+  color: #1f2937;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-shadow: none;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.retreat-indicator-hostile {
+  border-color: #8f2f28;
+  color: #8f2f28;
+}
+
+.retreat-indicator.direction-up {
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.retreat-indicator.direction-up-right {
+  bottom: calc(100% + 2px);
+  left: calc(100% + 2px);
+}
+
+.retreat-indicator.direction-right {
+  top: 50%;
+  left: calc(100% + 4px);
+  transform: translateY(-50%);
+}
+
+.retreat-indicator.direction-down-right {
+  top: calc(100% + 2px);
+  left: calc(100% + 2px);
+}
+
+.retreat-indicator.direction-down {
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.retreat-indicator.direction-down-left {
+  top: calc(100% + 2px);
+  right: calc(100% + 2px);
+}
+
+.retreat-indicator.direction-left {
+  top: 50%;
+  right: calc(100% + 4px);
+  transform: translateY(-50%);
+}
+
+.retreat-indicator.direction-up-left {
+  right: calc(100% + 2px);
+  bottom: calc(100% + 2px);
 }
 
 .debug-panel {

@@ -75,6 +75,7 @@ export function resolveProduction(state: GameState): GameState {
       position: { kind: "base", baseId: base.id, slotId: slot.id },
       statuses: [],
     };
+    if (choice.unitType === "strategist") unit.role = "encourage";
     slot.unitId = unit.id;
     next.units.push(unit);
     next.logs.push({
