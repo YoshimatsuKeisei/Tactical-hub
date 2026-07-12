@@ -176,16 +176,49 @@ export type TurnState = {
     | "movement_input"
     | "movement_resolution"
     | "attack_input"
-    | "battle_resolution";
+    | "battle_resolution"
+    | "capture_resolution"
+    | "reward_placement";
   actionIntents: ActionIntent[];
 };
 
 export type GameLog = {
   id: string;
   turnNumber: number;
-  type: "setup" | "production" | "movement" | "battle";
+  type: "setup" | "production" | "movement" | "battle" | "siege" | "capture" | "reward";
   message: string;
   relatedIds?: string[];
+};
+
+export type SiegeTeamRecord = {
+  teamId: string;
+  defenderKills: number;
+  effectiveAttackTurns: number;
+};
+
+export type SiegeState = {
+  baseId: string;
+  defendingTeamId: string;
+  teamRecords: SiegeTeamRecord[];
+  lastEffectiveAttackTurn?: number;
+  active: boolean;
+  defenderLossOccurred: boolean;
+  fallCandidateTeamIds: string[];
+};
+
+export type RewardType = "capture_reward" | "contribution_compensation";
+export type RewardPlacementRequest = {
+  id: string;
+  teamId: string;
+  rewardType: RewardType;
+  sourceBaseId: string;
+  destinationKind: "fixed" | "selectable";
+  fixedBaseId?: string;
+  eligibleBaseIds: string[];
+  selectedUnitType?: UnitType;
+  completed: boolean;
+  expired: boolean;
+  expirationReason?: string;
 };
 
 export type GameConfig = {
@@ -205,4 +238,7 @@ export type GameState = {
   unitTurnFlags: UnitTurnFlags[];
   turnState: TurnState;
   logs: GameLog[];
+  siegeStates: SiegeState[];
+  rewardPlacementRequests: RewardPlacementRequest[];
+  phaseAfterRewards?: "attack_input" | "movement_input";
 };

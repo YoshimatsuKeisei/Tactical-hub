@@ -75,5 +75,7 @@ export function createInitialGameState(): GameState {
     unitTurnFlags: [],
     turnState: { turnNumber: 1, phase: "movement_input", actionIntents: [] },
     logs: [{ id: "log-setup", turnNumber: 1, type: "setup", message: "Phase 1 initial state created." }],
+    siegeStates: [],
+    rewardPlacementRequests: [],
   };
 }

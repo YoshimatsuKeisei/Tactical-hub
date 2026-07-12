@@ -19,3 +19,5 @@ export const PRODUCIBLE_UNIT_TYPES: UnitType[] = [
   "ninja",
   "strategist",
 ];
+
+export const SIEGE_INACTIVITY_RESET_TURNS = 10;

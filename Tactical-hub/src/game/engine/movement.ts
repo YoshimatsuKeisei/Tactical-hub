@@ -18,6 +18,8 @@ import {
   isRetreating,
   withRetreatingStatus,
 } from "./retreat";
+import { completeSiegeCapture, transferBaseOwnership } from "./capture";
+import { getSiegeState, resetInactiveSieges } from "./siege";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -418,6 +420,8 @@ function applyRetreatStatus(
 
 export function resolveMovement(state: GameState): GameState {
   const next = structuredClone(state) as GameState;
+  resetInactiveSieges(next);
+  const defendingCountsAtStart = new Map(next.bases.map((base) => [base.id, next.units.filter((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId).length]));
   const intents = next.turnState.actionIntents
     .flatMap((intent) => intent.movementIntents)
     .sort((a, b) => {
@@ -503,9 +507,34 @@ export function resolveMovement(state: GameState): GameState {
     movementIntents: [],
   }));
   next.unitTurnFlags = [];
+  let capturedWithRewards = false;
+  const combatAbandonmentBases = new Set<string>();
+  for (const base of [...next.bases]) {
+    if (!(defendingCountsAtStart.get(base.id) ?? 0)) continue;
+    const defendersRemain = next.units.some((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId);
+    if (defendersRemain) continue;
+    const siege = getSiegeState(next, base.id);
+    if (siege?.active && siege.defenderLossOccurred) {
+      const candidates = siege.teamRecords.filter((record) => record.teamId !== siege.defendingTeamId && (record.defenderKills > 0 || record.effectiveAttackTurns > 0)).map((record) => record.teamId);
+      capturedWithRewards = completeSiegeCapture(next, siege, candidates, "combat_abandonment") || capturedWithRewards;
+      combatAbandonmentBases.add(base.id);
+    }
+  }
+  for (const base of [...next.bases]) {
+    if (combatAbandonmentBases.has(base.id)) continue;
+    const occupyingEnemy = next.units.find((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId !== base.ownerTeamId);
+    const ownerDefender = next.units.some((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId);
+    if (occupyingEnemy && !ownerDefender) {
+      transferBaseOwnership(next, base.id, occupyingEnemy.ownerTeamId);
+      next.logs.push({ id: `log-simple-capture-${next.logs.length}`, turnNumber: next.turnNumber, type: "capture", message: `単純放棄された拠点への入城占領: ${base.id} → ${occupyingEnemy.ownerTeamId}`, relatedIds: [base.id, occupyingEnemy.ownerTeamId] });
+    }
+  }
   next.turnNumber += 1;
-  next.phase = "movement_input";
+  if (capturedWithRewards && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+    next.phaseAfterRewards = "attack_input";
+    next.phase = "reward_placement";
+  } else next.phase = "attack_input";
   next.turnState.turnNumber = next.turnNumber;
-  next.turnState.phase = "movement_input";
+  next.turnState.phase = next.phase;
   return next;
 }

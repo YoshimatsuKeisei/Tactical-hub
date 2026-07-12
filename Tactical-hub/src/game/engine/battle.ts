@@ -13,6 +13,8 @@ import { positionKey } from "../utils/position";
 import { canAttackAcrossRoadTopology } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, isRetreating } from "./retreat";
+import { completeSiegeCapture } from "./capture";
+import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -476,6 +478,16 @@ export function resolveBattle(
     }
     return battleEventForIntent(next, encouragedUnitIds, intent, index);
   });
+  recordEffectiveBaseAttacks(next, events.flatMap((event) => {
+    const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+    const target = next.units.find((unit) => unit.id === event.target.unitId);
+    if (!attacker || !target || target.position.kind !== "base") return [];
+    const targetBaseId = target.position.baseId;
+    const base = next.bases.find((entry) => entry.id === targetBaseId);
+    if (!base || target.ownerTeamId !== base.ownerTeamId || attacker.ownerTeamId === base.ownerTeamId) return [];
+    return [{ baseId: base.id, defendingTeamId: base.ownerTeamId, attackingTeamId: attacker.ownerTeamId }];
+  }));
+  const defenderCountsAtStart = new Map(next.bases.map((base) => [base.id, next.units.filter((unit) => isAlive(unit) && unit.ownerTeamId === base.ownerTeamId && unit.position.kind === "base" && unit.position.baseId === base.id).length]));
   const aliveAtBattleStart = new Set(
     next.units.filter(isAlive).map((unit) => unit.id),
   );
@@ -525,6 +537,17 @@ export function resolveBattle(
     if (nextHp <= 0) {
       const updatedTarget = next.units.find((unit) => unit.id === target.id)!;
       defeatUnit(next, updatedTarget);
+      if (target.position.kind === "base") {
+        const targetBaseId = target.position.baseId;
+        const base = next.bases.find((entry) => entry.id === targetBaseId);
+        if (base && target.ownerTeamId === base.ownerTeamId) {
+          const killerTeamIds = hitEvents.filter((event) => event.target.unitId === target.id).flatMap((event) => {
+            const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+            return attacker ? [attacker.ownerTeamId] : [];
+          });
+          if (killerTeamIds.length) recordDefenderKill(next, base.id, base.ownerTeamId, killerTeamIds);
+        }
+      }
       battleLog(
         battleLogs,
         `${target.id} was defeated at ${positionKey(target.position)}.`,
@@ -582,7 +605,27 @@ export function resolveBattle(
     ...intent,
     attackIntents: [],
   }));
-  next.phase = "attack_input";
-  next.turnState.phase = "attack_input";
+  let captured = false;
+  for (const base of [...next.bases]) {
+    if (!(defenderCountsAtStart.get(base.id) ?? 0)) continue;
+    const remaining = next.units.some((unit) => isAlive(unit) && unit.ownerTeamId === base.ownerTeamId && unit.position.kind === "base" && unit.position.baseId === base.id);
+    if (remaining) continue;
+    const siege = getSiegeState(next, base.id);
+    if (!siege) continue;
+    const candidates = [...new Set(hitEvents.flatMap((event) => {
+      const targetStart = battleStartPositionsByUnitId.get(event.target.unitId);
+      if (targetStart?.kind !== "base" || targetStart.baseId !== base.id) return [];
+      const target = next.units.find((unit) => unit.id === event.target.unitId);
+      const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+      return target?.position.kind === "removed" && attacker ? [attacker.ownerTeamId] : [];
+    }))];
+    captured = completeSiegeCapture(next, siege, candidates, "annihilation", rng) || captured;
+  }
+  resetInactiveSieges(next);
+  if (captured && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+    next.phaseAfterRewards = "attack_input";
+    next.phase = "reward_placement";
+  } else next.phase = "attack_input";
+  next.turnState.phase = next.phase;
   return next;
 }

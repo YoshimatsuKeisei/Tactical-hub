@@ -3,6 +3,7 @@ import { getAttackCandidates, saveAttackIntent } from "../game/engine/battle";
 import { getEncourageRadius, getEncouragedUnitIds, getEncouragedUnitIdsByStrategist, isUnitEncouraged } from "../game/engine/encouragement";
 import { getMovementCandidates, saveMovementIntent } from "../game/engine/movement";
 import { getAvailableProductionTypes, saveProductionChoice } from "../game/engine/production";
+import { getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
 import {
   getNearestEnemyBaseDistance,
   getNearestFriendlyBaseDistance,
@@ -43,6 +44,7 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
     ? getNearestFriendlyBaseDistance(state, selectedUnit.ownerTeamId, selectedUnit.position)
     : undefined;
   const selectedEnemyBaseDistance = selectedUnit ? getNearestEnemyBaseDistance(state, selectedUnit.ownerTeamId, selectedUnit.position) : undefined;
+  const pendingRewards = getPendingRewardRequests(state);
 
   function attackIntentSummary(attackerUnitId: string, targetUnitId?: string) {
     if (!targetUnitId) return undefined;
@@ -77,10 +79,30 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
           <span>Attacks</span>
           <strong>{attackIntents.length}</strong>
         </div>
-        <button className="primary sticky-action" onClick={onResolveMovement}>
+        <button className="primary sticky-action" onClick={onResolveMovement} disabled={state.phase === "reward_placement"}>
           Resolve Movement
         </button>
       </section>
+
+      {state.phase === "reward_placement" ? (
+        <section>
+          <h2>褒賞配置</h2>
+          {pendingRewards.map((request) => (
+            <div className="intent-item" key={request.id}>
+              <strong>{request.rewardType === "capture_reward" ? "占領褒賞" : "攻略功労補償"}</strong>
+              <span>対象: {request.teamId} / 発生元: {request.sourceBaseId}</span>
+              {request.eligibleBaseIds.map((baseId) => (
+                <div className="button-row" key={baseId}>
+                  <span>{baseId}</span>
+                  {getAvailableProductionTypes(state, request.teamId, baseId).map((unitType) => (
+                    <button key={unitType} onClick={() => onStateChange(placeRewardUnit(state, request.id, baseId, unitType))}>{UNIT_STATS[unitType].label}</button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </section>
+      ) : null}
 
       <section>
         <h2>Retreat</h2>
@@ -229,7 +251,7 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
             </div>
           );
         })}
-        <button className="primary" onClick={onResolveProduction}>
+        <button className="primary" onClick={onResolveProduction} disabled={state.phase === "reward_placement"}>
           Resolve Production
         </button>
       </section>
@@ -332,7 +354,7 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
             <p>No attack intents saved.</p>
           )}
         </div>
-        <button className="primary battle-action" onClick={onResolveBattle}>
+        <button className="primary battle-action" onClick={onResolveBattle} disabled={state.phase === "reward_placement"}>
           Resolve Battle
         </button>
       </section>
