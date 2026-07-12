@@ -5,6 +5,48 @@ v0.1 は実装サービス名を細かく分けすぎていたため、まずは
 
 ---
 
+## Phase 3-A: 撤退処理シーケンス
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Game logic
+    participant State as GameState
+    participant Plan as ActionIntent
+    participant Log as GameLog
+
+    App->>Plan: AttackIntent を取得する
+    App->>State: 戦闘開始時点の生存駒と鼓舞対象をスナップショットする
+    App->>App: 撤退中の攻撃者は BattleEvent に変換しない
+    App->>App: 有効な BattleEvent を完全同時に解決する
+    App->>State: HP、撃破、王撃破を反映する
+    App->>State: 有効 BattleEvent の攻撃者/対象から unitTurnFlags を作成する
+    App->>Log: 撤退資格を得た駒を記録する
+
+    App->>Plan: MovementIntent を取得する
+    App->>State: 合法移動か再判定する
+    alt 撤退資格あり and 最寄り自軍拠点へ近づく
+        App->>State: retreating 状態を付ける
+    else 撤退中 and 距離が同じ/短い
+        App->>State: retreating 状態を維持する
+    else 撤退中 and 距離が長い
+        App->>State: retreating 状態を解除する
+    else 撤退中 and 自軍拠点へ入る
+        App->>State: 拠点内へ入り retreating 状態を解除する
+    else 撤退中 and stay
+        App->>State: retreating 状態を解除する
+    end
+    App->>State: 移動解決後に unitTurnFlags をクリアする
+```
+
+Phase 3-A では、攻撃フェーズで攻撃を選んで撤退解除する処理は実装しない。
+撤退解除は移動解決時の stay、遠ざかる合法移動、自軍拠点到達で行う。
+撤退中の駒は攻撃不可だが、被攻撃確率補正はまだ発生しない。
+
+撤退資格の参加者一覧は、有効な BattleEvent を確定した直後、命中判定より前に攻撃者と対象者の両方から作る。
+このため、攻撃が失敗してダメージが0でも、対象者が戦闘後に生存していれば撤退資格の判定対象になる。
+敵拠点3マス以内の判定には、BattleEvent 確定時点の位置を使う。
+
 # 1. この版の方針
 
 ## 1.1 登場人物
@@ -19,7 +61,7 @@ v0.1 は実装サービス名を細かく分けすぎていたため、まずは
 | 盤面データ | 現在の駒、拠点、橋、障害物、得点などの状態             |
 | 入力予定   | 同時行動を解決する前に、一時保存する入力               |
 | ログ       | 戦闘結果や水計などの記録                               |
-| 乱数       | 命中判定に使う乱数                                     |
+| 乱数       | 攻撃成功判定に使う乱数                                 |
 
 ## 1.2 v0.1との違い
 
@@ -233,32 +275,19 @@ sequenceDiagram
     participant Log as ログ
 
     App->>Plan: 全プレイヤーの攻撃予定を取得する
+    App->>State: 戦闘開始直前の鼓舞対象を確定する
     App->>App: 攻撃予定を戦闘イベントに変換する
-    App->>App: 攻撃階層ごとに並べる
+    App->>App: 各イベントの攻撃成功確率を決定する
 
-    loop 上位階層から順に処理
-        App->>State: 攻撃者が生存しているか確認する
-
-        alt 攻撃者が生存
-            App->>Dice: 命中判定を行う
-            Dice-->>App: 命中/失敗を返す
-
-            alt 命中
-                App->>State: 対象のHPを減らす
-                alt HPが0になる
-                    App->>State: 対象を撃破済みにする
-                    App->>Log: 撃破を記録する
-                else HPが残る
-                    App->>Log: ダメージを記録する
-                end
-            else 失敗
-                App->>Log: 攻撃失敗を記録する
-            end
-        else 攻撃者が撃破済み
-            App->>Log: 攻撃キャンセルを記録する
-        end
+    loop すべての有効な戦闘イベント
+        App->>Dice: 攻撃成功判定を行う
+        Dice-->>App: 成功/失敗を返す
+        App->>App: 判定結果を一時保存する
     end
 
+    App->>App: 対象ごとに成功数を合算する
+    App->>State: HP減少・撃破・王撃破をまとめて反映する
+    App->>Log: 成功/失敗/ダメージ/撃破を記録する
     App->>State: 戦闘後盤面を確定する
 ```
 
@@ -322,7 +351,7 @@ sequenceDiagram
         end
     end
 
-    Note over App,State: 撤退中は全兵種攻撃不可。歩兵のみ被命中率低下。
+    Note over App,State: 撤退中は全兵種攻撃不可。歩兵のみ被攻撃成功確率低下。
 ```
 
 ---
@@ -426,3 +455,10 @@ sequenceDiagram
 | ゲーム処理 | ScoreService         |
 
 ただし、最初から全部を図に出すと読みにくくなるため、この簡略版ではまとめています。
+# 占領シーケンス追補
+
+守備隊全滅: `battle_resolution → capture_resolution相当処理 → 所有権移転・要求生成 → reward_placement → 全要求完了/失効 → 次通常フェーズ`。
+
+戦闘中放棄: `movement_resolution → 放棄検出 → capture_resolution相当処理 → 即時所有権移転・要求生成 → reward_placement → 全要求完了/失効 → attack_input`。後入城待ちは行わない。
+
+単純放棄への入城: `movement_resolution → 所有権移転 → attack_input`。褒賞配置要求は生成しない。

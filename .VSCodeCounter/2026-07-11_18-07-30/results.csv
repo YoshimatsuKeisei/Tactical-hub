@@ -1,0 +1,37 @@
+"filename", "language", "Markdown", "TypeScript", "PostCSS", "JSON with Comments", "TypeScript JSX", "JSON", "HTML", "comment", "blank", "total"
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\index.html", "HTML", 0, 0, 0, 0, 0, 0, 12, 0, 1, 13
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\package-lock.json", "JSON", 0, 0, 0, 0, 0, 3050, 0, 0, 1, 3051
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\package.json", "JSON", 0, 0, 0, 0, 0, 20, 0, 0, 1, 21
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\App.tsx", "TypeScript JSX", 0, 0, 0, 0, 72, 0, 0, 0, 5, 77
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\components\BoardView.tsx", "TypeScript JSX", 0, 0, 0, 0, 86, 0, 0, 0, 6, 92
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\components\GameDebugPanel.tsx", "TypeScript JSX", 0, 0, 0, 0, 239, 0, 0, 0, 13, 252
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\components\TileView.tsx", "TypeScript JSX", 0, 0, 0, 0, 31, 0, 0, 0, 4, 35
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\components\UnitToken.tsx", "TypeScript JSX", 0, 0, 0, 0, 25, 0, 0, 0, 3, 28
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\__tests__\battle.test.ts", "TypeScript", 0, 336, 0, 0, 0, 0, 0, 0, 67, 403
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\__tests__\encouragement.test.ts", "TypeScript", 0, 101, 0, 0, 0, 0, 0, 0, 21, 122
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\__tests__\initialState.test.ts", "TypeScript", 0, 71, 0, 0, 0, 0, 0, 0, 18, 89
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\__tests__\map.test.ts", "TypeScript", 0, 45, 0, 0, 0, 0, 0, 0, 6, 51
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\__tests__\movement.test.ts", "TypeScript", 0, 101, 0, 0, 0, 0, 0, 0, 20, 121
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\__tests__\production.test.ts", "TypeScript", 0, 68, 0, 0, 0, 0, 0, 0, 13, 81
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\constants.ts", "TypeScript", 0, 19, 0, 0, 0, 0, 0, 0, 3, 22
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\engine\battle.ts", "TypeScript", 0, 323, 0, 0, 0, 0, 0, 0, 45, 368
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\engine\encouragement.ts", "TypeScript", 0, 61, 0, 0, 0, 0, 0, 0, 17, 78
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\engine\movement.ts", "TypeScript", 0, 152, 0, 0, 0, 0, 0, 0, 22, 174
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\engine\production.ts", "TypeScript", 0, 82, 0, 0, 0, 0, 0, 0, 11, 93
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\engine\turn.ts", "TypeScript", 0, 7, 0, 0, 0, 0, 0, 0, 2, 9
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\initialState.ts", "TypeScript", 0, 70, 0, 0, 0, 0, 0, 0, 9, 79
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\maps\testMap4p.ts", "TypeScript", 0, 110, 0, 0, 0, 0, 0, 0, 12, 122
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\types.ts", "TypeScript", 0, 149, 0, 0, 0, 0, 0, 0, 24, 173
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\utils\distance.ts", "TypeScript", 0, 3, 0, 0, 0, 0, 0, 0, 1, 4
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\game\utils\position.ts", "TypeScript", 0, 35, 0, 0, 0, 0, 0, 0, 9, 44
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\main.tsx", "TypeScript JSX", 0, 0, 0, 0, 9, 0, 0, 0, 2, 11
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\src\styles.css", "PostCSS", 0, 0, 310, 0, 0, 0, 0, 0, 61, 371
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\tsconfig.json", "JSON with Comments", 0, 0, 0, 20, 0, 0, 0, 0, 1, 21
+"c:\Users\jingc\Documents\Tactical hub\Tactical-hub\vite.config.ts", "TypeScript", 0, 5, 0, 0, 0, 0, 0, 0, 2, 7
+"c:\Users\jingc\Documents\Tactical hub\domain_model_v0.1.md", "Markdown", 550, 0, 0, 0, 0, 0, 0, 0, 171, 721
+"c:\Users\jingc\Documents\Tactical hub\map_spec_v0.1.md", "Markdown", 291, 0, 0, 0, 0, 0, 0, 0, 113, 404
+"c:\Users\jingc\Documents\Tactical hub\rule_spec_v0.1.md", "Markdown", 684, 0, 0, 0, 0, 0, 0, 0, 253, 937
+"c:\Users\jingc\Documents\Tactical hub\screen_transition_diagrams_v0.1.md", "Markdown", 53, 0, 0, 0, 0, 0, 0, 0, 16, 69
+"c:\Users\jingc\Documents\Tactical hub\sequence_diagrams_simple_v0.2.md", "Markdown", 318, 0, 0, 0, 0, 0, 0, 0, 98, 416
+"c:\Users\jingc\Documents\Tactical hub\state_transition_diagrams_v0.1.md", "Markdown", 206, 0, 0, 0, 0, 0, 0, 0, 84, 290
+"Total", "-", 2102, 1738, 310, 20, 462, 3070, 12, 0, 1135, 8849

@@ -302,8 +302,8 @@ describe("battle", () => {
     const king = state.units.find((unit) => unit.id === "home-2-king")!;
     expect(king.hp).toBe(3);
     king.hp = 1;
-    putUnit(state, "home-1-king", { kind: "tile", x: 18, y: 1 });
-    putUnit(state, "home-2-king", { kind: "tile", x: 19, y: 1 });
+    putUnit(state, "home-1-king", { kind: "tile", x: 17, y: 1 });
+    putUnit(state, "home-2-king", { kind: "tile", x: 18, y: 1 });
     const resolved = resolveBattle(
       saveAttack(state, "team-1", "home-1-king", "home-2-king"),
       () => 0,
@@ -419,17 +419,17 @@ describe("battle", () => {
     const state = createInitialGameState();
     addUnit(state, "team-1-infantry-test", "team-1", "infantry", {
       kind: "tile",
-      x: 4,
+      x: 3,
       y: 1,
     });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
       kind: "tile",
-      x: 5,
+      x: 4,
       y: 1,
     });
     addUnit(state, "team-3-infantry-test", "team-3", "infantry", {
       kind: "tile",
-      x: 5,
+      x: 3,
       y: 2,
     });
 
@@ -482,17 +482,17 @@ describe("battle", () => {
     const state = createInitialGameState();
     addUnit(state, "team-1-infantry-a", "team-1", "infantry", {
       kind: "tile",
-      x: 4,
+      x: 3,
       y: 1,
     });
     addUnit(state, "team-1-infantry-b", "team-1", "infantry", {
       kind: "tile",
-      x: 4,
+      x: 3,
       y: 2,
     });
     addUnit(state, "enemy-king", "team-2", "king", {
       kind: "tile",
-      x: 5,
+      x: 4,
       y: 1,
     });
 
@@ -736,7 +736,7 @@ describe("battle", () => {
     putUnit(state, "home-1-strategist", { kind: "tile", x: 5, y: 1 });
     addUnit(state, "team-2-archer-test", "team-2", "archer", {
       kind: "tile",
-      x: 4,
+      x: 3,
       y: 2,
     });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
@@ -819,12 +819,12 @@ describe("battle", () => {
     });
     addUnit(state, "enemy-favorable", "team-2", "archer", {
       kind: "tile",
-      x: 4,
-      y: 2,
+      x: 3,
+      y: 1,
     });
     addUnit(state, "enemy-king", "team-2", "king", {
       kind: "tile",
-      x: 5,
+      x: 3,
       y: 2,
     });
 
