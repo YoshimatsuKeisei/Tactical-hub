@@ -77,5 +77,6 @@ export function createInitialGameState(): GameState {
     logs: [{ id: "log-setup", turnNumber: 1, type: "setup", message: "Phase 1 initial state created." }],
     siegeStates: [],
     rewardPlacementRequests: [],
+    kingCampaignStates: [],
   };
 }

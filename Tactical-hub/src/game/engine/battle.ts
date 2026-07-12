@@ -13,8 +13,10 @@ import { positionKey } from "../utils/position";
 import { canAttackAcrossRoadTopology } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, isRetreating } from "./retreat";
-import { completeSiegeCapture } from "./capture";
+import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
+import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
+import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -379,9 +381,6 @@ function defeatUnit(state: GameState, target: Unit) {
   );
 
   if (target.type === "king") {
-    state.teams = state.teams.map((team) =>
-      team.id === target.ownerTeamId ? { ...team, status: "defeated" } : team,
-    );
     state.logs.push({
       id: `log-king-defeated-${state.logs.length}`,
       turnNumber: state.turnNumber,
@@ -487,6 +486,13 @@ export function resolveBattle(
     if (!base || target.ownerTeamId !== base.ownerTeamId || attacker.ownerTeamId === base.ownerTeamId) return [];
     return [{ baseId: base.id, defendingTeamId: base.ownerTeamId, attackingTeamId: attacker.ownerTeamId }];
   }));
+  recordKingAttackTurns(next, events.flatMap((event) => {
+    const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+    const target = next.units.find((unit) => unit.id === event.target.unitId);
+    return attacker && target?.type === "king" && attacker.ownerTeamId !== target.ownerTeamId
+      ? [{ kingUnitId: target.id, kingTeamId: target.ownerTeamId, attackingTeamId: attacker.ownerTeamId }]
+      : [];
+  }));
   const defenderCountsAtStart = new Map(next.bases.map((base) => [base.id, next.units.filter((unit) => isAlive(unit) && unit.ownerTeamId === base.ownerTeamId && unit.position.kind === "base" && unit.position.baseId === base.id).length]));
   const aliveAtBattleStart = new Set(
     next.units.filter(isAlive).map((unit) => unit.id),
@@ -517,6 +523,9 @@ export function resolveBattle(
       event.target.unitId,
       (damageByUnitId.get(event.target.unitId) ?? 0) + 1,
     );
+    const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+    const target = next.units.find((unit) => unit.id === event.target.unitId);
+    if (attacker && target?.type === "king") recordKingDamage(next, target.id, target.ownerTeamId, attacker.ownerTeamId, 1);
   }
 
   for (const [targetUnitId, damage] of damageByUnitId) {
@@ -606,6 +615,7 @@ export function resolveBattle(
     attackIntents: [],
   }));
   let captured = false;
+  const fallenBases: FallenBasePlan[] = [];
   for (const base of [...next.bases]) {
     if (!(defenderCountsAtStart.get(base.id) ?? 0)) continue;
     const remaining = next.units.some((unit) => isAlive(unit) && unit.ownerTeamId === base.ownerTeamId && unit.position.kind === "base" && unit.position.baseId === base.id);
@@ -619,8 +629,26 @@ export function resolveBattle(
       const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
       return target?.position.kind === "removed" && attacker ? [attacker.ownerTeamId] : [];
     }))];
-    captured = completeSiegeCapture(next, siege, candidates, "annihilation", rng) || captured;
+    const intendedCaptureTeamId = selectCaptureTeam(next, siege, candidates, rng);
+    fallenBases.push({ baseId: base.id, defendingTeamId: base.ownerTeamId, siege: structuredClone(siege), candidateTeamIds: candidates, intendedCaptureTeamId });
   }
+  const defeatedKings: DefeatedKingPlan[] = next.units.filter((unit) => unit.type === "king" && unit.position.kind === "removed" && aliveAtBattleStart.has(unit.id)).flatMap((king) => {
+    const campaign = getKingCampaign(next, king.id);
+    if (!campaign) return [];
+    const candidateTeamIds = [...new Set(hitEvents.flatMap((event) => {
+      if (event.target.unitId !== king.id) return [];
+      const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
+      return attacker ? [attacker.ownerTeamId] : [];
+    }))];
+    return [{ kingUnitId: king.id, kingTeamId: king.ownerTeamId, candidateTeamIds, campaign: structuredClone(campaign) }];
+  });
+  const kingDefeatApplied = resolveKingDefeats(next, defeatedKings, fallenBases, rng);
+  const kingDefeatedTeamIds = new Set(defeatedKings.map((plan) => plan.kingTeamId));
+  for (const fallen of fallenBases.filter((entry) => !kingDefeatApplied || !kingDefeatedTeamIds.has(entry.defendingTeamId))) {
+    captured = completeSiegeCapture(next, fallen.siege, fallen.candidateTeamIds, "annihilation", rng) || captured;
+  }
+  defeatTeamsWithoutBases(next, kingDefeatedTeamIds);
+  captured = captured || kingDefeatApplied;
   resetInactiveSieges(next);
   if (captured && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     next.phaseAfterRewards = "attack_input";

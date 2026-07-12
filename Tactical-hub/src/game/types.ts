@@ -34,7 +34,7 @@ export type UnitPosition =
   | { kind: "bridge"; bridgeId: string; cellIndex: number }
   | {
       kind: "removed";
-      reason: "defeated" | "water_trap" | "king_defeat_reset";
+      reason: "defeated" | "water_trap" | "king_defeat_reset" | "team_defeat";
     };
 
 export type Unit = {
@@ -206,12 +206,30 @@ export type SiegeState = {
   fallCandidateTeamIds: string[];
 };
 
-export type RewardType = "capture_reward" | "contribution_compensation";
+export type KingAttackContribution = {
+  teamId: string;
+  cumulativeDamage: number;
+  effectiveAttackTurns: number;
+};
+
+export type KingCampaignState = {
+  kingUnitId: string;
+  kingTeamId: string;
+  contributions: KingAttackContribution[];
+};
+
+export type RewardType =
+  | "capture_reward"
+  | "contribution_compensation"
+  | "king_conquest_reward"
+  | "king_contribution_compensation"
+  | "overridden_capture_compensation";
 export type RewardPlacementRequest = {
   id: string;
   teamId: string;
   rewardType: RewardType;
   sourceBaseId: string;
+  sourceKingUnitId?: string;
   destinationKind: "fixed" | "selectable";
   fixedBaseId?: string;
   eligibleBaseIds: string[];
@@ -240,5 +258,6 @@ export type GameState = {
   logs: GameLog[];
   siegeStates: SiegeState[];
   rewardPlacementRequests: RewardPlacementRequest[];
+  kingCampaignStates: KingCampaignState[];
   phaseAfterRewards?: "attack_input" | "movement_input";
 };

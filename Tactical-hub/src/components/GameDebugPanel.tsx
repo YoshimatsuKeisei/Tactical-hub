@@ -51,6 +51,14 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
     return getAttackCandidates(state, attackerUnitId).find((target) => target.unitId === targetUnitId);
   }
 
+  function rewardLabel(rewardType: (typeof state.rewardPlacementRequests)[number]["rewardType"]) {
+    if (rewardType === "capture_reward") return "占領褒賞";
+    if (rewardType === "contribution_compensation") return "攻略功労補償";
+    if (rewardType === "king_conquest_reward") return "王撃破褒賞";
+    if (rewardType === "king_contribution_compensation") return "王攻略補償";
+    return "占領褒賞変換補償";
+  }
+
   return (
     <aside className="debug-panel">
       <section className="status-card">
@@ -89,8 +97,8 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
           <h2>褒賞配置</h2>
           {pendingRewards.map((request) => (
             <div className="intent-item" key={request.id}>
-              <strong>{request.rewardType === "capture_reward" ? "占領褒賞" : "攻略功労補償"}</strong>
-              <span>対象: {request.teamId} / 発生元: {request.sourceBaseId}</span>
+              <strong>{rewardLabel(request.rewardType)}</strong>
+              <span>対象: {request.teamId} / 発生元: {request.sourceKingUnitId ?? request.sourceBaseId}</span>
               {request.eligibleBaseIds.map((baseId) => (
                 <div className="button-row" key={baseId}>
                   <span>{baseId}</span>

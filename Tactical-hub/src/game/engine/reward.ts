@@ -1,8 +1,29 @@
 import { PRODUCIBLE_UNIT_TYPES, UNIT_STATS } from "../constants";
-import type { GameState, Unit, UnitType } from "../types";
+import type { GameState, RewardPlacementRequest, RewardType, Unit, UnitType } from "../types";
 import { getAvailableProductionTypes } from "./production";
 
 export function getPendingRewardRequests(state: GameState) { return state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired); }
+
+export function enqueueRewardRequest(state: GameState, input: { teamId: string; rewardType: RewardType; sourceBaseId: string; sourceKingUnitId?: string; fixedBaseId?: string }) {
+  const destinationKind = input.fixedBaseId ? "fixed" as const : "selectable" as const;
+  const eligibleBaseIds = input.fixedBaseId ? [input.fixedBaseId] : state.bases.filter((base) => base.ownerTeamId === input.teamId && base.slots.some((slot) => !slot.unitId)).map((base) => base.id);
+  const request: RewardPlacementRequest = {
+    id: `reward-${state.turnNumber}-${state.rewardPlacementRequests.length}`,
+    teamId: input.teamId,
+    rewardType: input.rewardType,
+    sourceBaseId: input.sourceBaseId,
+    sourceKingUnitId: input.sourceKingUnitId,
+    destinationKind,
+    fixedBaseId: input.fixedBaseId,
+    eligibleBaseIds,
+    completed: false,
+    expired: eligibleBaseIds.length === 0,
+    expirationReason: eligibleBaseIds.length ? undefined : "no_available_owned_base_slot",
+  };
+  state.rewardPlacementRequests.push(request);
+  state.logs.push({ id: `log-reward-request-${state.logs.length}`, turnNumber: state.turnNumber, type: "reward", message: `褒賞配置要求: ${request.rewardType} / ${request.teamId}`, relatedIds: [request.id, request.teamId, input.sourceKingUnitId ?? input.sourceBaseId] });
+  return request;
+}
 
 export function placeRewardUnit(state: GameState, requestId: string, baseId: string, unitType: UnitType): GameState {
   const next = structuredClone(state) as GameState;

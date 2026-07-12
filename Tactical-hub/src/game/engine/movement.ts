@@ -20,6 +20,7 @@ import {
 } from "./retreat";
 import { completeSiegeCapture, transferBaseOwnership } from "./capture";
 import { getSiegeState, resetInactiveSieges } from "./siege";
+import { defeatTeamsWithoutBases } from "./defeat";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -529,6 +530,7 @@ export function resolveMovement(state: GameState): GameState {
       next.logs.push({ id: `log-simple-capture-${next.logs.length}`, turnNumber: next.turnNumber, type: "capture", message: `単純放棄された拠点への入城占領: ${base.id} → ${occupyingEnemy.ownerTeamId}`, relatedIds: [base.id, occupyingEnemy.ownerTeamId] });
     }
   }
+  defeatTeamsWithoutBases(next);
   next.turnNumber += 1;
   if (capturedWithRewards && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     next.phaseAfterRewards = "attack_input";

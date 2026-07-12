@@ -462,3 +462,7 @@ sequenceDiagram
 戦闘中放棄: `movement_resolution → 放棄検出 → capture_resolution相当処理 → 即時所有権移転・要求生成 → reward_placement → 全要求完了/失効 → attack_input`。後入城待ちは行わない。
 
 単純放棄への入城: `movement_resolution → 所有権移転 → attack_input`。褒賞配置要求は生成しない。
+
+王撃破: `battle_resolution → 全攻撃・全ダメージ確定 → 王撃破集合と通常拠点陥落結果を仮計算 → 単独王なら勢力消滅・全拠点継承、複数王なら全対象勢力消滅・拠点中立化 → 褒賞要求生成 → reward_placement → 次通常フェーズ`。
+
+王撃破と拠点陥落の同時発生では、通常占領チームと攻略功労補償を仮計算した後、一括継承を優先する。本来の占領褒賞だけを占領褒賞変換補償へ変え、攻略功労補償は維持する。

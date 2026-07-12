@@ -1,6 +1,7 @@
-import type { GameState, RewardPlacementRequest, SiegeState, Unit } from "../types";
+import type { GameState, SiegeState, Unit } from "../types";
 import { getBaseConnectedRoadSectionIds, getRoadSectionIdForPosition } from "../utils/roadTopology";
 import { resetSiegeState } from "./siege";
+import { enqueueRewardRequest } from "./reward";
 
 function alive(unit: Unit) { return unit.hp > 0 && unit.position.kind !== "removed"; }
 
@@ -51,15 +52,12 @@ export function selectCaptureTeam(state: GameState, siege: SiegeState, candidate
   return candidates.length === 1 ? candidates[0] : candidates[Math.min(candidates.length - 1, Math.floor(rng() * candidates.length))];
 }
 
-function requestRewards(state: GameState, siege: SiegeState, captureTeamId: string) {
+export function requestSiegeRewards(state: GameState, siege: SiegeState, captureTeamId: string, includeCaptureReward = true) {
   const captureKills = siege.teamRecords.find((entry) => entry.teamId === captureTeamId)?.defenderKills ?? 0;
-  const requests: RewardPlacementRequest[] = [{ id: `reward-${state.turnNumber}-${state.rewardPlacementRequests.length}`, teamId: captureTeamId, rewardType: "capture_reward", sourceBaseId: siege.baseId, destinationKind: "fixed", fixedBaseId: siege.baseId, eligibleBaseIds: [siege.baseId], completed: false, expired: false }];
+  if (includeCaptureReward) enqueueRewardRequest(state, { teamId: captureTeamId, rewardType: "capture_reward", sourceBaseId: siege.baseId, fixedBaseId: siege.baseId });
   for (const record of siege.teamRecords.filter((entry) => entry.teamId !== captureTeamId && entry.defenderKills > captureKills)) {
-    const eligibleBaseIds = state.bases.filter((base) => base.ownerTeamId === record.teamId && base.slots.some((slot) => !slot.unitId)).map((base) => base.id);
-    requests.push({ id: `reward-${state.turnNumber}-${state.rewardPlacementRequests.length + requests.length}`, teamId: record.teamId, rewardType: "contribution_compensation", sourceBaseId: siege.baseId, destinationKind: "selectable", eligibleBaseIds, completed: false, expired: eligibleBaseIds.length === 0, expirationReason: eligibleBaseIds.length ? undefined : "no_available_owned_base_slot" });
+    enqueueRewardRequest(state, { teamId: record.teamId, rewardType: "contribution_compensation", sourceBaseId: siege.baseId });
   }
-  state.rewardPlacementRequests.push(...requests);
-  for (const request of requests) state.logs.push({ id: `log-reward-request-${state.logs.length}`, turnNumber: state.turnNumber, type: "reward", message: `${request.rewardType === "capture_reward" ? "占領褒賞" : "攻略功労補償"}配置要求: ${request.teamId} / ${siege.baseId}`, relatedIds: [request.id, request.teamId, siege.baseId] });
 }
 
 export function transferBaseOwnership(state: GameState, baseId: string, teamId: string) {
@@ -81,6 +79,6 @@ export function completeSiegeCapture(state: GameState, siege: SiegeState, candid
   const snapshot = structuredClone(siege);
   state.logs.push({ id: `log-capture-${state.logs.length}`, turnNumber: state.turnNumber, type: "capture", message: `${reason === "annihilation" ? "守備隊全滅" : "戦闘中放棄"}による占領: ${snapshot.baseId} → ${teamId}`, relatedIds: [snapshot.baseId, teamId] });
   transferBaseOwnership(state, snapshot.baseId, teamId);
-  requestRewards(state, snapshot, teamId);
+  requestSiegeRewards(state, snapshot, teamId);
   return true;
 }

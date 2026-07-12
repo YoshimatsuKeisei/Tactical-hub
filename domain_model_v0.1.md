@@ -748,4 +748,8 @@ type ActiveObstacle = {
 
 `GameState` は拠点別 `SiegeState[]` と複数の `RewardPlacementRequest[]` を持つ。`SiegeState` は攻略対象所有チーム、チーム別撃破数・有効攻撃ターン数、最後の有効攻撃ターン、継続状態、守備駒損失、陥落決定候補を保持する。`RewardPlacementRequest` は要求ID、対象チーム、`capture_reward | contribution_compensation`、発生元拠点、固定・選択式配置先、兵種選択、完了・失効状態と理由を保持する。
 
+`GameState.kingCampaignStates` は王Unitごとの `KingCampaignState` を保持する。各状態は王Unit ID、所属チームID、チーム別 `cumulativeDamage` と `effectiveAttackTurns` を持つ。拠点攻略状態と異なり無攻撃リセットを持たない。
+
+`RewardPlacementRequest.rewardType` は既存2種に `king_conquest_reward`、`king_contribution_compensation`、`overridden_capture_compensation` を加える。王撃破褒賞は継承拠点固定、その他2種は対象チーム所有拠点から選択する。
+
 所有権移転は `Base.ownerTeamId`、旧・新チームの `controlledBaseIds` を一括更新し、攻略状態を即時リセットする。これにより `getBaseControllerTeamId` と騎兵の自軍拠点経由判定も新所有者を参照する。
