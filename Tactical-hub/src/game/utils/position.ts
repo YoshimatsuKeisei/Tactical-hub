@@ -24,12 +24,13 @@ export function getBaseAtTile(bases: Base[], x: number, y: number) {
 }
 
 export function getUnitAtBoardCell(state: GameState, x: number, y: number) {
-  return state.units.find(
-    (unit) =>
-      (unit.position.kind === "tile" || unit.position.kind === "water") &&
-      unit.position.x === x &&
-      unit.position.y === y,
-  );
+  return state.units.find((unit) => {
+    const position = unit.position;
+    if (position.kind === "tile" || position.kind === "water") return position.x === x && position.y === y;
+    if (position.kind !== "bridge") return false;
+    const cell = state.constructions.find((entry) => entry.id === position.bridgeId && entry.active)?.tiles[position.cellIndex];
+    return cell?.x === x && cell.y === y;
+  });
 }
 
 export function getUnitInBaseSlot(state: GameState, baseId: string, slotId: string) {

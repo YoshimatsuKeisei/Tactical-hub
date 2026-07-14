@@ -1,6 +1,7 @@
 import { PRODUCIBLE_UNIT_TYPES, UNIT_STATS } from "../constants";
 import type { GameState, RewardPlacementRequest, RewardType, Unit, UnitType } from "../types";
 import { getAvailableProductionTypes } from "./production";
+import { beginStrategistActionPhase } from "./construction";
 
 export function getPendingRewardRequests(state: GameState) { return state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired); }
 
@@ -38,7 +39,8 @@ export function placeRewardUnit(state: GameState, requestId: string, baseId: str
   slot.unitId = unit.id; next.units.push(unit); request.selectedUnitType = unitType; request.completed = true;
   next.logs.push({ id: `log-reward-place-${next.logs.length}`, turnNumber: next.turnNumber, type: "reward", message: `${request.rewardType === "capture_reward" ? "褒賞駒" : "補償駒"}の配置: ${request.teamId} / ${baseId}`, relatedIds: [request.id, unit.id, baseId] });
   if (!getPendingRewardRequests(next).length) {
-    next.phase = next.phaseAfterRewards ?? "movement_input"; next.turnState.phase = next.phase; next.phaseAfterRewards = undefined;
+    next.phase = next.phaseAfterRewards ?? "strategist_action_input"; next.turnState.phase = next.phase; next.phaseAfterRewards = undefined;
+    if (next.phase === "strategist_action_input") return beginStrategistActionPhase(next);
   }
   return next;
 }

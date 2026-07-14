@@ -41,6 +41,54 @@ export function getRoadSectionIdForPosition(
   return getRoadSectionIdAtTile(state, position.x, position.y);
 }
 
+function activeBridge(state: GameState, bridgeId: string) {
+  return state.constructions.find((entry) => entry.active && entry.kind === "bridge" && entry.id === bridgeId);
+}
+
+export function getBridgePositionAt(state: GameState, x: number, y: number): Extract<UnitPosition, { kind: "bridge" }> | undefined {
+  const bridge = state.constructions.find((entry) => entry.active && entry.kind === "bridge" && entry.tiles.some((cell) => cell.x === x && cell.y === y));
+  if (!bridge) return undefined;
+  return { kind: "bridge", bridgeId: bridge.id, cellIndex: bridge.tiles.findIndex((cell) => cell.x === x && cell.y === y) };
+}
+
+export function getPositionCoord(state: GameState, position: UnitPosition) {
+  if (position.kind === "tile" || position.kind === "water") return { x: position.x, y: position.y };
+  if (position.kind === "bridge") return activeBridge(state, position.bridgeId)?.tiles[position.cellIndex];
+  return undefined;
+}
+
+function bridgeRoadSections(state: GameState, bridgeId: string) {
+  const bridge = activeBridge(state, bridgeId);
+  const sections = new Set<string>();
+  for (const cell of bridge?.tiles ?? []) for (const { dx, dy } of adjacentDirections) {
+    if (Math.abs(dx) + Math.abs(dy) !== 1) continue;
+    const section = getRoadSectionIdAtTile(state, cell.x + dx, cell.y + dy);
+    if (section) sections.add(section);
+  }
+  return [...sections];
+}
+
+function positionRoadSections(state: GameState, position: UnitPosition) {
+  if (position.kind === "tile") return [getRoadSectionIdForPosition(state, position)].filter((id): id is string => Boolean(id));
+  if (position.kind === "bridge") return bridgeRoadSections(state, position.bridgeId);
+  if (position.kind === "base") return getBaseConnectedRoadSectionIds(state, position.baseId);
+  return [];
+}
+
+export function areRoadSectionsDynamicallyConnected(state: GameState, a: string, b: string) {
+  if (a === b) return true;
+  const adjacency = new Map<string, Set<string>>();
+  for (const bridge of state.constructions.filter((entry) => entry.active && entry.kind === "bridge")) {
+    const sections = bridgeRoadSections(state, bridge.id);
+    for (const left of sections) for (const right of sections) if (left !== right) {
+      if (!adjacency.has(left)) adjacency.set(left, new Set()); adjacency.get(left)!.add(right);
+    }
+  }
+  const queue = [a], seen = new Set(queue);
+  while (queue.length) { const current = queue.shift()!; for (const next of adjacency.get(current) ?? []) { if (next === b) return true; if (!seen.has(next)) { seen.add(next); queue.push(next); } } }
+  return false;
+}
+
 /**
  * 拠点の周囲8方向に存在する道区間IDを取得する。
  *
@@ -104,6 +152,14 @@ export function canMoveBetweenGroundPositions(
     return true;
   }
 
+  if (from.kind === "bridge" || to.kind === "bridge") {
+    const fromCoord = getPositionCoord(state, from), toCoord = getPositionCoord(state, to);
+    if (!fromCoord || !toCoord || Math.max(Math.abs(fromCoord.x - toCoord.x), Math.abs(fromCoord.y - toCoord.y)) !== 1) return false;
+    if (from.kind === "bridge" && to.kind === "bridge") return from.bridgeId === to.bridgeId;
+    const tilePosition = from.kind === "tile" ? from : to.kind === "tile" ? to : undefined;
+    const bridgePosition = from.kind === "bridge" ? from : to.kind === "bridge" ? to : undefined;
+    return Boolean(tilePosition && bridgePosition && positionRoadSections(state, bridgePosition).some((section) => section === getRoadSectionIdForPosition(state, tilePosition)));
+  }
   if (from.kind !== "tile" || to.kind !== "tile") {
     return false;
   }
@@ -115,7 +171,7 @@ export function canMoveBetweenGroundPositions(
   return Boolean(
     fromRoadSectionId &&
     toRoadSectionId &&
-    fromRoadSectionId === toRoadSectionId,
+    areRoadSectionsDynamicallyConnected(state, fromRoadSectionId, toRoadSectionId),
   );
 }
 
@@ -138,22 +194,10 @@ export function canAttackAcrossRoadTopology(
   /*
    * 地上同士は同一道区間のみ攻撃可能。
    */
-  if (attackerPosition.kind === "tile" && targetPosition.kind === "tile") {
-    const attackerRoadSectionId = getRoadSectionIdForPosition(
-      state,
-      attackerPosition,
-    );
-
-    const targetRoadSectionId = getRoadSectionIdForPosition(
-      state,
-      targetPosition,
-    );
-
-    return Boolean(
-      attackerRoadSectionId &&
-      targetRoadSectionId &&
-      attackerRoadSectionId === targetRoadSectionId,
-    );
+  if (["tile", "bridge"].includes(attackerPosition.kind) && ["tile", "bridge"].includes(targetPosition.kind)) {
+    const attackerSections = positionRoadSections(state, attackerPosition);
+    const targetSections = positionRoadSections(state, targetPosition);
+    return attackerSections.some((left) => targetSections.some((right) => areRoadSectionsDynamicallyConnected(state, left, right)));
   }
 
   /*

@@ -12,7 +12,9 @@ import { chebyshevDistance } from "../utils/distance";
 import { positionKey } from "../utils/position";
 import { canAttackAcrossRoadTopology } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
-import { buildUnitTurnFlag, isRetreating } from "./retreat";
+import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
+import { getMovementCandidates } from "./movement";
+import { beginStrategistActionPhase } from "./construction";
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
@@ -104,6 +106,10 @@ function positionCells(state: GameState, position: UnitPosition) {
     return (
       state.bases.find((base) => base.id === position.baseId)?.coords ?? []
     );
+  if (position.kind === "bridge") {
+    const cell = state.constructions.find((entry) => entry.active && entry.id === position.bridgeId)?.tiles[position.cellIndex];
+    return cell ? [cell] : [];
+  }
   return [];
 }
 
@@ -197,10 +203,13 @@ function getAttackDenominators(
     context,
   );
   if (baseSuccessDenominator === null) return undefined;
-  const finalSuccessDenominator = applyEncouragementToDenominator(
+  let finalSuccessDenominator = applyEncouragementToDenominator(
     baseSuccessDenominator,
     encouraged,
   );
+  if (target.type === "infantry" && isRetreating(target)) {
+    finalSuccessDenominator *= 2;
+  }
   return { baseSuccessDenominator, finalSuccessDenominator, encouraged };
 }
 
@@ -325,6 +334,8 @@ export function saveAttackIntent(
   state: GameState,
   intent: AttackIntent,
 ): GameState {
+  const attacker = state.units.find((unit) => unit.id === intent.attackerUnitId);
+  if (attacker && isRetreating(attacker) && !intent.pass) return state;
   const existing = state.turnState.actionIntents.find(
     (candidate) => candidate.teamId === intent.teamId,
   );
@@ -648,12 +659,28 @@ export function resolveBattle(
     captured = completeSiegeCapture(next, fallen.siege, fallen.candidateTeamIds, "annihilation", rng) || captured;
   }
   defeatTeamsWithoutBases(next, kingDefeatedTeamIds);
+  next.unitTurnFlags = next.unitTurnFlags.map((flag) => {
+    if (!flag.retreatEligible) return flag;
+    const unit = next.units.find((candidate) => candidate.id === flag.unitId);
+    const team = unit ? next.teams.find((candidate) => candidate.id === unit.ownerTeamId) : undefined;
+    const currentRoute = unit ? getLegalRetreatRouteDistance(next, unit.ownerTeamId, unit.position) : undefined;
+    const hasRetreatStep = Boolean(unit && currentRoute && getMovementCandidates(next, unit.id).some((destination) => {
+      const route = getLegalRetreatRouteDistance(next, unit.ownerTeamId, destination);
+      return route && route.distance < currentRoute.distance;
+    }));
+    if (unit && isAlive(unit) && team?.status === "active" && currentRoute && hasRetreatStep) return flag;
+    return { ...flag, retreatEligible: false, retreatEligibilityReason: "no legal route to a currently controlled friendly base" };
+  });
+  next.units = next.units.map((unit) => isAlive(unit) && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "active"
+    ? unit
+    : { ...unit, statuses: unit.statuses.filter((status) => status.kind !== "retreating") });
+  clearInvalidRetreatTargets(next);
   captured = captured || kingDefeatApplied;
   resetInactiveSieges(next);
   if (captured && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
-    next.phaseAfterRewards = "attack_input";
+    next.phaseAfterRewards = "strategist_action_input";
     next.phase = "reward_placement";
-  } else next.phase = "attack_input";
+  } else next.phase = "strategist_action_input";
   next.turnState.phase = next.phase;
-  return next;
+  return next.phase === "strategist_action_input" ? beginStrategistActionPhase(next) : next;
 }

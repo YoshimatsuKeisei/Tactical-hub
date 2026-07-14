@@ -7,6 +7,8 @@ import type {
   UnitTurnFlags,
 } from "../types";
 import { chebyshevDistance } from "../utils/distance";
+import { getTile, positionKey } from "../utils/position";
+import { canMoveBetweenGroundPositions, getBaseConnectedRoadSectionIds, getBridgePositionAt, getPositionCoord, getRoadSectionIdForPosition } from "../utils/roadTopology";
 
 type DistanceResult = {
   distance: number;
@@ -86,14 +88,18 @@ export function isRetreating(unit: Unit) {
   return unit.statuses.some((status) => status.kind === "retreating");
 }
 
-export function withRetreatingStatus(unit: Unit, retreating: boolean): Unit {
+export function getRetreatTargetBaseId(unit: Unit) {
+  return unit.statuses.find((status) => status.kind === "retreating")?.retreatTargetBaseId;
+}
+
+export function withRetreatingStatus(unit: Unit, retreating: boolean, retreatTargetBaseId?: string): Unit {
   const statuses = unit.statuses.filter(
     (status) => status.kind !== "retreating",
   );
   return retreating
     ? {
         ...unit,
-        statuses: [...statuses, { kind: "retreating" } satisfies UnitStatus],
+        statuses: [...statuses, { kind: "retreating", retreatTargetBaseId: retreatTargetBaseId ?? getRetreatTargetBaseId(unit) ?? "" } satisfies UnitStatus],
       }
     : { ...unit, statuses };
 }
@@ -179,6 +185,113 @@ export function getNearestFriendlyBaseDistance(
     position,
     getControlledFriendlyBases(state, teamId),
   );
+}
+
+/** Shortest legal ground route to a currently controlled friendly base.
+ * Enemy and neutral bases are deliberately not graph nodes, so they cannot be
+ * crossed merely because they are geometrically close to the unit. */
+export function getLegalRetreatRouteDistance(
+  state: GameState,
+  teamId: string,
+  position: UnitPosition,
+  targetBaseId?: string,
+): DistanceResult | undefined {
+  const friendlyBases = getControlledFriendlyBases(state, teamId).filter((base) => !targetBaseId || base.id === targetBaseId);
+  if (!friendlyBases.length || position.kind === "removed" || position.kind === "water") return undefined;
+  if (position.kind === "base") {
+    return friendlyBases.some((base) => base.id === position.baseId)
+      ? { distance: 0, baseIds: [position.baseId] }
+      : undefined;
+  }
+
+  const startSection = position.kind === "tile" ? getRoadSectionIdForPosition(state, position) : undefined;
+  if (position.kind === "tile" && !startSection) return undefined;
+  const friendlyBySection = new Map<string, Base[]>();
+  for (const base of friendlyBases) {
+    for (const section of getBaseConnectedRoadSectionIds(state, base.id)) {
+      const entries = friendlyBySection.get(section) ?? [];
+      entries.push(base);
+      friendlyBySection.set(section, entries);
+    }
+  }
+
+  type GroundPosition = Extract<UnitPosition, { kind: "tile" | "bridge" }>;
+  type Node = { position: GroundPosition; distance: number };
+  const queue: Node[] = [{ position, distance: 0 }];
+  const seen = new Set([positionKey(position)]);
+  let best = Number.POSITIVE_INFINITY;
+  const baseIds = new Set<string>();
+  const directions = [-1, 0, 1].flatMap((dx) => [-1, 0, 1].map((dy) => ({ dx, dy }))).filter(({ dx, dy }) => dx || dy);
+
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (current.distance >= best) continue;
+    const section = current.position.kind === "tile" ? getRoadSectionIdForPosition(state, current.position) : undefined;
+    const currentCoord = getPositionCoord(state, current.position);
+    for (const base of section ? friendlyBySection.get(section) ?? [] : []) {
+      const adjacent = Boolean(currentCoord && base.coords.some((cell) => chebyshevDistance(cell, currentCoord) === 1));
+      if (!adjacent) continue;
+      const distance = current.distance + 1;
+      if (distance < best) { best = distance; baseIds.clear(); }
+      if (distance === best) baseIds.add(base.id);
+    }
+    for (const { dx, dy } of directions) {
+      if (!currentCoord) continue;
+      const x = currentCoord.x + dx, y = currentCoord.y + dy;
+      const bridge = getBridgePositionAt(state, x, y);
+      const candidate: GroundPosition = bridge ?? { kind: "tile", x, y };
+      const tile = getTile(state.map.tiles, x, y);
+      if (!bridge && (!tile || !["road", "baseGate", "reorganize"].includes(tile.terrain))) continue;
+      if (state.constructions.some((entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((cell) => cell.x === x && cell.y === y))) continue;
+      if (!canMoveBetweenGroundPositions(state, current.position, candidate)) continue;
+      const key = positionKey(candidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      queue.push({ position: candidate, distance: current.distance + 1 });
+    }
+  }
+  return Number.isFinite(best) ? { distance: best, baseIds: [...baseIds].sort() } : undefined;
+}
+
+export function getRetreatTargetBaseIdForMove(
+  state: GameState,
+  unit: Unit,
+  from: UnitPosition,
+  to: UnitPosition,
+) {
+  return getControlledFriendlyBases(state, unit.ownerTeamId)
+    .map((base) => ({
+      baseId: base.id,
+      before: getLegalRetreatRouteDistance(state, unit.ownerTeamId, from, base.id)?.distance,
+      after: getLegalRetreatRouteDistance(state, unit.ownerTeamId, to, base.id)?.distance,
+    }))
+    .filter((entry): entry is { baseId: string; before: number; after: number } => entry.before !== undefined && entry.after !== undefined && entry.after < entry.before)
+    .sort((a, b) => a.after - b.after || a.before - b.before || a.baseId.localeCompare(b.baseId))[0]?.baseId;
+}
+
+export function clearInvalidRetreatTargets(state: GameState) {
+  const invalidUnitIds = new Set<string>();
+  state.units = state.units.map((unit) => {
+    if (!isRetreating(unit)) return unit;
+    const targetBaseId = getRetreatTargetBaseId(unit);
+    const team = state.teams.find((candidate) => candidate.id === unit.ownerTeamId);
+    const valid = Boolean(
+      targetBaseId &&
+      isAlive(unit) &&
+      team?.status === "active" &&
+      state.bases.some((base) => base.id === targetBaseId) &&
+      getBaseControllerTeamId(state, state.bases.find((base) => base.id === targetBaseId)!) === unit.ownerTeamId &&
+      getLegalRetreatRouteDistance(state, unit.ownerTeamId, unit.position, targetBaseId),
+    );
+    if (valid) return unit;
+    invalidUnitIds.add(unit.id);
+    return withRetreatingStatus(unit, false);
+  });
+  if (invalidUnitIds.size) {
+    state.unitTurnFlags = state.unitTurnFlags.map((flag) => invalidUnitIds.has(flag.unitId)
+      ? { ...flag, retreatEligible: false, retreatEligibilityReason: "retreat target is no longer valid" }
+      : flag);
+  }
 }
 
 export function getNearestEnemyBaseDistance(
@@ -267,11 +380,10 @@ export function getRetreatDirectionIndicators(
   const retreating = isRetreating(unit);
   if (!retreating && !isUnitRetreatEligible(state, unit)) return [];
 
-  const friendly = getNearestFriendlyBaseDistance(
-    state,
-    unit.ownerTeamId,
-    unit.position,
-  );
+  const retreatTargetBaseId = retreating ? getRetreatTargetBaseId(unit) : undefined;
+  const friendly = retreatTargetBaseId
+    ? getLegalRetreatRouteDistance(state, unit.ownerTeamId, unit.position, retreatTargetBaseId)
+    : getLegalRetreatRouteDistance(state, unit.ownerTeamId, unit.position);
   const hostile = getNearestEnemyBaseDistance(
     state,
     unit.ownerTeamId,
@@ -441,19 +553,25 @@ export function getRetreatMoveEffect(
     getControlledFriendlyBases(state, unit.ownerTeamId).some(
       (base) => base.id === to.baseId,
     );
-  if (toFriendlyBase) return isRetreating(unit) ? "complete" : "none";
+  if (toFriendlyBase) return isRetreating(unit)
+    ? to.kind === "base" && to.baseId === getRetreatTargetBaseId(unit) ? "complete" : "release"
+    : "none";
   if (to.kind === "water" || to.kind === "removed")
     return isRetreating(unit) ? "release" : "none";
 
-  const before = getNearestFriendlyBaseDistance(state, unit.ownerTeamId, from);
-  const after = getNearestFriendlyBaseDistance(state, unit.ownerTeamId, to);
-  if (!before || !after) return "none";
+  const before = getLegalRetreatRouteDistance(state, unit.ownerTeamId, from);
+  const after = getLegalRetreatRouteDistance(state, unit.ownerTeamId, to);
+  if (!before || !after) return isRetreating(unit) ? "release" : "none";
 
   if (isRetreating(unit)) {
-    return after.distance <= before.distance ? "maintain" : "release";
+    const targetBaseId = getRetreatTargetBaseId(unit);
+    if (!targetBaseId) return "release";
+    const targetBefore = getLegalRetreatRouteDistance(state, unit.ownerTeamId, from, targetBaseId);
+    const targetAfter = getLegalRetreatRouteDistance(state, unit.ownerTeamId, to, targetBaseId);
+    return targetBefore && targetAfter && targetAfter.distance <= targetBefore.distance ? "maintain" : "release";
   }
 
-  if (isUnitRetreatEligible(state, unit) && after.distance < before.distance)
+  if (isUnitRetreatEligible(state, unit) && getRetreatTargetBaseIdForMove(state, unit, from, to))
     return "start";
   return "none";
 }

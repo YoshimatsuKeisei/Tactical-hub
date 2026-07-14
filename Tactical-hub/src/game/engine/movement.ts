@@ -10,11 +10,15 @@ import {
 } from "../utils/position";
 import {
   canMoveBetweenGroundPositions,
+  getBridgePositionAt,
+  getPositionCoord,
   isGroundPositionConnectedToBase,
 } from "../utils/roadTopology";
 import {
   getBaseControllerTeamId,
+  clearInvalidRetreatTargets,
   getRetreatMoveEffect,
+  getRetreatTargetBaseIdForMove,
   isRetreating,
   withRetreatingStatus,
 } from "./retreat";
@@ -85,8 +89,8 @@ function isFriendlyControlledBase(
 
 function isGroundPosition(
   position: UnitPosition,
-): position is Extract<UnitPosition, { kind: "tile" | "water" }> {
-  return position.kind === "tile" || position.kind === "water";
+): position is Extract<UnitPosition, { kind: "tile" | "water" | "bridge" }> {
+  return position.kind === "tile" || position.kind === "water" || position.kind === "bridge";
 }
 
 function positionForTile(
@@ -98,8 +102,8 @@ function positionForTile(
   const tile = getTile(state.map.tiles, x, y);
   if (!tile || tile.terrain === "outside" || tile.terrain === "base")
     return undefined;
-  const position: UnitPosition =
-    tile.terrain === "lake" ? { kind: "water", x, y } : { kind: "tile", x, y };
+  const bridge = getBridgePositionAt(state, x, y);
+  const position: UnitPosition = bridge ?? (tile.terrain === "lake" ? { kind: "water", x, y } : { kind: "tile", x, y });
   return isLegalDestination(state, unit, position) ? position : undefined;
 }
 
@@ -108,11 +112,17 @@ export function isLegalDestination(
   unit: Unit,
   destination: UnitPosition,
 ): boolean {
+  if (destination.kind === "bridge") {
+    const bridge = state.constructions.find((entry) => entry.active && entry.kind === "bridge" && entry.id === destination.bridgeId);
+    const cell = bridge?.tiles[destination.cellIndex];
+    return Boolean(cell && !getUnitAtBoardCell(state, cell.x, cell.y) && !state.constructions.some((entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((tile) => tile.x === cell.x && tile.y === cell.y)));
+  }
   if (destination.kind === "tile" || destination.kind === "water") {
     const tile = getTile(state.map.tiles, destination.x, destination.y);
     if (!tile || tile.terrain === "outside" || tile.terrain === "base")
       return false;
     if (getUnitAtBoardCell(state, destination.x, destination.y)) return false;
+    if (state.constructions.some((entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((cell) => cell.x === destination.x && cell.y === destination.y))) return false;
     if (destination.kind === "water")
       return tile.terrain === "lake" && canEnterWater(unit);
     return ["road", "baseGate", "reorganize"].includes(tile.terrain);
@@ -169,7 +179,7 @@ export function getMovementPaths(
   if (
     !unit ||
     unit.position.kind === "removed" ||
-    unit.position.kind === "bridge"
+    false
   )
     return [];
 
@@ -237,9 +247,12 @@ export function getMovementPaths(
 
     if (!isGroundPosition(current.position)) continue;
 
+    const currentCoord = getPositionCoord(state, current.position);
+    if (!currentCoord) continue;
+
     for (const { dx, dy } of directions) {
-      const x = current.position.x + dx;
-      const y = current.position.y + dy;
+      const x = currentCoord.x + dx;
+      const y = currentCoord.y + dy;
       const key = tileKey(x, y);
       const nextCost = current.cost + 1;
 
@@ -413,9 +426,10 @@ function applyRetreatStatus(
   state: GameState,
   unitId: string,
   retreating: boolean,
+  retreatTargetBaseId?: string,
 ) {
   state.units = state.units.map((unit) =>
-    unit.id === unitId ? withRetreatingStatus(unit, retreating) : unit,
+    unit.id === unitId ? withRetreatingStatus(unit, retreating, retreatTargetBaseId) : unit,
   );
 }
 
@@ -469,9 +483,12 @@ export function resolveMovement(state: GameState): GameState {
         intent.from,
         intent.to,
       );
+      const retreatTargetBaseId = retreatEffect === "start"
+        ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to)
+        : undefined;
       applyPosition(next, unit.id, intent.to);
       if (retreatEffect === "start" || retreatEffect === "maintain")
-        applyRetreatStatus(next, unit.id, true);
+        applyRetreatStatus(next, unit.id, true, retreatTargetBaseId);
       if (retreatEffect === "release" || retreatEffect === "complete")
         applyRetreatStatus(next, unit.id, false);
 
@@ -531,6 +548,7 @@ export function resolveMovement(state: GameState): GameState {
     }
   }
   defeatTeamsWithoutBases(next);
+  clearInvalidRetreatTargets(next);
   next.turnNumber += 1;
   if (capturedWithRewards && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     next.phaseAfterRewards = "attack_input";

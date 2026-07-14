@@ -753,3 +753,19 @@ type ActiveObstacle = {
 `RewardPlacementRequest.rewardType` は既存2種に `king_conquest_reward`、`king_contribution_compensation`、`overridden_capture_compensation` を加える。王撃破褒賞は継承拠点固定、その他2種は対象チーム所有拠点から選択する。
 
 所有権移転は `Base.ownerTeamId`、旧・新チームの `controlledBaseIds` を一括更新し、攻略状態を即時リセットする。これにより `getBaseControllerTeamId` と騎兵の自軍拠点経由判定も新所有者を参照する。
+# Phase 3-B 撤退状態の不変条件（2026-07-14）
+
+- `retreatEligible` は戦闘開始時の参加資格と、最終盤面における生存・active所属・現在所有自軍拠点への合法経路・距離が短くなる合法移動先の両方を満たす場合だけ成立する。
+- `retreating` は撤退資格を持つ駒が自軍拠点への合法経路距離を短縮する移動を実行した後の正式状態であり、固定した `retreatTargetBaseId` を保持する。死亡、チーム敗北、目標拠点到着、継戦移動、待機、目標の所有権喪失または目標までの合法経路消失で除去される。
+- `retreatTargetBaseId` が失効しても、別の到達可能拠点へ自動再割当てしない。失効時は撤退状態と資格を解除して通常状態へ戻す。
+- 撤退経路探索は参照処理であり、GameState、拠点所有権、撤退フラグを変更しない。
+- 防御対象が `infantry` かつ `retreating` の場合、既存最終命中確率へ0.5を一度だけ乗算する。
+# Phase 4-A 建設状態（2026-07-15）
+
+- `Construction` はID、`bridge | obstacle`、所有チーム、管理軍師、構成座標、設置ターン、active状態を持つ。権利はチーム共有ではなく管理軍師単位である。
+- `StrategistActionIntent` はチーム、軍師、アクション種別、対象座標または既存設備IDを持つ。未解決Intentは盤面地形や移動可能性を変更しない。
+- `StrategistCooldown` は管理軍師と設備種別ごとの絶対再使用ターンを持つ。橋と障害物は独立する。
+- 橋による道路接続はGameState上のactive設備から動的に導出する。障害物は移動グラフだけから除外し、攻撃グラフには影響させない。
+- `strategistSubmittedTeamIds` が全activeチームを含むまで設備状態を解決しない。
+- デバッグUIの操作チームIDはGameStateの所有権を変更せず、Production入力対象、軍師入力対象、自チーム用プレビューの表示スコープだけを切り替える。
+- 橋候補の同一性は構成タイル列の順方向・逆方向に依存しない正規化キーで判定する。

@@ -78,5 +78,9 @@ export function createInitialGameState(): GameState {
     siegeStates: [],
     rewardPlacementRequests: [],
     kingCampaignStates: [],
+    constructions: [],
+    strategistActionIntents: [],
+    strategistSubmittedTeamIds: [],
+    strategistCooldowns: [],
   };
 }

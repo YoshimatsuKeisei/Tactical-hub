@@ -8,9 +8,12 @@ import {
 import { resolveMovement, saveMovementIntent } from "../engine/movement";
 import {
   getBaseControllerTeamId,
+  clearInvalidRetreatTargets,
   getEnemyControlledBases,
   getNearestFriendlyBaseDistance,
+  getLegalRetreatRouteDistance,
   getRetreatDirectionIndicators,
+  getRetreatTargetBaseId,
   getRetreatDebugInfo,
   getRetreatMoveEffect,
   getUnitTurnFlags,
@@ -102,17 +105,39 @@ function markRetreatEligible(state: GameState, unitId: string) {
   ];
 }
 
+function makeNorthRelayHostile(state: GameState) {
+  state.bases.find((base) => base.id === "neutral-north")!.ownerTeamId = "team-2";
+  state.teams.find((team) => team.id === "team-2")!.controlledBaseIds.push("neutral-north");
+}
+
 describe("retreat", () => {
+  it("uses legal road routes and treats neutral or enemy bases as blockers", () => {
+    const neutralBlocked = createInitialGameState();
+    expect(getLegalRetreatRouteDistance(neutralBlocked, "team-1", { kind: "tile", x: 18, y: 1 })).toBeUndefined();
+
+    const enemyBlocked = createInitialGameState();
+    makeNorthRelayHostile(enemyBlocked);
+    expect(getLegalRetreatRouteDistance(enemyBlocked, "team-1", { kind: "tile", x: 18, y: 1 })).toBeUndefined();
+
+    const reachable = createInitialGameState();
+    expect(getLegalRetreatRouteDistance(reachable, "team-1", { kind: "tile", x: 8, y: 1 })).toMatchObject({ baseIds: ["home-1"] });
+
+    reachable.bases.find((base) => base.id === "home-2")!.ownerTeamId = "team-1";
+    reachable.teams.find((team) => team.id === "team-1")!.controlledBaseIds.push("home-2");
+    expect(getLegalRetreatRouteDistance(reachable, "team-1", { kind: "tile", x: 18, y: 1 })).toMatchObject({ baseIds: ["home-2"] });
+  });
+
   it("marks a surviving battle participant near an enemy base as retreat eligible", () => {
     const state = createInitialGameState();
+    makeNorthRelayHostile(state);
     addUnit(state, "team-1-infantry-test", "team-1", "infantry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
       kind: "tile",
-      x: 17,
+      x: 9,
       y: 1,
     });
 
@@ -141,14 +166,15 @@ describe("retreat", () => {
 
   it("marks a surviving target as retreat eligible even when the incoming attack misses", () => {
     const state = createInitialGameState();
+    makeNorthRelayHostile(state);
     addUnit(state, "team-1-cavalry-test", "team-1", "cavalry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     addUnit(state, "team-2-archer-test", "team-2", "archer", {
       kind: "tile",
-      x: 17,
+      x: 9,
       y: 1,
     });
 
@@ -165,22 +191,23 @@ describe("retreat", () => {
       wasTargetedInPreviousBattle: true,
       survivedPreviousBattle: true,
       enemyBaseWithin3AtBattleStart: true,
-      enemyBaseDistanceAtBattleStart: 1,
+      enemyBaseDistanceAtBattleStart: 2,
       retreatEligible: true,
     });
   });
 
   it("marks a surviving target as retreat eligible when the incoming attack hits but does not defeat it", () => {
     const state = createInitialGameState();
+    makeNorthRelayHostile(state);
     const cavalry = addUnit(state, "team-1-cavalry-test", "team-1", "cavalry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     cavalry.hp = 2;
     addUnit(state, "team-2-archer-test", "team-2", "archer", {
       kind: "tile",
-      x: 17,
+      x: 9,
       y: 1,
     });
 
@@ -199,14 +226,15 @@ describe("retreat", () => {
 
   it("keeps retreat eligibility in the final resolveBattle state after intent clearing and phase update", () => {
     const state = createInitialGameState();
+    makeNorthRelayHostile(state);
     addUnit(state, "team-1-cavalry-test", "team-1", "cavalry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     addUnit(state, "team-2-archer-test", "team-2", "archer", {
       kind: "tile",
-      x: 17,
+      x: 9,
       y: 1,
     });
 
@@ -218,7 +246,7 @@ describe("retreat", () => {
       (unit) => unit.id === "team-1-cavalry-test",
     )!;
 
-    expect(finalState.phase).toBe("attack_input");
+    expect(finalState.phase).toBe("strategist_action_input");
     expect(
       finalState.turnState.actionIntents.flatMap(
         (intent) => intent.attackIntents ?? [],
@@ -234,7 +262,7 @@ describe("retreat", () => {
       participatedInBattle: true,
       survivedBattle: true,
       battlePositionKind: "tile",
-      nearestHostileBaseId: "home-2",
+      nearestHostileBaseId: "neutral-north",
       nearestHostileBaseController: "team-2",
       withinHostileBaseRangeAtBattle: true,
     });
@@ -242,14 +270,15 @@ describe("retreat", () => {
 
   it("marks the attacker as retreat eligible when it also satisfies the hostile-base range condition", () => {
     const state = createInitialGameState();
+    makeNorthRelayHostile(state);
     addUnit(state, "team-1-archer-test", "team-1", "archer", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     addUnit(state, "team-2-cavalry-test", "team-2", "cavalry", {
       kind: "tile",
-      x: 17,
+      x: 9,
       y: 1,
     });
 
@@ -312,7 +341,7 @@ describe("retreat", () => {
       getUnitTurnFlags(resolvedAtThree, "team-1-cavalry-test"),
     ).toMatchObject({
       enemyBaseDistanceAtBattleStart: 3,
-      retreatEligible: true,
+      retreatEligible: false,
     });
 
     const atFour = createInitialGameState();
@@ -362,7 +391,7 @@ describe("retreat", () => {
     expect(getUnitTurnFlags(resolved, "team-1-cavalry-test")).toMatchObject({
       wasTargetedInPreviousBattle: true,
       enemyBaseDistanceAtBattleStart: 1,
-      retreatEligible: true,
+      retreatEligible: false,
     });
   });
 
@@ -479,7 +508,7 @@ describe("retreat", () => {
     const state = createInitialGameState();
     const unit = addUnit(state, "team-1-infantry-test", "team-1", "infantry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     markRetreatEligible(state, unit.id);
@@ -495,10 +524,10 @@ describe("retreat", () => {
     const state = createInitialGameState();
     const unit = addUnit(state, "team-1-infantry-test", "team-1", "infantry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
-    unit.statuses.push({ kind: "retreating" });
+    unit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
 
     expect(
       getRetreatDirectionIndicators(state, unit.id).map(
@@ -511,7 +540,7 @@ describe("retreat", () => {
     const state = createInitialGameState();
     const unit = addUnit(state, "team-1-infantry-test", "team-1", "infantry", {
       kind: "tile",
-      x: 18,
+      x: 8,
       y: 1,
     });
     markRetreatEligible(state, unit.id);
@@ -519,7 +548,7 @@ describe("retreat", () => {
     expect(
       getRetreatMoveEffect(state, unit, unit.position, {
         kind: "tile",
-        x: 17,
+        x: 7,
         y: 1,
       }),
     ).toBe("start");
@@ -529,7 +558,7 @@ describe("retreat", () => {
         teamId: "team-1",
         unitId: unit.id,
         from: unit.position,
-        to: { kind: "tile", x: 17, y: 1 },
+        to: { kind: "tile", x: 7, y: 1 },
         stay: false,
       }),
     );
@@ -539,7 +568,44 @@ describe("retreat", () => {
         resolved.units.find((candidate) => candidate.id === unit.id)!,
       ),
     ).toBe(true);
+    expect(getRetreatTargetBaseId(resolved.units.find((candidate) => candidate.id === unit.id)!)).toBe("home-1");
     expect(resolved.unitTurnFlags).toEqual([]);
+  });
+
+  it("clears an invalid retreat target without automatically switching to another friendly base", () => {
+    const state = createInitialGameState();
+    const unit = addUnit(state, "team-1-retreater", "team-1", "infantry", { kind: "tile", x: 8, y: 1 });
+    addUnit(state, "team-2-nearby", "team-2", "infantry", { kind: "tile", x: 9, y: 1 });
+    unit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
+    state.bases.find((base) => base.id === "neutral-north")!.ownerTeamId = "team-1";
+    state.teams.find((team) => team.id === "team-1")!.controlledBaseIds.push("neutral-north");
+    state.bases.find((base) => base.id === "home-1")!.ownerTeamId = "team-2";
+    state.teams.find((team) => team.id === "team-1")!.controlledBaseIds = ["neutral-north"];
+    state.teams.find((team) => team.id === "team-2")!.controlledBaseIds.push("home-1");
+
+    expect(getLegalRetreatRouteDistance(state, "team-1", unit.position, "neutral-north")).toBeDefined();
+    clearInvalidRetreatTargets(state);
+
+    const cleared = state.units.find((candidate) => candidate.id === unit.id)!;
+    expect(isRetreating(cleared)).toBe(false);
+    expect(getRetreatTargetBaseId(cleared)).toBeUndefined();
+    expect(getAttackCandidates(state, unit.id).map((target) => target.unitId)).toContain("team-2-nearby");
+  });
+
+  it("uses the battle-start retreat snapshot, then clears an invalid target before the next input phase", () => {
+    const state = createInitialGameState();
+    const defender = addUnit(state, "team-1-retreater", "team-1", "infantry", { kind: "tile", x: 8, y: 1 });
+    defender.hp = 2;
+    defender.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-2" });
+    addUnit(state, "team-2-attacker", "team-2", "infantry", { kind: "tile", x: 9, y: 1 });
+    const resolved = resolveBattle(saveAttack(state, "team-2", "team-2-attacker", defender.id), () => 0.08);
+
+    expect(resolved.logs.some((log) => log.message.includes("final 1/12") && log.message.includes("result: success"))).toBe(true);
+    const finalDefender = resolved.units.find((unit) => unit.id === defender.id)!;
+    expect(finalDefender.hp).toBe(1);
+    expect(isRetreating(finalDefender)).toBe(false);
+    expect(getRetreatTargetBaseId(finalDefender)).toBeUndefined();
+    expect(resolved.phase).toBe("strategist_action_input");
   });
 
   it("does not start retreat after a failed movement resolution", () => {
@@ -580,15 +646,15 @@ describe("retreat", () => {
       "team-1-infantry-test",
       "team-1",
       "infantry",
-      { kind: "tile", x: 17, y: 1 },
+      { kind: "tile", x: 8, y: 1 },
     );
-    maintainingUnit.statuses.push({ kind: "retreating" });
+    maintainingUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     const maintained = resolveMovement(
       saveMovementIntent(maintain, {
         teamId: "team-1",
         unitId: maintainingUnit.id,
         from: maintainingUnit.position,
-        to: { kind: "tile", x: 16, y: 1 },
+        to: { kind: "tile", x: 7, y: 1 },
         stay: false,
       }),
     );
@@ -604,15 +670,15 @@ describe("retreat", () => {
       "team-1-infantry-test",
       "team-1",
       "infantry",
-      { kind: "tile", x: 17, y: 1 },
+      { kind: "tile", x: 7, y: 1 },
     );
-    releasingUnit.statuses.push({ kind: "retreating" });
+    releasingUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     const released = resolveMovement(
       saveMovementIntent(release, {
         teamId: "team-1",
         unitId: releasingUnit.id,
         from: releasingUnit.position,
-        to: { kind: "tile", x: 18, y: 1 },
+        to: { kind: "tile", x: 8, y: 1 },
         stay: false,
       }),
     );
@@ -632,7 +698,7 @@ describe("retreat", () => {
       "infantry",
       { kind: "tile", x: 17, y: 1 },
     );
-    stayingUnit.statuses.push({ kind: "retreating" });
+    stayingUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     const stayed = resolveMovement(
       saveMovementIntent(stay, {
         teamId: "team-1",
@@ -654,7 +720,7 @@ describe("retreat", () => {
       "infantry",
       { kind: "tile", x: 3, y: 1 },
     );
-    enteringUnit.statuses.push({ kind: "retreating" });
+    enteringUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     const entered = resolveMovement(
       saveMovementIntent(baseEntry, {
         teamId: "team-1",
@@ -681,7 +747,7 @@ describe("retreat", () => {
       "infantry",
       { kind: "tile", x: 18, y: 1 },
     );
-    retreating.statuses.push({ kind: "retreating" });
+    retreating.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
       kind: "tile",
       x: 17,
@@ -695,20 +761,16 @@ describe("retreat", () => {
       ),
     ).toContain(retreating.id);
 
-    const resolved = resolveBattle(
-      saveAttack(state, "team-1", retreating.id, "team-2-infantry-test"),
-      () => 0,
-    );
+    const saved = saveAttack(state, "team-1", retreating.id, "team-2-infantry-test");
+    expect(saved.turnState.actionIntents.flatMap((entry) => entry.attackIntents)).toEqual([]);
+    const resolved = resolveBattle(saved, () => 0);
 
     expect(
       resolved.units.find((unit) => unit.id === "team-2-infantry-test")?.hp,
     ).toBe(1);
-    expect(
-      resolved.logs.some((log) => log.message.includes("retreating")),
-    ).toBe(true);
   });
 
-  it("does not apply a retreat defense probability change", () => {
+  it("halves the final hit probability against formally retreating infantry", () => {
     const state = createInitialGameState();
     const retreating = addUnit(
       state,
@@ -717,7 +779,7 @@ describe("retreat", () => {
       "infantry",
       { kind: "tile", x: 18, y: 1 },
     );
-    retreating.statuses.push({ kind: "retreating" });
+    retreating.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
       kind: "tile",
       x: 17,
@@ -728,7 +790,25 @@ describe("retreat", () => {
       (target) => target.unitId === retreating.id,
     )?.finalSuccessDenominator;
 
-    expect(denominator).toBe(6);
+    expect(denominator).toBe(12);
+  });
+
+  it("preserves matchup and encouragement before halving retreating infantry hit probability", () => {
+    const denominatorFor = (attackerType: UnitType, encouraged = false) => {
+      const state = createInitialGameState();
+      const defender = addUnit(state, `defender-${attackerType}`, "team-1", "infantry", { kind: "tile", x: 5, y: 1 });
+      defender.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
+      addUnit(state, `attacker-${attackerType}`, "team-2", attackerType, { kind: "tile", x: 6, y: 1 });
+      if (encouraged) {
+        const strategist = addUnit(state, "team-2-strategist-test", "team-2", "strategist", { kind: "tile", x: 7, y: 1 });
+        strategist.role = "encourage";
+      }
+      return getAttackCandidates(state, `attacker-${attackerType}`).find((target) => target.unitId === defender.id)?.finalSuccessDenominator;
+    };
+    expect(denominatorFor("cavalry")).toBe(10);
+    expect(denominatorFor("infantry")).toBe(12);
+    expect(denominatorFor("archer")).toBe(14);
+    expect(denominatorFor("cavalry", true)).toBe(8);
   });
 
   it("allows a unit to attack again after retreat is explicitly ended by stay", () => {
@@ -740,7 +820,7 @@ describe("retreat", () => {
       "infantry",
       { kind: "tile", x: 18, y: 1 },
     );
-    retreating.statuses.push({ kind: "retreating" });
+    retreating.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
       kind: "tile",
       x: 17,
@@ -776,7 +856,7 @@ describe("retreat", () => {
       "infantry",
       { kind: "tile", x: 18, y: 1 },
     );
-    retreating.statuses.push({ kind: "retreating" });
+    retreating.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
     addUnit(state, "team-2-infantry-test", "team-2", "infantry", {
       kind: "tile",
       x: 17,

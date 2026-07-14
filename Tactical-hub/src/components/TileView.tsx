@@ -15,6 +15,9 @@ type Props = {
   highlighted: boolean;
   attackHighlighted?: boolean;
   encourageHighlighted?: boolean;
+  constructionPreview?: boolean;
+  bridge?: boolean;
+  obstacle?: boolean;
   onClick: () => void;
   children?: ReactNode;
 };
@@ -24,6 +27,9 @@ export function TileView({
   highlighted,
   attackHighlighted = false,
   encourageHighlighted = false,
+  constructionPreview = false,
+  bridge = false,
+  obstacle = false,
   onClick,
   children,
 }: Props) {
@@ -31,6 +37,7 @@ export function TileView({
     <button
       className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""} ${attackHighlighted ? "attack-highlighted" : ""} ${
         encourageHighlighted ? "encourage-highlighted" : ""
+      } ${constructionPreview ? "construction-preview" : ""} ${bridge ? "active-bridge" : ""} ${obstacle ? "active-obstacle" : ""
       }`}
       onClick={onClick}
     >

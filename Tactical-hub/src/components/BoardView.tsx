@@ -2,6 +2,7 @@ import { getMovementCandidates } from "../game/engine/movement";
 import { getAttackCandidates } from "../game/engine/battle";
 import { getEncourageAreaTileKeys } from "../game/engine/encouragement";
 import { getRetreatDirectionIndicators } from "../game/engine/retreat";
+import { getBridgeCandidates, getConstructionAt, getObstacleCandidates, getOwnStrategistPreview } from "../game/engine/construction";
 import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
 import { getUnitAtBoardCell, positionKey } from "../game/utils/position";
 import { TileView } from "./TileView";
@@ -13,9 +14,12 @@ type Props = {
   onSelectUnit: (unitId: string) => void;
   onChooseDestination: (position: UnitPosition) => void;
   onChooseAttackTarget: (target: AttackTarget) => void;
+  manualTeamId: string;
+  constructionMode?: "bridge" | "obstacle";
+  onChooseConstruction: (unitId: string, kind: "bridge" | "obstacle", tiles: { x: number; y: number }[]) => void;
 };
 
-export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget }: Props) {
+export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction }: Props) {
   const selectedCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
@@ -24,6 +28,12 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
       ? getEncourageAreaTileKeys(state, selectedUnit)
       : new Set<string>();
   const retreatIndicators = getRetreatDirectionIndicators(state, selectedUnitId);
+  const previewKeys = new Set(getOwnStrategistPreview(state, manualTeamId).map((entry) => `${entry.x},${entry.y}`));
+  const constructionCandidates = selectedUnit?.ownerTeamId === manualTeamId && selectedUnit.role === "builder"
+    ? constructionMode === "bridge" ? getBridgeCandidates(state, selectedUnit.id) : constructionMode === "obstacle" ? getObstacleCandidates(state, selectedUnit.id).map((cell) => [cell]) : []
+    : [];
+  const constructionByTile = new Map<string, { x: number; y: number }[]>();
+  for (const candidate of constructionCandidates) for (const cell of candidate) if (!constructionByTile.has(`${cell.x},${cell.y}`)) constructionByTile.set(`${cell.x},${cell.y}`, candidate);
   const candidateByKey = new Map(selectedCandidates.map((candidate) => [positionKey(candidate), candidate]));
   const attackByUnitId = new Map(attackCandidates.map((candidate) => [candidate.unitId, candidate]));
 
@@ -46,6 +56,8 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
           candidateByKey.get(positionKey({ kind: "water", x: tile.x, y: tile.y }));
         const baseCandidate = base ? selectedCandidates.find((candidate) => candidate.kind === "base" && candidate.baseId === base.id) : undefined;
         const destination = tileCandidate ?? baseCandidate;
+        const bridge = getConstructionAt(state, tile.x, tile.y, "bridge");
+        const obstacle = getConstructionAt(state, tile.x, tile.y, "obstacle");
 
         return (
           <TileView
@@ -54,8 +66,13 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
             highlighted={Boolean(destination)}
             attackHighlighted={Boolean(attackTarget)}
             encourageHighlighted={encourageAreaKeys.has(`${tile.x},${tile.y}`)}
+            constructionPreview={previewKeys.has(`${tile.x},${tile.y}`) || constructionByTile.has(`${tile.x},${tile.y}`)}
+            bridge={Boolean(bridge)}
+            obstacle={Boolean(obstacle)}
             onClick={() => {
-              if (attackTarget) onChooseAttackTarget(attackTarget);
+              const construction = constructionByTile.get(`${tile.x},${tile.y}`);
+              if (construction && selectedUnit && constructionMode) onChooseConstruction(selectedUnit.id, constructionMode, construction);
+              else if (attackTarget) onChooseAttackTarget(attackTarget);
               else if (destination) onChooseDestination(destination);
             }}
           >

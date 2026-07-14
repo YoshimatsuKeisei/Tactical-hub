@@ -17,9 +17,9 @@ export function getAvailableProductionTypes(state: GameState, teamId: string, ba
       );
     }
     if (unitType === "strategist") {
-      return !state.units.some(
-        (unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.position.kind !== "removed",
-      );
+      return state.units.filter(
+        (unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.hp > 0 && unit.position.kind !== "removed",
+      ).length < 2;
     }
     return true;
   });

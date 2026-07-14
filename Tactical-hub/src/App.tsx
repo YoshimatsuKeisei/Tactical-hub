@@ -7,10 +7,13 @@ import { resolveProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
 import type { AttackTarget, UnitPosition } from "./game/types";
+import { saveStrategistActionIntent } from "./game/engine/construction";
 
 export default function App() {
   const [state, setState] = useState(createInitialGameState);
   const [selectedUnitId, setSelectedUnitId] = useState<string>();
+  const [manualTeamId, setManualTeamId] = useState("team-1");
+  const [constructionMode, setConstructionMode] = useState<"bridge" | "obstacle">();
   const selectedUnit = useMemo(
     () => state.units.find((unit) => unit.id === selectedUnitId),
     [selectedUnitId, state.units],
@@ -56,12 +59,23 @@ export default function App() {
             onSelectUnit={setSelectedUnitId}
             onChooseDestination={chooseDestination}
             onChooseAttackTarget={chooseAttackTarget}
+            manualTeamId={manualTeamId}
+            constructionMode={constructionMode}
+            onChooseConstruction={(unitId, kind, tiles) => {
+              const unit = state.units.find((candidate) => candidate.id === unitId);
+              if (!unit) return;
+              setState(saveStrategistActionIntent(state, { teamId: unit.ownerTeamId, strategistUnitId: unit.id, action: kind === "bridge" ? "place_bridge" : "place_obstacle", tiles }));
+            }}
           />
         </div>
       </div>
       <GameDebugPanel
         state={state}
         selectedUnitId={selectedUnitId}
+        manualTeamId={manualTeamId}
+        onManualTeamChange={setManualTeamId}
+        constructionMode={constructionMode}
+        onConstructionModeChange={setConstructionMode}
         onResolveProduction={() => setState(resolveProduction(state))}
         onResolveMovement={() => {
           setState(resolveMovement(state));

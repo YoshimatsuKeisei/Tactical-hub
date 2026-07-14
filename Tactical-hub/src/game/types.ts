@@ -21,9 +21,29 @@ export type UnitType =
   | "strategist";
 
 export type StrategistRole = "encourage" | "builder" | "teleporter";
+export type BoardCoord = { x: number; y: number };
+export type ConstructionKind = "bridge" | "obstacle";
+export type Construction = {
+  id: string;
+  kind: ConstructionKind;
+  ownerTeamId: string;
+  managerUnitId: string;
+  tiles: BoardCoord[];
+  placedTurn: number;
+  active: boolean;
+};
+export type StrategistActionKind = "place_bridge" | "reset_bridge" | "place_obstacle" | "reset_obstacle" | "pass";
+export type StrategistActionIntent = {
+  teamId: string;
+  strategistUnitId: string;
+  action: StrategistActionKind;
+  tiles?: BoardCoord[];
+  constructionId?: string;
+};
+export type StrategistCooldown = { strategistUnitId: string; kind: ConstructionKind; availableFromTurn: number };
 
 export type UnitStatus =
-  | { kind: "retreating"; remainingTurns?: number; sourceId?: string }
+  | { kind: "retreating"; retreatTargetBaseId: string; remainingTurns?: number; sourceId?: string }
   | { kind: "encouraged"; remainingTurns?: number; sourceId?: string }
   | { kind: "cannot_attack"; remainingTurns?: number; sourceId?: string };
 
@@ -178,14 +198,16 @@ export type TurnState = {
     | "attack_input"
     | "battle_resolution"
     | "capture_resolution"
-    | "reward_placement";
+    | "reward_placement"
+    | "strategist_action_input"
+    | "strategist_action_resolution";
   actionIntents: ActionIntent[];
 };
 
 export type GameLog = {
   id: string;
   turnNumber: number;
-  type: "setup" | "production" | "movement" | "battle" | "siege" | "capture" | "reward";
+  type: "setup" | "production" | "movement" | "battle" | "siege" | "capture" | "reward" | "construction";
   message: string;
   relatedIds?: string[];
 };
@@ -259,5 +281,9 @@ export type GameState = {
   siegeStates: SiegeState[];
   rewardPlacementRequests: RewardPlacementRequest[];
   kingCampaignStates: KingCampaignState[];
-  phaseAfterRewards?: "attack_input" | "movement_input";
+  phaseAfterRewards?: "attack_input" | "movement_input" | "strategist_action_input";
+  constructions: Construction[];
+  strategistActionIntents: StrategistActionIntent[];
+  strategistSubmittedTeamIds: string[];
+  strategistCooldowns: StrategistCooldown[];
 };

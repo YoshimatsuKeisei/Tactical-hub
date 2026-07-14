@@ -15,25 +15,30 @@ import {
 } from "../game/engine/retreat";
 import type { GameState } from "../game/types";
 import { positionKey } from "../game/utils/position";
+import { getBridgeCandidates, getBuilderUnits, getManagedConstruction, getObstacleCandidates, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
 
 type Props = {
   state: GameState;
   selectedUnitId?: string;
+  manualTeamId: string;
+  onManualTeamChange: (teamId: string) => void;
+  constructionMode?: "bridge" | "obstacle";
+  onConstructionModeChange: (mode: "bridge" | "obstacle" | undefined) => void;
   onResolveMovement: () => void;
   onResolveBattle: () => void;
   onResolveProduction: () => void;
   onStateChange: (state: GameState) => void;
 };
 
-export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange }: Props) {
+export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange }: Props) {
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
   const movementIntents = state.turnState.actionIntents.flatMap((intent) => intent.movementIntents);
   const attackIntents = state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []);
   const productionIntents = state.turnState.actionIntents.flatMap((intent) => intent.productionChoices);
   const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const movementCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
-  const activeTeam = state.teams.find((team) => team.id === "team-1")!;
-  const controlledBases = state.bases.filter((base) => activeTeam.controlledBaseIds.includes(base.id));
+  const activeTeam = state.teams.find((team) => team.id === manualTeamId && team.status === "active") ?? state.teams.find((team) => team.status === "active")!;
+  const controlledBases = state.bases.filter((base) => activeTeam.controlledBaseIds.includes(base.id) || base.ownerTeamId === activeTeam.id);
   const encouragedUnitIds = getEncouragedUnitIds(state);
   const encourageStrategists = state.units.filter(
     (unit) => unit.type === "strategist" && unit.role === "encourage" && unit.position.kind !== "removed",
@@ -90,6 +95,15 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
         <button className="primary sticky-action" onClick={onResolveMovement} disabled={state.phase === "reward_placement"}>
           Resolve Movement
         </button>
+      </section>
+
+      <section>
+        <h2>Manual Team</h2>
+        <div className="button-row">
+          {state.teams.filter((team) => team.status === "active").map((team) => (
+            <button key={team.id} className={team.id === activeTeam.id ? "primary" : "secondary"} onClick={() => onManualTeamChange(team.id)}>{team.name}</button>
+          ))}
+        </div>
       </section>
 
       {state.phase === "reward_placement" ? (
@@ -365,6 +379,30 @@ export function GameDebugPanel({ state, selectedUnitId, onResolveMovement, onRes
         <button className="primary battle-action" onClick={onResolveBattle} disabled={state.phase === "reward_placement"}>
           Resolve Battle
         </button>
+      </section>
+
+      <section>
+        <h2>Strategist Actions</h2>
+        {selectedUnit?.type === "strategist" ? <div className="button-row">
+          <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "builder" } : unit) })}>Set Builder Role</button>
+          <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "encourage" } : unit) })}>Set Encourage Role</button>
+        </div> : null}
+        <p>Operating: {activeTeam.name}</p>
+        <div className="button-row"><button className={constructionMode === "bridge" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("bridge")}>Choose bridge on board</button><button className={constructionMode === "obstacle" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("obstacle")}>Choose obstacle on board</button><button onClick={() => onConstructionModeChange(undefined)}>Clear board mode</button></div>
+        {getBuilderUnits(state, activeTeam.id).map((builder) => {
+          const bridge = getManagedConstruction(state, builder.id, "bridge");
+          const obstacle = getManagedConstruction(state, builder.id, "obstacle");
+          return <div className="intent-item" key={builder.id}>
+            <strong>{builder.id}</strong>
+            {!bridge ? getBridgeCandidates(state, builder.id).map((tiles) => <button key={JSON.stringify(tiles)} onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "place_bridge", tiles }))}>Bridge {tiles.map((cell) => `${cell.x},${cell.y}`).join("-")}</button>) : <button onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "reset_bridge", constructionId: bridge.id }))}>Reset bridge</button>}
+            {!obstacle ? getObstacleCandidates(state, builder.id).map((cell) => <button key={`${cell.x},${cell.y}`} onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "place_obstacle", tiles: [cell] }))}>Obstacle {cell.x},{cell.y}</button>) : <button onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "reset_obstacle", constructionId: obstacle.id }))}>Reset obstacle</button>}
+            <button onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "pass" }))}>Pass</button>
+          </div>;
+        })}
+        <h3>Saved intents: {activeTeam.name}</h3>
+        {state.strategistActionIntents.filter((intent) => intent.teamId === activeTeam.id).map((intent) => <div className="intent-item" key={intent.strategistUnitId}><strong>{intent.strategistUnitId}</strong><span>{intent.action}</span><span>{intent.tiles?.map((cell) => `${cell.x},${cell.y}`).join(" / ") ?? intent.constructionId ?? "-"}</span></div>)}
+        {state.teams.filter((team) => team.status === "active").map((team) => { const submitted = state.strategistSubmittedTeamIds.includes(team.id); return <div className="intent-item" key={team.id}><strong>{team.name}</strong><span>{submitted ? "Submitted" : "Not submitted"}</span><button onClick={() => onStateChange(submitStrategistActions(state, team.id))} disabled={submitted || state.phase !== "strategist_action_input"}>{submitted ? "Submitted" : `Submit ${team.name}`}</button></div>; })}
+        <button onClick={() => onStateChange(resolveStrategistActions(state))} disabled={!state.teams.filter((team) => team.status === "active").every((team) => state.strategistSubmittedTeamIds.includes(team.id)) || state.phase !== "strategist_action_resolution"}>Resolve Strategists</button>
       </section>
 
       <section>

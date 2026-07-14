@@ -453,3 +453,9 @@ pre {
     border-top: 1px solid #c9d0d6;
   }
 }
+.tile.construction-preview::after {
+  content: ""; position: absolute; inset: 2px; background: rgba(160, 160, 170, .45); pointer-events: none; z-index: 2;
+}
+.tile.active-bridge { background: #9a795c; }
+.tile.active-bridge::before { content: "橋"; position: absolute; color: #fff; opacity: .8; }
+.tile.active-obstacle::after { content: "×"; position: absolute; inset: 0; color: #8b2020; font-weight: 900; font-size: 1.4rem; pointer-events: none; z-index: 3; }
