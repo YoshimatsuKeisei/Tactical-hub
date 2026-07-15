@@ -4,7 +4,8 @@ import { getEncourageAreaTileKeys } from "../game/engine/encouragement";
 import { getRetreatDirectionIndicators } from "../game/engine/retreat";
 import { getBridgeCandidates, getConstructionAt, getObstacleCandidates, getOwnStrategistPreview } from "../game/engine/construction";
 import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
-import { getUnitAtBoardCell, positionKey } from "../game/utils/position";
+import { getUnitAtBoardCell, tileKey } from "../game/utils/position";
+import { getPositionCoord } from "../game/utils/roadTopology";
 import { TileView } from "./TileView";
 import { UnitToken } from "./UnitToken";
 
@@ -18,6 +19,18 @@ type Props = {
   constructionMode?: "bridge" | "obstacle";
   onChooseConstruction: (unitId: string, kind: "bridge" | "obstacle", tiles: { x: number; y: number }[]) => void;
 };
+
+export function getMovementCandidateByBoardCell(
+  state: GameState,
+  candidates: UnitPosition[],
+) {
+  const byCell = new Map<string, UnitPosition>();
+  for (const candidate of candidates) {
+    const coord = getPositionCoord(state, candidate);
+    if (coord) byCell.set(tileKey(coord.x, coord.y), candidate);
+  }
+  return byCell;
+}
 
 export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction }: Props) {
   const selectedCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
@@ -34,7 +47,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
     : [];
   const constructionByTile = new Map<string, { x: number; y: number }[]>();
   for (const candidate of constructionCandidates) for (const cell of candidate) if (!constructionByTile.has(`${cell.x},${cell.y}`)) constructionByTile.set(`${cell.x},${cell.y}`, candidate);
-  const candidateByKey = new Map(selectedCandidates.map((candidate) => [positionKey(candidate), candidate]));
+  const candidateByCell = getMovementCandidateByBoardCell(state, selectedCandidates);
   const attackByUnitId = new Map(attackCandidates.map((candidate) => [candidate.unitId, candidate]));
 
   function getBaseUnitForTile(base: Base, x: number, y: number) {
@@ -51,9 +64,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
         const base = tile.baseId ? state.bases.find((candidate) => candidate.id === tile.baseId) : undefined;
         const baseUnit = base ? getBaseUnitForTile(base, tile.x, tile.y) : undefined;
         const attackTarget = boardUnit ? attackByUnitId.get(boardUnit.id) : baseUnit ? attackByUnitId.get(baseUnit.id) : undefined;
-        const tileCandidate =
-          candidateByKey.get(positionKey({ kind: "tile", x: tile.x, y: tile.y })) ??
-          candidateByKey.get(positionKey({ kind: "water", x: tile.x, y: tile.y }));
+        const tileCandidate = candidateByCell.get(tileKey(tile.x, tile.y));
         const baseCandidate = base ? selectedCandidates.find((candidate) => candidate.kind === "base" && candidate.baseId === base.id) : undefined;
         const destination = tileCandidate ?? baseCandidate;
         const bridge = getConstructionAt(state, tile.x, tile.y, "bridge");

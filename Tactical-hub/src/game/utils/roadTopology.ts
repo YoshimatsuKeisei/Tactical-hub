@@ -157,8 +157,9 @@ export function canMoveBetweenGroundPositions(
     if (!fromCoord || !toCoord || Math.max(Math.abs(fromCoord.x - toCoord.x), Math.abs(fromCoord.y - toCoord.y)) !== 1) return false;
     if (from.kind === "bridge" && to.kind === "bridge") return from.bridgeId === to.bridgeId;
     const tilePosition = from.kind === "tile" ? from : to.kind === "tile" ? to : undefined;
-    const bridgePosition = from.kind === "bridge" ? from : to.kind === "bridge" ? to : undefined;
-    return Boolean(tilePosition && bridgePosition && positionRoadSections(state, bridgePosition).some((section) => section === getRoadSectionIdForPosition(state, tilePosition)));
+    return Boolean(
+      tilePosition && getRoadSectionIdForPosition(state, tilePosition),
+    );
   }
   if (from.kind !== "tile" || to.kind !== "tile") {
     return false;
@@ -168,11 +169,10 @@ export function canMoveBetweenGroundPositions(
 
   const toRoadSectionId = getRoadSectionIdForPosition(state, to);
 
-  return Boolean(
-    fromRoadSectionId &&
-    toRoadSectionId &&
-    areRoadSectionsDynamicallyConnected(state, fromRoadSectionId, toRoadSectionId),
-  );
+  // Movement is expanded one physical board cell at a time. A bridge may make
+  // two road sections part of one attack network, but it must never turn every
+  // adjacent pair in those sections into a one-step movement edge.
+  return Boolean(fromRoadSectionId && fromRoadSectionId === toRoadSectionId);
 }
 
 /**

@@ -81,6 +81,29 @@ function makeBaseFriendly(state: GameState, baseId: string) {
 }
 
 describe("movement", () => {
+  function addActiveBridge(
+    state: GameState,
+    ownerTeamId: string,
+    id = "remote-bridge",
+    tiles = [
+      { x: 7, y: 2 },
+      { x: 7, y: 3 },
+      { x: 7, y: 4 },
+      { x: 7, y: 5 },
+      { x: 7, y: 6 },
+    ],
+  ) {
+    state.constructions.push({
+      id,
+      kind: "bridge",
+      ownerTeamId,
+      managerUnitId: `${ownerTeamId}-builder`,
+      tiles,
+      placedTurn: 1,
+      active: true,
+    });
+  }
+
   it("does not allow normal units to move onto lake cells", () => {
     const state = createInitialGameState();
     putUnitOnTile(state, "home-1-strategist", { kind: "tile", x: 4, y: 1 });
@@ -213,6 +236,160 @@ describe("movement", () => {
 
     expect(getMovementCandidates(state, unit.id).map(positionKey)).toContain(
       "5,1",
+    );
+  });
+
+  it("treats every active bridge cell as a neutral, traversable movement node", () => {
+    const state = createInitialGameState();
+    addActiveBridge(state, "team-2", "enemy-bridge", [
+      { x: 4, y: 2 },
+      { x: 4, y: 3 },
+    ]);
+    const infantry = addUnit(state, "bridge-infantry", "team-1", "infantry", {
+      kind: "tile",
+      x: 4,
+      y: 1,
+    });
+
+    expect(getMovementCandidates(state, infantry.id)).toContainEqual({
+      kind: "bridge",
+      bridgeId: "enemy-bridge",
+      cellIndex: 0,
+    });
+
+    const diagonalInfantry = addUnit(
+      state,
+      "diagonal-bridge-infantry",
+      "team-1",
+      "infantry",
+      { kind: "tile", x: 3, y: 3 },
+    );
+    expect(getMovementCandidates(state, diagonalInfantry.id)).toContainEqual({
+      kind: "bridge",
+      bridgeId: "enemy-bridge",
+      cellIndex: 0,
+    });
+
+    infantry.position = { kind: "bridge", bridgeId: "enemy-bridge", cellIndex: 0 };
+    expect(getMovementCandidates(state, infantry.id)).toContainEqual({
+      kind: "bridge",
+      bridgeId: "enemy-bridge",
+      cellIndex: 1,
+    });
+
+    const cavalry = addUnit(state, "bridge-cavalry", "team-1", "cavalry", {
+      kind: "bridge",
+      bridgeId: "enemy-bridge",
+      cellIndex: 0,
+    });
+    expect(getMovementCandidates(state, cavalry.id)).toContainEqual({
+      kind: "tile",
+      x: 4,
+      y: 4,
+    });
+  });
+
+  it("blocks only bridge cells carrying an active obstacle", () => {
+    const state = createInitialGameState();
+    addActiveBridge(state, "team-2", "blocked-bridge", [
+      { x: 4, y: 2 },
+      { x: 4, y: 3 },
+    ]);
+    state.constructions.push({
+      id: "bridge-obstacle",
+      kind: "obstacle",
+      ownerTeamId: "team-1",
+      managerUnitId: "team-1-builder",
+      tiles: [{ x: 4, y: 3 }],
+      placedTurn: 1,
+      active: true,
+    });
+    state.constructions.push({
+      id: "inactive-bridge-obstacle",
+      kind: "obstacle",
+      ownerTeamId: "team-2",
+      managerUnitId: "team-2-builder",
+      tiles: [{ x: 4, y: 2 }],
+      placedTurn: 0,
+      active: false,
+    });
+    const cavalry = addUnit(state, "blocked-cavalry", "team-1", "cavalry", {
+      kind: "tile",
+      x: 4,
+      y: 1,
+    });
+
+    const candidates = getMovementCandidates(state, cavalry.id);
+    expect(candidates).toContainEqual({
+      kind: "bridge",
+      bridgeId: "blocked-bridge",
+      cellIndex: 0,
+    });
+    expect(candidates).not.toContainEqual({
+      kind: "bridge",
+      bridgeId: "blocked-bridge",
+      cellIndex: 1,
+    });
+    expect(candidates).not.toContainEqual({ kind: "tile", x: 4, y: 4 });
+  });
+
+  it.each(["team-1", "team-2"])(
+    "does not shorten friendly-base travel when a remote %s bridge exists",
+    (bridgeOwner) => {
+      const withoutBridge = createInitialGameState();
+      const withBridge = createInitialGameState();
+      addUnit(withoutBridge, "base-infantry", "team-1", "infantry", { kind: "tile", x: 3, y: 2 });
+      addUnit(withBridge, "base-infantry", "team-1", "infantry", { kind: "tile", x: 3, y: 2 });
+      addActiveBridge(withBridge, bridgeOwner);
+
+      const infantryWithout = getMovementCandidates(withoutBridge, "base-infantry").map(positionKey).sort();
+      const infantryWith = getMovementCandidates(withBridge, "base-infantry").map(positionKey).sort();
+      expect(infantryWith).toEqual(infantryWithout);
+      expect(infantryWith).not.toContain("3,3");
+
+      withoutBridge.units = withoutBridge.units.filter((unit) => unit.id !== "base-infantry");
+      withBridge.units = withBridge.units.filter((unit) => unit.id !== "base-infantry");
+      addUnit(withoutBridge, "base-cavalry", "team-1", "cavalry", { kind: "tile", x: 3, y: 2 });
+      addUnit(withBridge, "base-cavalry", "team-1", "cavalry", { kind: "tile", x: 3, y: 2 });
+      const cavalryWithout = getMovementCandidates(withoutBridge, "base-cavalry").map(positionKey).sort();
+      const cavalryWith = getMovementCandidates(withBridge, "base-cavalry").map(positionKey).sort();
+      expect(cavalryWith).toEqual(cavalryWithout);
+      expect(cavalryWith).not.toContain("4,4");
+    },
+  );
+
+  it("keeps bridge and base movement independent of state array ordering", () => {
+    const state = createInitialGameState();
+    addActiveBridge(state, "team-1");
+    addUnit(state, "ordered-cavalry", "team-1", "cavalry", {
+      kind: "tile",
+      x: 3,
+      y: 2,
+    });
+    state.turnState.actionIntents.push({
+      teamId: "team-1",
+      productionChoices: [],
+      attackIntents: [],
+      movementIntents: [{
+        teamId: "team-1",
+        unitId: "ordered-cavalry",
+        from: { kind: "tile", x: 3, y: 2 },
+        to: { kind: "tile", x: 3, y: 1 },
+        stay: false,
+      }],
+    });
+    const reordered = structuredClone(state);
+    reordered.units.reverse();
+    reordered.constructions.reverse();
+    reordered.turnState.actionIntents.reverse();
+    for (const intent of reordered.turnState.actionIntents) {
+      intent.movementIntents.reverse();
+    }
+
+    expect(
+      getMovementCandidates(reordered, "ordered-cavalry").map(positionKey).sort(),
+    ).toEqual(
+      getMovementCandidates(state, "ordered-cavalry").map(positionKey).sort(),
     );
   });
 
