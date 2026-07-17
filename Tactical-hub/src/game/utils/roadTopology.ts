@@ -206,11 +206,13 @@ export function canAttackAcrossRoadTopology(
    * 攻撃者がいる道区間が対象拠点へ接続していれば、
    * 従来どおり拠点内の敵を攻撃できる。
    */
-  if (attackerPosition.kind === "tile" && targetPosition.kind === "base") {
-    return isGroundPositionConnectedToBase(
-      state,
-      attackerPosition,
-      targetPosition.baseId,
+  if (["tile", "bridge"].includes(attackerPosition.kind) && targetPosition.kind === "base") {
+    const attackerSections = positionRoadSections(state, attackerPosition);
+    const targetSections = positionRoadSections(state, targetPosition);
+    return attackerSections.some((left) =>
+      targetSections.some((right) =>
+        areRoadSectionsDynamicallyConnected(state, left, right),
+      ),
     );
   }
 
@@ -220,11 +222,13 @@ export function canAttackAcrossRoadTopology(
    * 弓兵などは、所属拠点に接続する道路上の敵を
    * 既存射程内なら攻撃できる。
    */
-  if (attackerPosition.kind === "base" && targetPosition.kind === "tile") {
-    return isGroundPositionConnectedToBase(
-      state,
-      targetPosition,
-      attackerPosition.baseId,
+  if (attackerPosition.kind === "base" && ["tile", "bridge"].includes(targetPosition.kind)) {
+    const attackerSections = positionRoadSections(state, attackerPosition);
+    const targetSections = positionRoadSections(state, targetPosition);
+    return attackerSections.some((left) =>
+      targetSections.some((right) =>
+        areRoadSectionsDynamicallyConnected(state, left, right),
+      ),
     );
   }
 

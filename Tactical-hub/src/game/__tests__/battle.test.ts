@@ -247,6 +247,44 @@ describe("battle", () => {
     );
   });
 
+  it("allows attacks in both directions between a bridge and a connected base", () => {
+    const state = createInitialGameState();
+    const base = state.bases.find(
+      (candidate) => candidate.id === "neutral-north",
+    )!;
+    const emptySlot = base.slots.find((slot) => !slot.unitId)!;
+
+    state.constructions.push({
+      id: "north-base-bridge",
+      kind: "bridge",
+      ownerTeamId: "team-1",
+      managerUnitId: "team-1-builder",
+      tiles: [
+        { x: 10, y: 3 },
+        { x: 10, y: 4 },
+      ],
+      placedTurn: 1,
+      active: true,
+    });
+    addUnit(state, "team-1-archer-on-bridge", "team-1", "archer", {
+      kind: "bridge",
+      bridgeId: "north-base-bridge",
+      cellIndex: 0,
+    });
+    addUnit(state, "team-2-archer-inside-base", "team-2", "archer", {
+      kind: "base",
+      baseId: base.id,
+      slotId: emptySlot.id,
+    });
+
+    expect(targetIds(state, "team-1-archer-on-bridge")).toContain(
+      "team-2-archer-inside-base",
+    );
+    expect(targetIds(state, "team-2-archer-inside-base")).toContain(
+      "team-1-archer-on-bridge",
+    );
+  });
+
   it("does not give strategists attack candidates", () => {
     const state = createInitialGameState();
     putUnit(state, "home-1-strategist", { kind: "tile", x: 4, y: 1 });
