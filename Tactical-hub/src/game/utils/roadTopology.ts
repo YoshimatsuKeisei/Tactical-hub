@@ -1,5 +1,5 @@
 import type { GameState, TerrainType, UnitPosition } from "../types";
-import { getTile } from "./position";
+import { getBaseAtTile, getTile } from "./position";
 
 const ROAD_TERRAINS = new Set<TerrainType>(["road", "baseGate", "reorganize"]);
 
@@ -57,13 +57,48 @@ export function getPositionCoord(state: GameState, position: UnitPosition) {
   return undefined;
 }
 
-function bridgeRoadSections(state: GameState, bridgeId: string) {
+function directBridgeRoadSections(state: GameState, bridgeId: string) {
   const bridge = activeBridge(state, bridgeId);
   const sections = new Set<string>();
   for (const cell of bridge?.tiles ?? []) for (const { dx, dy } of adjacentDirections) {
-    if (Math.abs(dx) + Math.abs(dy) !== 1) continue;
     const section = getRoadSectionIdAtTile(state, cell.x + dx, cell.y + dy);
     if (section) sections.add(section);
+  }
+  return [...sections];
+}
+
+function bridgesTouch(left: { tiles: { x: number; y: number }[] }, right: { tiles: { x: number; y: number }[] }) {
+  return left.tiles.some((leftCell) =>
+    right.tiles.some(
+      (rightCell) =>
+        Math.max(
+          Math.abs(leftCell.x - rightCell.x),
+          Math.abs(leftCell.y - rightCell.y),
+        ) === 1,
+    ),
+  );
+}
+
+function bridgeRoadSections(state: GameState, bridgeId: string) {
+  const bridges = state.constructions.filter(
+    (entry) => entry.active && entry.kind === "bridge",
+  );
+  const start = bridges.find((bridge) => bridge.id === bridgeId);
+  if (!start) return [];
+
+  const queue = [start];
+  const visited = new Set([start.id]);
+  const sections = new Set<string>();
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const section of directBridgeRoadSections(state, current.id))
+      sections.add(section);
+    for (const candidate of bridges) {
+      if (visited.has(candidate.id) || !bridgesTouch(current, candidate))
+        continue;
+      visited.add(candidate.id);
+      queue.push(candidate);
+    }
   }
   return [...sections];
 }
@@ -73,6 +108,117 @@ function positionRoadSections(state: GameState, position: UnitPosition) {
   if (position.kind === "bridge") return bridgeRoadSections(state, position.bridgeId);
   if (position.kind === "base") return getBaseConnectedRoadSectionIds(state, position.baseId);
   return [];
+}
+
+function attackPathKey(position: UnitPosition) {
+  if (position.kind === "base") return `base:${position.baseId}`;
+  if (position.kind === "tile") return `tile:${position.x}:${position.y}`;
+  if (position.kind === "bridge")
+    return `bridge:${position.bridgeId}:${position.cellIndex}`;
+  return position.kind;
+}
+
+function roadOrBridgePositionAt(
+  state: GameState,
+  x: number,
+  y: number,
+): UnitPosition | undefined {
+  const bridge = getBridgePositionAt(state, x, y);
+  if (bridge) return bridge;
+  return getRoadSectionIdAtTile(state, x, y)
+    ? { kind: "tile", x, y }
+    : undefined;
+}
+
+function sectionsConnectPositions(
+  state: GameState,
+  left: UnitPosition,
+  right: UnitPosition,
+) {
+  return positionRoadSections(state, left).some((leftSection) =>
+    positionRoadSections(state, right).some((rightSection) =>
+      areRoadSectionsDynamicallyConnected(state, leftSection, rightSection),
+    ),
+  );
+}
+
+function attackPathNeighbors(state: GameState, position: UnitPosition) {
+  const neighbors = new Map<string, UnitPosition>();
+
+  if (position.kind === "base") {
+    const base = state.bases.find((candidate) => candidate.id === position.baseId);
+    for (const coord of base?.coords ?? []) {
+      for (const { dx, dy } of adjacentDirections) {
+        const neighbor = roadOrBridgePositionAt(state, coord.x + dx, coord.y + dy);
+        if (!neighbor || !sectionsConnectPositions(state, position, neighbor)) continue;
+        neighbors.set(attackPathKey(neighbor), neighbor);
+      }
+    }
+    return [...neighbors.values()];
+  }
+
+  if (position.kind !== "tile" && position.kind !== "bridge") return [];
+  const coord = getPositionCoord(state, position);
+  if (!coord) return [];
+
+  for (const { dx, dy } of adjacentDirections) {
+    const x = coord.x + dx;
+    const y = coord.y + dy;
+    const base = getBaseAtTile(state.bases, x, y);
+    if (base) {
+      const basePosition: UnitPosition = {
+        kind: "base",
+        baseId: base.id,
+        slotId: "attack-path",
+      };
+      if (sectionsConnectPositions(state, position, basePosition))
+        neighbors.set(attackPathKey(basePosition), basePosition);
+      continue;
+    }
+
+    const neighbor = roadOrBridgePositionAt(state, x, y);
+    if (
+      neighbor &&
+      canMoveBetweenGroundPositions(state, position, neighbor)
+    )
+      neighbors.set(attackPathKey(neighbor), neighbor);
+  }
+  return [...neighbors.values()];
+}
+
+/**
+ * Returns attack range measured along roads, active bridges, and base entrances.
+ * Lake cells that are not covered by a bridge never shorten this distance.
+ */
+export function getRoadAttackDistance(
+  state: GameState,
+  from: UnitPosition,
+  to: UnitPosition,
+): number {
+  if (from.kind === "water" || to.kind === "water") {
+    if (from.kind !== "water" || to.kind !== "water")
+      return Number.POSITIVE_INFINITY;
+    return Math.max(Math.abs(from.x - to.x), Math.abs(from.y - to.y));
+  }
+  if (from.kind === "removed" || to.kind === "removed")
+    return Number.POSITIVE_INFINITY;
+
+  const targetKey = attackPathKey(to);
+  const queue: { position: UnitPosition; distance: number }[] = [
+    { position: from, distance: 0 },
+  ];
+  const visited = new Set([attackPathKey(from)]);
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (attackPathKey(current.position) === targetKey) return current.distance;
+    for (const neighbor of attackPathNeighbors(state, current.position)) {
+      const key = attackPathKey(neighbor);
+      if (visited.has(key)) continue;
+      visited.add(key);
+      queue.push({ position: neighbor, distance: current.distance + 1 });
+    }
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 export function areRoadSectionsDynamicallyConnected(state: GameState, a: string, b: string) {
@@ -155,7 +301,7 @@ export function canMoveBetweenGroundPositions(
   if (from.kind === "bridge" || to.kind === "bridge") {
     const fromCoord = getPositionCoord(state, from), toCoord = getPositionCoord(state, to);
     if (!fromCoord || !toCoord || Math.max(Math.abs(fromCoord.x - toCoord.x), Math.abs(fromCoord.y - toCoord.y)) !== 1) return false;
-    if (from.kind === "bridge" && to.kind === "bridge") return from.bridgeId === to.bridgeId;
+    if (from.kind === "bridge" && to.kind === "bridge") return true;
     const tilePosition = from.kind === "tile" ? from : to.kind === "tile" ? to : undefined;
     return Boolean(
       tilePosition && getRoadSectionIdForPosition(state, tilePosition),

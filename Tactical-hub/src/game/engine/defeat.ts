@@ -10,6 +10,16 @@ function removeTeamUnits(state: GameState, teamId: string) {
   const unitIds = new Set(state.units.filter((unit) => unit.ownerTeamId === teamId && unit.position.kind !== "removed").map((unit) => unit.id));
   for (const base of state.bases) for (const slot of base.slots) if (slot.unitId && unitIds.has(slot.unitId)) slot.unitId = undefined;
   state.units = state.units.map((unit) => unit.ownerTeamId === teamId && unit.position.kind !== "removed" ? { ...unit, hp: 0, position: { kind: "removed", reason: "team_defeat" } as UnitPosition, statuses: [] } : unit);
+  state.constructions = state.constructions.map((construction) =>
+    construction.managerUnitId && unitIds.has(construction.managerUnitId)
+      ? { ...construction, managerUnitId: undefined }
+      : construction,
+  );
+  state.teams = state.teams.map((team) =>
+    team.constructionCapacityBonusStrategistId && unitIds.has(team.constructionCapacityBonusStrategistId)
+      ? { ...team, constructionCapacityBonusStrategistId: undefined }
+      : team,
+  );
   state.logs.push({ id: `log-team-units-removed-${state.logs.length}`, turnNumber: state.turnNumber, type: "battle", message: `敗北チーム残存駒の消失: ${teamId}`, relatedIds: [teamId, ...unitIds] });
 }
 
@@ -39,6 +49,11 @@ export function resolveKingDefeats(state: GameState, defeatedKings: DefeatedKing
     for (const teamId of losingTeams) {
       const bases = ownedBases(state, teamId);
       markTeamDefeated(state, teamId, "複数王同時撃破による敗北");
+      state.constructions = state.constructions.map((construction) =>
+        construction.ownerTeamId === teamId
+          ? { ...construction, ownerTeamId: undefined, managerUnitId: undefined }
+          : construction,
+      );
       for (const base of bases) {
         transferBaseOwnership(state, base.id, "neutral");
         state.logs.push({ id: `log-base-neutralized-${state.logs.length}`, turnNumber: state.turnNumber, type: "capture", message: `拠点中立化: ${base.id}`, relatedIds: [base.id, teamId] });
@@ -53,6 +68,16 @@ export function resolveKingDefeats(state: GameState, defeatedKings: DefeatedKing
   const bases = ownedBases(state, plan.kingTeamId);
   state.logs.push({ id: `log-conquest-team-${state.logs.length}`, turnNumber: state.turnNumber, type: "battle", message: `征服チーム: ${conquestTeamId} / ${plan.kingUnitId}`, relatedIds: [conquestTeamId, plan.kingUnitId] });
   markTeamDefeated(state, plan.kingTeamId, "王撃破による敗北");
+  state.constructions = state.constructions.map((construction) =>
+    construction.ownerTeamId === plan.kingTeamId
+      ? { ...construction, ownerTeamId: conquestTeamId, managerUnitId: undefined }
+      : construction,
+  );
+  state.teams = state.teams.map((team) =>
+    team.id === conquestTeamId
+      ? { ...team, conqueredTeamIds: [...new Set([...(team.conqueredTeamIds ?? []), plan.kingTeamId])] }
+      : team,
+  );
 
   for (const fallen of fallenBases.filter((entry) => entry.defendingTeamId === plan.kingTeamId)) {
     const intended = fallen.intendedCaptureTeamId ?? selectCaptureTeam(state, fallen.siege, fallen.candidateTeamIds, rng);

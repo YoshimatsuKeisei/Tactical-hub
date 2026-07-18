@@ -3,10 +3,10 @@ import { testMap4p } from "./maps/testMap4p";
 import type { Base, BaseSlot, GameState, Team, Unit, UnitType } from "./types";
 
 const teams: Team[] = [
-  { id: "team-1", name: "Team 1", color: "#d94a4a", status: "active", homeBaseId: "home-1", controlledBaseIds: ["home-1"] },
-  { id: "team-2", name: "Team 2", color: "#3e7bd8", status: "active", homeBaseId: "home-2", controlledBaseIds: ["home-2"] },
-  { id: "team-3", name: "Team 3", color: "#36a166", status: "active", homeBaseId: "home-3", controlledBaseIds: ["home-3"] },
-  { id: "team-4", name: "Team 4", color: "#c58a2b", status: "active", homeBaseId: "home-4", controlledBaseIds: ["home-4"] },
+  { id: "team-1", name: "Team 1", color: "#d94a4a", status: "active", homeBaseId: "home-1", controlledBaseIds: ["home-1"], defeatedUnitCount: 0, conqueredTeamIds: [] },
+  { id: "team-2", name: "Team 2", color: "#3e7bd8", status: "active", homeBaseId: "home-2", controlledBaseIds: ["home-2"], defeatedUnitCount: 0, conqueredTeamIds: [] },
+  { id: "team-3", name: "Team 3", color: "#36a166", status: "active", homeBaseId: "home-3", controlledBaseIds: ["home-3"], defeatedUnitCount: 0, conqueredTeamIds: [] },
+  { id: "team-4", name: "Team 4", color: "#c58a2b", status: "active", homeBaseId: "home-4", controlledBaseIds: ["home-4"], defeatedUnitCount: 0, conqueredTeamIds: [] },
   { id: "neutral", name: "Neutral Guard", color: "#767b86", status: "neutral", controlledBaseIds: [], isNeutral: true },
 ];
 

@@ -94,6 +94,43 @@ describe("Phase 4-A construction", () => {
     expect(state).toEqual(before);
   });
 
+  it("offers every unoccupied cell of a connected bridge as an obstacle candidate", () => {
+    const state = createInitialGameState();
+    const builder = addBuilder(state, "bridge-obstacle-builder");
+    state.constructions.push({
+      id: "candidate-bridge",
+      kind: "bridge",
+      ownerTeamId: "team-2",
+      managerUnitId: "enemy-builder",
+      tiles: [
+        { x: 4, y: 2 },
+        { x: 4, y: 3 },
+        { x: 4, y: 4 },
+      ],
+      placedTurn: 1,
+      active: true,
+    });
+    addUnit(state, "bridge-occupant", "team-2", {
+      kind: "bridge",
+      bridgeId: "candidate-bridge",
+      cellIndex: 1,
+    });
+    state.constructions.push({
+      id: "existing-bridge-obstacle",
+      kind: "obstacle",
+      ownerTeamId: "team-2",
+      managerUnitId: "enemy-builder",
+      tiles: [{ x: 4, y: 4 }],
+      placedTurn: 1,
+      active: true,
+    });
+
+    const candidates = getObstacleCandidates(state, builder.id);
+    expect(candidates).toContainEqual({ x: 4, y: 2 });
+    expect(candidates).not.toContainEqual({ x: 4, y: 3 });
+    expect(candidates).not.toContainEqual({ x: 4, y: 4 });
+  });
+
   it("prevents one builder from maintaining two bridges and blocks same-team overlap at input", () => {
     const state = createInitialGameState(); const first = addBuilder(state, "builder-a"); const second = addBuilder(state, "builder-b");
     const bridge = getBridgeCandidates(state, first.id)[0];

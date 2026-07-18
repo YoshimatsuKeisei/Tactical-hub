@@ -8,6 +8,9 @@ export type Team = {
   homeBaseId?: string;
   controlledBaseIds: string[];
   isNeutral?: boolean;
+  defeatedUnitCount?: number;
+  conqueredTeamIds?: string[];
+  constructionCapacityBonusStrategistId?: string;
 };
 
 export type UnitType =
@@ -26,8 +29,8 @@ export type ConstructionKind = "bridge" | "obstacle";
 export type Construction = {
   id: string;
   kind: ConstructionKind;
-  ownerTeamId: string;
-  managerUnitId: string;
+  ownerTeamId?: string;
+  managerUnitId?: string;
   tiles: BoardCoord[];
   placedTurn: number;
   active: boolean;

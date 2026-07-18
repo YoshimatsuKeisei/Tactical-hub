@@ -1,6 +1,9 @@
 import type { BoardCoord, Construction, GameState, StrategistActionIntent, Unit } from "../types";
 import { getBaseConnectedRoadSectionIds, getRoadSectionIdAtTile } from "../utils/roadTopology";
 import { getTile, getUnitAtBoardCell, tileKey } from "../utils/position";
+import { chebyshevDistance } from "../utils/distance";
+import { getKingCampaign, recordKingDamage } from "./kingCampaign";
+import { resolveKingDefeats, type DefeatedKingPlan } from "./defeat";
 
 const ORTHOGONAL = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 const key = (cell: BoardCoord) => tileKey(cell.x, cell.y);
@@ -45,9 +48,20 @@ function ownPending(state: GameState, teamId: string, exceptUnitId?: string) {
 
 export function getObstacleCandidates(state: GameState, strategistUnitId: string) {
   const strategist = getBuilderUnits(state).find((unit) => unit.id === strategistUnitId);
-  if (!strategist || getManagedConstruction(state, strategist.id, "obstacle") || !isAvailable(state, strategist.id, "obstacle")) return [];
+  if (!strategist || getManagedConstructions(state, strategist.id, "obstacle").length >= getConstructionManagementLimit(state, strategist.id, "obstacle") || !isAvailable(state, strategist.id, "obstacle")) return [];
   const operational = new Set(getOperationalRoadTiles(state, strategist.ownerTeamId).map((tile) => tileKey(tile.x, tile.y)));
-  const connectedBridgeCells = state.constructions.filter((entry) => entry.active && entry.kind === "bridge").flatMap((bridge) => bridge.tiles.filter((cell) => ORTHOGONAL.some(({ dx, dy }) => operational.has(tileKey(cell.x + dx, cell.y + dy)))));
+  const connectedBridgeCells = state.constructions
+    .filter(
+      (entry) =>
+        entry.active &&
+        entry.kind === "bridge" &&
+        entry.tiles.some((cell) =>
+          ORTHOGONAL.some(({ dx, dy }) =>
+            operational.has(tileKey(cell.x + dx, cell.y + dy)),
+          ),
+        ),
+    )
+    .flatMap((bridge) => bridge.tiles);
   const reserved = new Set(ownPending(state, strategist.ownerTeamId, strategist.id).filter((intent) => intent.action === "place_obstacle").flatMap((intent) => intent.tiles ?? []).map(key));
   return [...getOperationalRoadTiles(state, strategist.ownerTeamId).map(({ x, y }) => ({ x, y })), ...connectedBridgeCells]
     .filter((cell, index, all) => all.findIndex((other) => key(other) === key(cell)) === index)
@@ -56,7 +70,7 @@ export function getObstacleCandidates(state: GameState, strategistUnitId: string
 
 export function getBridgeCandidates(state: GameState, strategistUnitId: string) {
   const strategist = getBuilderUnits(state).find((unit) => unit.id === strategistUnitId);
-  if (!strategist || getManagedConstruction(state, strategist.id, "bridge") || !isAvailable(state, strategist.id, "bridge")) return [];
+  if (!strategist || getManagedConstructions(state, strategist.id, "bridge").length >= getConstructionManagementLimit(state, strategist.id, "bridge") || !isAvailable(state, strategist.id, "bridge")) return [];
   const operational = getOperationalRoadTiles(state, strategist.ownerTeamId);
   const occupied = new Set(state.constructions.filter((entry) => entry.active && entry.kind === "bridge").flatMap((entry) => entry.tiles).map(key));
   for (const intent of ownPending(state, strategist.ownerTeamId, strategist.id).filter((entry) => entry.action === "place_bridge")) for (const cell of intent.tiles ?? []) occupied.add(key(cell));
@@ -75,8 +89,69 @@ export function getBridgeCandidates(state: GameState, strategistUnitId: string) 
 export function getManagedConstruction(state: GameState, managerUnitId: string, kind: Construction["kind"]) {
   return state.constructions.find((entry) => entry.active && entry.managerUnitId === managerUnitId && entry.kind === kind);
 }
-function canSafelyReset(state: GameState, construction: Construction) {
-  return construction.kind !== "bridge" || !state.units.some((unit) => unit.position.kind === "bridge" && unit.position.bridgeId === construction.id);
+export function getManagedConstructions(state: GameState, managerUnitId: string, kind: Construction["kind"]) {
+  return state.constructions.filter((entry) => entry.active && entry.managerUnitId === managerUnitId && entry.kind === kind);
+}
+
+export function getConstructionManagementLimit(state: GameState, strategistUnitId: string, kind: Construction["kind"]) {
+  const strategist = getBuilderUnits(state).find((unit) => unit.id === strategistUnitId);
+  if (!strategist) return 0;
+  const team = state.teams.find((candidate) => candidate.id === strategist.ownerTeamId);
+  const conquests = team?.conqueredTeamIds?.length ?? 0;
+  if (conquests >= 2) return 2;
+  if (conquests === 1 && team?.constructionCapacityBonusStrategistId === strategist.id) return 2;
+  return 1;
+}
+
+export function assignConstructionCapacityBonus(state: GameState, teamId: string, strategistUnitId: string): GameState {
+  const team = state.teams.find((candidate) => candidate.id === teamId);
+  const strategist = getBuilderUnits(state, teamId).find((unit) => unit.id === strategistUnitId);
+  if (!team || (team.conqueredTeamIds?.length ?? 0) !== 1 || !strategist) return state;
+  return {
+    ...state,
+    teams: state.teams.map((candidate) =>
+      candidate.id === teamId
+        ? { ...candidate, constructionCapacityBonusStrategistId: strategistUnitId }
+        : candidate,
+    ),
+  };
+}
+
+export function assignConstructionManager(state: GameState, constructionId: string, strategistUnitId: string): GameState {
+  const construction = state.constructions.find((entry) => entry.id === constructionId && entry.active && !entry.managerUnitId && entry.ownerTeamId);
+  const strategist = getBuilderUnits(state).find((unit) => unit.id === strategistUnitId);
+  if (!construction || !strategist || strategist.ownerTeamId !== construction.ownerTeamId) return state;
+  if (getManagedConstructions(state, strategist.id, construction.kind).length >= getConstructionManagementLimit(state, strategist.id, construction.kind)) return state;
+  return {
+    ...state,
+    constructions: state.constructions.map((entry) =>
+      entry.id === constructionId ? { ...entry, managerUnitId: strategistUnitId } : entry,
+    ),
+  };
+}
+
+export function clearDeadConstructionManagers(state: GameState) {
+  const livingBuilders = new Set(getBuilderUnits(state).map((unit) => unit.id));
+  state.constructions = state.constructions.map((construction) =>
+    construction.managerUnitId && !livingBuilders.has(construction.managerUnitId)
+      ? { ...construction, managerUnitId: undefined }
+      : construction,
+  );
+  state.teams = state.teams.map((team) =>
+    team.constructionCapacityBonusStrategistId && !livingBuilders.has(team.constructionCapacityBonusStrategistId)
+      ? { ...team, constructionCapacityBonusStrategistId: undefined }
+      : team,
+  );
+}
+function canSafelyReset(state: GameState, construction: Construction, resettingTeamId: string) {
+  if (construction.kind !== "bridge") return true;
+  return !state.units.some(
+    (unit) =>
+      unit.position.kind === "bridge" &&
+      unit.position.bridgeId === construction.id &&
+      (unit.id === construction.managerUnitId ||
+        (unit.type === "king" && unit.ownerTeamId === resettingTeamId)),
+  );
 }
 export function isAvailable(state: GameState, unitId: string, kind: Construction["kind"]) {
   return state.turnNumber >= (state.strategistCooldowns.find((entry) => entry.strategistUnitId === unitId && entry.kind === kind)?.availableFromTurn ?? 0);
@@ -88,8 +163,8 @@ export function saveStrategistActionIntent(state: GameState, intent: StrategistA
   const legal = intent.action === "pass" ||
     (intent.action === "place_bridge" && getBridgeCandidates(state, strategist.id).some((candidate) => bridgeKey(candidate) === bridgeKey(intent.tiles ?? []))) ||
     (intent.action === "place_obstacle" && intent.tiles?.length === 1 && getObstacleCandidates(state, strategist.id).some((cell) => key(cell) === key(intent.tiles![0]))) ||
-    (intent.action === "reset_bridge" && getManagedConstruction(state, strategist.id, "bridge")?.id === intent.constructionId && canSafelyReset(state, getManagedConstruction(state, strategist.id, "bridge")!)) ||
-    (intent.action === "reset_obstacle" && getManagedConstruction(state, strategist.id, "obstacle")?.id === intent.constructionId);
+    (intent.action === "reset_bridge" && getManagedConstructions(state, strategist.id, "bridge").some((entry) => entry.id === intent.constructionId && canSafelyReset(state, entry, intent.teamId))) ||
+    (intent.action === "reset_obstacle" && getManagedConstructions(state, strategist.id, "obstacle").some((entry) => entry.id === intent.constructionId));
   if (!legal) return state;
   return { ...state, strategistActionIntents: [...state.strategistActionIntents.filter((entry) => entry.strategistUnitId !== strategist.id), intent] };
 }
@@ -113,18 +188,173 @@ function conflictGroups(intents: StrategistActionIntent[]) {
   return conflicts;
 }
 
-export function resolveStrategistActions(state: GameState) {
+function setCooldown(state: GameState, strategistUnitId: string | undefined, kind: Construction["kind"]) {
+  if (!strategistUnitId) return;
+  state.strategistCooldowns = [
+    ...state.strategistCooldowns.filter(
+      (entry) => entry.strategistUnitId !== strategistUnitId || entry.kind !== kind,
+    ),
+    { strategistUnitId, kind, availableFromTurn: state.turnNumber + 5 },
+  ];
+}
+
+function randomized<T>(values: T[], rng: () => number) {
+  return values
+    .map((value) => ({ value, order: rng() }))
+    .sort((left, right) => left.order - right.order)
+    .map((entry) => entry.value);
+}
+
+function recordFloodKill(state: GameState, resettingTeamId: string, victim: Unit) {
+  if (victim.ownerTeamId === resettingTeamId) return;
+  state.teams = state.teams.map((team) =>
+    team.id === resettingTeamId
+      ? { ...team, defeatedUnitCount: (team.defeatedUnitCount ?? 0) + 1 }
+      : team,
+  );
+}
+
+function removeFloodVictim(state: GameState, unit: Unit, resettingTeamId: string) {
+  recordFloodKill(state, resettingTeamId, unit);
+  unit.hp = 0;
+  unit.position = { kind: "removed", reason: "water_trap" };
+  unit.statuses = [];
+}
+
+type FloodSnapshot = {
+  unit: Unit;
+  origin: BoardCoord;
+  resettingTeamId: string;
+};
+
+function resolveBridgeFloods(
+  state: GameState,
+  resets: { construction: Construction; teamId: string }[],
+  rng: () => number,
+) {
+  if (!resets.length) return;
+  const resetByBridgeId = new Map(resets.map((entry) => [entry.construction.id, entry]));
+  const snapshots = new Map<string, FloodSnapshot>();
+  for (const unit of state.units) {
+    if (unit.position.kind !== "bridge") continue;
+    const reset = resetByBridgeId.get(unit.position.bridgeId);
+    const origin = reset?.construction.tiles[unit.position.cellIndex];
+    if (reset && origin && !snapshots.has(unit.id))
+      snapshots.set(unit.id, { unit, origin: { ...origin }, resettingTeamId: reset.teamId });
+  }
+
+  const resetTileKeys = new Set(resets.flatMap((entry) => entry.construction.tiles.map(key)));
+  for (const reset of resets) {
+    reset.construction.active = false;
+    setCooldown(state, reset.construction.managerUnitId, "bridge");
+  }
+  for (const obstacle of state.constructions.filter(
+    (entry) =>
+      entry.active &&
+      entry.kind === "obstacle" &&
+      entry.tiles.some((cell) => resetTileKeys.has(key(cell))),
+  )) {
+    obstacle.active = false;
+    setCooldown(state, obstacle.managerUnitId, "obstacle");
+  }
+
+  const survivingKings: FloodSnapshot[] = [];
+  const defeatedKingData: { unit: Unit; resettingTeamId: string }[] = [];
+  for (const snapshot of snapshots.values()) {
+    const { unit, origin, resettingTeamId } = snapshot;
+    if (unit.type === "ninja") {
+      unit.position = { kind: "water", ...origin };
+      continue;
+    }
+    if (unit.type !== "king") {
+      removeFloodVictim(state, unit, resettingTeamId);
+      continue;
+    }
+    unit.hp -= 1;
+    if (unit.ownerTeamId !== resettingTeamId)
+      recordKingDamage(state, unit.id, unit.ownerTeamId, resettingTeamId, 1);
+    if (unit.hp <= 0) {
+      unit.position = { kind: "removed", reason: "water_trap" };
+      unit.statuses = [];
+      recordFloodKill(state, resettingTeamId, unit);
+      defeatedKingData.push({ unit, resettingTeamId });
+    } else survivingKings.push(snapshot);
+  }
+
+  const roadAssigned = new Set<string>();
+  const unmatched: typeof survivingKings = [];
+  for (const snapshot of randomized(survivingKings, rng)) {
+    const occupied = new Set(
+      state.units.flatMap((unit) =>
+        unit.position.kind === "tile" ? [tileKey(unit.position.x, unit.position.y)] : [],
+      ),
+    );
+    const candidates = getOperationalRoadTiles(state, snapshot.unit.ownerTeamId)
+      .filter((tile) => !occupied.has(tileKey(tile.x, tile.y)))
+      .filter((tile) => !roadAssigned.has(tileKey(tile.x, tile.y)))
+      .filter((tile) => !getConstructionAt(state, tile.x, tile.y, "obstacle"));
+    if (!candidates.length) {
+      unmatched.push(snapshot);
+      continue;
+    }
+    const minimum = Math.min(...candidates.map((tile) => chebyshevDistance(snapshot.origin, tile)));
+    const nearest = randomized(candidates.filter((tile) => chebyshevDistance(snapshot.origin, tile) === minimum), rng)[0];
+    roadAssigned.add(tileKey(nearest.x, nearest.y));
+    snapshot.unit.position = { kind: "tile", x: nearest.x, y: nearest.y };
+  }
+
+  const noBase: typeof unmatched = [];
+  for (const snapshot of randomized(unmatched, rng)) {
+    const team = state.teams.find((candidate) => candidate.id === snapshot.unit.ownerTeamId);
+    const bases = state.bases.filter(
+      (base) => base.ownerTeamId === snapshot.unit.ownerTeamId && base.slots.some((slot) => !slot.unitId),
+    );
+    if (!bases.length) {
+      noBase.push(snapshot);
+      continue;
+    }
+    const distance = (base: (typeof bases)[number]) =>
+      Math.min(...base.coords.map((cell) => chebyshevDistance(snapshot.origin, cell)));
+    const minimum = Math.min(...bases.map(distance));
+    let nearest = bases.filter((base) => distance(base) === minimum);
+    const home = nearest.find((base) => base.id === team?.homeBaseId);
+    const base = home ?? randomized(nearest, rng)[0];
+    const slot = base.slots.find((candidate) => !candidate.unitId)!;
+    slot.unitId = snapshot.unit.id;
+    snapshot.unit.position = { kind: "base", baseId: base.id, slotId: slot.id };
+  }
+
+  for (const snapshot of noBase) {
+    removeFloodVictim(state, snapshot.unit, snapshot.resettingTeamId);
+    defeatedKingData.push({ unit: snapshot.unit, resettingTeamId: snapshot.resettingTeamId });
+  }
+
+  const defeatedKings: DefeatedKingPlan[] = defeatedKingData.flatMap(({ unit, resettingTeamId }) => {
+    const campaign = getKingCampaign(state, unit.id);
+    return campaign
+      ? [{ kingUnitId: unit.id, kingTeamId: unit.ownerTeamId, candidateTeamIds: [resettingTeamId], campaign }]
+      : [];
+  });
+  if (defeatedKings.length) resolveKingDefeats(state, defeatedKings, [], rng);
+  clearDeadConstructionManagers(state);
+}
+
+export function resolveStrategistActions(state: GameState, rng: () => number = Math.random) {
   if (state.phase !== "strategist_action_resolution") return state;
   const next = structuredClone(state) as GameState;
   const intents = [...next.strategistActionIntents].sort((a, b) => a.strategistUnitId.localeCompare(b.strategistUnitId));
+  const bridgeResets: { construction: Construction; teamId: string }[] = [];
   for (const intent of intents.filter((entry) => entry.action.startsWith("reset_"))) {
     const construction = next.constructions.find((entry) => entry.id === intent.constructionId && entry.managerUnitId === intent.strategistUnitId && entry.active);
-    if (!construction || !canSafelyReset(next, construction)) continue;
-    construction.active = false;
-    if (construction.kind === "bridge") for (const obstacle of next.constructions.filter((entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((cell) => construction.tiles.some((bridgeCell) => key(cell) === key(bridgeCell))))) obstacle.active = false;
-    next.strategistCooldowns = [...next.strategistCooldowns.filter((entry) => entry.strategistUnitId !== intent.strategistUnitId || entry.kind !== construction.kind), { strategistUnitId: intent.strategistUnitId, kind: construction.kind, availableFromTurn: next.turnNumber + 5 }];
+    if (!construction || !canSafelyReset(next, construction, intent.teamId)) continue;
+    if (construction.kind === "bridge") bridgeResets.push({ construction, teamId: intent.teamId });
+    else {
+      construction.active = false;
+      setCooldown(next, construction.managerUnitId, "obstacle");
+    }
     next.logs.push({ id: `log-construction-reset-${next.logs.length}`, turnNumber: next.turnNumber, type: "construction", message: `${intent.teamId} ${intent.strategistUnitId} reset ${construction.kind}; available turn ${next.turnNumber + 5}.`, relatedIds: [construction.id, intent.strategistUnitId] });
   }
+  resolveBridgeFloods(next, bridgeResets, rng);
   const placements = intents.filter((entry) => entry.action.startsWith("place_"));
   const conflicts = conflictGroups(placements);
   for (const intent of placements) {
@@ -137,7 +367,10 @@ export function resolveStrategistActions(state: GameState) {
     next.logs.push({ id: `log-construction-place-${next.logs.length}`, turnNumber: next.turnNumber, type: "construction", message: `${intent.teamId} ${intent.strategistUnitId} placed ${kind} at ${intent.tiles!.map(key).join(" / ")}.`, relatedIds: [intent.strategistUnitId] });
   }
   next.strategistActionIntents = []; next.strategistSubmittedTeamIds = [];
-  next.phase = next.turnState.phase = "movement_input";
+  if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+    next.phaseAfterRewards = "movement_input";
+    next.phase = next.turnState.phase = "reward_placement";
+  } else next.phase = next.turnState.phase = "movement_input";
   return next;
 }
 

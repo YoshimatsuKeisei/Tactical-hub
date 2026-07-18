@@ -10,6 +10,7 @@ import {
 } from "../engine/battle";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit, UnitPosition, UnitType } from "../types";
+import { getRoadAttackDistance } from "../utils/roadTopology";
 
 function clearPreviousSlot(state: GameState, position: UnitPosition) {
   if (position.kind !== "base") return;
@@ -282,6 +283,103 @@ describe("battle", () => {
     );
     expect(targetIds(state, "team-2-archer-inside-base")).toContain(
       "team-1-archer-on-bridge",
+    );
+  });
+
+  it("measures archer range along the bridge and roads instead of across lake cells", () => {
+    const state = createInitialGameState();
+    state.constructions.push({
+      id: "long-bridge",
+      kind: "bridge",
+      ownerTeamId: "team-1",
+      managerUnitId: "team-1-builder",
+      tiles: [2, 3, 4, 5, 6].map((y) => ({ x: 7, y })),
+      placedTurn: 1,
+      active: true,
+    });
+    addUnit(state, "team-1-archer-mid-bridge", "team-1", "archer", {
+      kind: "bridge",
+      bridgeId: "long-bridge",
+      cellIndex: 2,
+    });
+    addUnit(state, "team-2-infantry-across-lake", "team-2", "infantry", {
+      kind: "tile",
+      x: 9,
+      y: 1,
+    });
+
+    expect(targetIds(state, "team-1-archer-mid-bridge")).not.toContain(
+      "team-2-infantry-across-lake",
+    );
+  });
+
+  it("measures engineer range along the bridge and roads", () => {
+    const state = createInitialGameState();
+    state.constructions.push({
+      id: "engineer-bridge",
+      kind: "bridge",
+      ownerTeamId: "team-1",
+      managerUnitId: "team-1-builder",
+      tiles: [2, 3, 4, 5, 6].map((y) => ({ x: 7, y })),
+      placedTurn: 1,
+      active: true,
+    });
+    const engineer = addUnit(state, "team-2-engineer-on-bridge", "team-2", "engineer", {
+      kind: "bridge",
+      bridgeId: "engineer-bridge",
+      cellIndex: 2,
+    });
+
+    const strategist = state.units.find(
+      (unit) => unit.id === "home-1-strategist",
+    )!;
+    expect(
+      getRoadAttackDistance(state, engineer.position, strategist.position),
+    ).toBe(6);
+
+    expect(targetIds(state, "team-2-engineer-on-bridge")).not.toContain(
+      "home-1-strategist",
+    );
+  });
+
+  it.each([
+    ["diagonally", [{ x: 7, y: 2 }, { x: 7, y: 3 }], [{ x: 8, y: 4 }, { x: 8, y: 5 }]],
+    ["in parallel", [{ x: 7, y: 2 }, { x: 7, y: 3 }], [{ x: 8, y: 2 }, { x: 8, y: 3 }]],
+  ])("measures attack range across different bridges touching %s", (_, firstTiles, secondTiles) => {
+    const state = createInitialGameState();
+    state.constructions.push(
+      {
+        id: "first-touching-bridge",
+        kind: "bridge",
+        ownerTeamId: "team-1",
+        managerUnitId: "builder-1",
+        tiles: firstTiles,
+        placedTurn: 1,
+        active: true,
+      },
+      {
+        id: "second-touching-bridge",
+        kind: "bridge",
+        ownerTeamId: "team-2",
+        managerUnitId: "builder-2",
+        tiles: secondTiles,
+        placedTurn: 1,
+        active: true,
+      },
+    );
+    addUnit(state, "archer-on-first-bridge", "team-1", "archer", {
+      kind: "bridge",
+      bridgeId: "first-touching-bridge",
+      cellIndex: 1,
+    });
+    addUnit(state, "cavalry-on-second-bridge", "team-2", "cavalry", {
+      kind: "bridge",
+      bridgeId: "second-touching-bridge",
+      cellIndex: 0,
+    });
+
+    expect(targetIds(state, "archer-on-first-bridge")).toContain(
+      "cavalry-on-second-bridge",
     );
   });
 

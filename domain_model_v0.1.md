@@ -769,3 +769,14 @@ type ActiveObstacle = {
 - `strategistSubmittedTeamIds` が全activeチームを含むまで設備状態を解決しない。
 - デバッグUIの操作チームIDはGameStateの所有権を変更せず、Production入力対象、軍師入力対象、自チーム用プレビューの表示スコープだけを切り替える。
 - 橋候補の同一性は構成タイル列の順方向・逆方向に依存しない正規化キーで判定する。
+# Phase 4-B ドメインモデル追補（2026-07-18確定）
+
+`Construction.ownerTeamId` と `Construction.managerUnitId` は任意値とする。管理軍師死亡時は `managerUnitId` だけを解除し、active状態と所有権、盤面効果を維持する。単独王撃破による征服では `ownerTeamId` を征服チームへ移し、`managerUnitId` を解除する。複数王同時撃破による中立化では両方を解除し、永続的な残留設備として扱う。
+
+`Team.defeatedUnitCount` は水計による敵駒除去を含むチーム撃破実績であり、`SiegeTeamRecord.defenderKills` および `KingAttackContribution` とは独立する。`Team.conqueredTeamIds` は単独王撃破で正式に征服したチームIDの一意集合で、中立化は含めない。`Team.constructionCapacityBonusStrategistId` は正式征服数1のときに追加管理枠を割り当てた生存建設軍師を示す。
+
+管理可能数は `conqueredTeamIds.length` と追加枠割当先から導出する。0件は各軍師各種1、1件は割当軍師のみ各種2、2件以上は両軍師各種2である。管理設備は配列で扱い、単一IDを前提としない。管理権割当は、active、所有者あり、管理者なしの設備と、同一チームの生存建設軍師を指定して行い、種別ごとの上限を検証する。
+
+手動橋リセット解決は、全有効リセットIntentの橋・橋上駒をスナップショットし、橋と重複障害物をinactive化して各管理枠へT+5クールタイムを設定した後、水計対象を一括処理する。忍者は元座標の `UnitPosition.kind = "water"` へ変換する。非忍者一般兵は `reason = "water_trap"` で除去する。王は1ダメージを受け、生存時は作戦圏道路、所有拠点BaseSlot、死亡の順で重複なしに割り当てる。乱数選択は `resolveStrategistActions` へ注入したRNGを使用する。
+
+水計による敵王ダメージは `recordKingDamage` を使用するが `recordKingAttackTurns` は呼ばない。王死亡時は `DefeatedKingPlan` を生成して既存の `resolveKingDefeats` へ渡し、通常戦闘と同じ征服・中立化・チーム敗北・褒賞処理へ接続する。

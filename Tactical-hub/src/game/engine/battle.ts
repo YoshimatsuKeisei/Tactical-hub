@@ -8,9 +8,8 @@ import type {
   UnitPosition,
   UnitType,
 } from "../types";
-import { chebyshevDistance } from "../utils/distance";
 import { positionKey } from "../utils/position";
-import { canAttackAcrossRoadTopology } from "../utils/roadTopology";
+import { canAttackAcrossRoadTopology, getRoadAttackDistance } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
 import { getMovementCandidates } from "./movement";
@@ -97,30 +96,6 @@ const SUCCESS_DENOMINATORS: Partial<
 
 function isAlive(unit: Unit) {
   return unit.position.kind !== "removed" && unit.hp > 0;
-}
-
-function positionCells(state: GameState, position: UnitPosition) {
-  if (position.kind === "tile" || position.kind === "water")
-    return [{ x: position.x, y: position.y }];
-  if (position.kind === "base")
-    return (
-      state.bases.find((base) => base.id === position.baseId)?.coords ?? []
-    );
-  if (position.kind === "bridge") {
-    const cell = state.constructions.find((entry) => entry.active && entry.id === position.bridgeId)?.tiles[position.cellIndex];
-    return cell ? [cell] : [];
-  }
-  return [];
-}
-
-function minDistance(
-  aCells: { x: number; y: number }[],
-  bCells: { x: number; y: number }[],
-) {
-  if (!aCells.length || !bCells.length) return Number.POSITIVE_INFINITY;
-  return Math.min(
-    ...aCells.flatMap((a) => bCells.map((b) => chebyshevDistance(a, b))),
-  );
 }
 
 function targetForUnit(unit: Unit): AttackTarget {
@@ -236,10 +211,7 @@ function canAttackUnit(state: GameState, attacker: Unit, target: Unit) {
 }
 
 function candidateDistance(state: GameState, attacker: Unit, target: Unit) {
-  return minDistance(
-    positionCells(state, attacker.position),
-    positionCells(state, target.position),
-  );
+  return getRoadAttackDistance(state, attacker.position, target.position);
 }
 
 function targetSortKey(
@@ -301,7 +273,6 @@ export function getAttackCandidates(
   const range = UNIT_STATS[attacker.type].range;
   if (range <= 0) return [];
 
-  const attackerCells = positionCells(state, attacker.position);
   const targets = state.units
     .filter((target) => target.id !== attacker.id)
     .filter((target) => isAlive(target))
@@ -313,8 +284,7 @@ export function getAttackCandidates(
     )
     .filter(
       (target) =>
-        minDistance(attackerCells, positionCells(state, target.position)) <=
-        range,
+        getRoadAttackDistance(state, attacker.position, target.position) <= range,
     );
 
   const encouragedUnitIds = getEncouragedUnitIds(state);
@@ -390,6 +360,18 @@ function defeatUnit(state: GameState, target: Unit) {
         }
       : unit,
   );
+  if (target.type === "strategist") {
+    state.constructions = state.constructions.map((construction) =>
+      construction.managerUnitId === target.id
+        ? { ...construction, managerUnitId: undefined }
+        : construction,
+    );
+    state.teams = state.teams.map((team) =>
+      team.constructionCapacityBonusStrategistId === target.id
+        ? { ...team, constructionCapacityBonusStrategistId: undefined }
+        : team,
+    );
+  }
 
   if (target.type === "king") {
     state.logs.push({

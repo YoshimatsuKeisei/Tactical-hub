@@ -289,6 +289,36 @@ describe("movement", () => {
     });
   });
 
+  it.each([
+    ["diagonally", { x: 7, y: 3 }],
+    ["in parallel", { x: 8, y: 2 }],
+  ])("allows movement between different bridges touching %s", (_, destinationCell) => {
+    const state = createInitialGameState();
+    addActiveBridge(state, "team-1", "first-adjacent-bridge", [
+      { x: 7, y: 2 },
+    ]);
+    addActiveBridge(state, "team-2", "second-adjacent-bridge", [
+      destinationCell,
+    ]);
+    const infantry = addUnit(
+      state,
+      `bridge-infantry-${destinationCell.x}-${destinationCell.y}`,
+      "team-1",
+      "infantry",
+      {
+        kind: "bridge",
+        bridgeId: "first-adjacent-bridge",
+        cellIndex: 0,
+      },
+    );
+
+    expect(getMovementCandidates(state, infantry.id)).toContainEqual({
+      kind: "bridge",
+      bridgeId: "second-adjacent-bridge",
+      cellIndex: 0,
+    });
+  });
+
   it("blocks only bridge cells carrying an active obstacle", () => {
     const state = createInitialGameState();
     addActiveBridge(state, "team-2", "blocked-bridge", [
