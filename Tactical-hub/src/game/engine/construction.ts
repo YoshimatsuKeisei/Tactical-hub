@@ -42,14 +42,9 @@ export function getOperationalRoadTiles(state: GameState, teamId: string) {
   return state.map.tiles.filter((tile) => tile.roadSectionId && sections.has(tile.roadSectionId));
 }
 
-function ownPending(state: GameState, teamId: string, exceptUnitId?: string) {
-  return state.strategistActionIntents.filter((intent) => intent.teamId === teamId && intent.strategistUnitId !== exceptUnitId);
-}
-
-export function getObstacleCandidates(state: GameState, strategistUnitId: string) {
-  const strategist = getBuilderUnits(state).find((unit) => unit.id === strategistUnitId);
-  if (!strategist || getManagedConstructions(state, strategist.id, "obstacle").length >= getConstructionManagementLimit(state, strategist.id, "obstacle") || !isAvailable(state, strategist.id, "obstacle")) return [];
-  const operational = new Set(getOperationalRoadTiles(state, strategist.ownerTeamId).map((tile) => tileKey(tile.x, tile.y)));
+export function getOperationalAreaTiles(state: GameState, teamId: string): BoardCoord[] {
+  const roads = getOperationalRoadTiles(state, teamId);
+  const operationalRoads = new Set(roads.map((tile) => tileKey(tile.x, tile.y)));
   const connectedBridgeCells = state.constructions
     .filter(
       (entry) =>
@@ -57,14 +52,26 @@ export function getObstacleCandidates(state: GameState, strategistUnitId: string
         entry.kind === "bridge" &&
         entry.tiles.some((cell) =>
           ORTHOGONAL.some(({ dx, dy }) =>
-            operational.has(tileKey(cell.x + dx, cell.y + dy)),
+            operationalRoads.has(tileKey(cell.x + dx, cell.y + dy)),
           ),
         ),
     )
     .flatMap((bridge) => bridge.tiles);
+  const cells = new Map<string, BoardCoord>();
+  for (const cell of [...roads, ...connectedBridgeCells])
+    cells.set(key(cell), { x: cell.x, y: cell.y });
+  return [...cells.values()].sort((left, right) => left.x - right.x || left.y - right.y);
+}
+
+function ownPending(state: GameState, teamId: string, exceptUnitId?: string) {
+  return state.strategistActionIntents.filter((intent) => intent.teamId === teamId && intent.strategistUnitId !== exceptUnitId);
+}
+
+export function getObstacleCandidates(state: GameState, strategistUnitId: string) {
+  const strategist = getBuilderUnits(state).find((unit) => unit.id === strategistUnitId);
+  if (!strategist || getManagedConstructions(state, strategist.id, "obstacle").length >= getConstructionManagementLimit(state, strategist.id, "obstacle") || !isAvailable(state, strategist.id, "obstacle")) return [];
   const reserved = new Set(ownPending(state, strategist.ownerTeamId, strategist.id).filter((intent) => intent.action === "place_obstacle").flatMap((intent) => intent.tiles ?? []).map(key));
-  return [...getOperationalRoadTiles(state, strategist.ownerTeamId).map(({ x, y }) => ({ x, y })), ...connectedBridgeCells]
-    .filter((cell, index, all) => all.findIndex((other) => key(other) === key(cell)) === index)
+  return getOperationalAreaTiles(state, strategist.ownerTeamId)
     .filter((cell) => !reserved.has(key(cell)) && !getConstructionAt(state, cell.x, cell.y, "obstacle") && !getUnitAtBoardCell(state, cell.x, cell.y));
 }
 
@@ -86,9 +93,6 @@ export function getBridgeCandidates(state: GameState, strategistUnitId: string) 
   return [...candidates.values()].sort((a, b) => a.map(key).join().localeCompare(b.map(key).join()));
 }
 
-export function getManagedConstruction(state: GameState, managerUnitId: string, kind: Construction["kind"]) {
-  return state.constructions.find((entry) => entry.active && entry.managerUnitId === managerUnitId && entry.kind === kind);
-}
 export function getManagedConstructions(state: GameState, managerUnitId: string, kind: Construction["kind"]) {
   return state.constructions.filter((entry) => entry.active && entry.managerUnitId === managerUnitId && entry.kind === kind);
 }
@@ -260,7 +264,10 @@ function resolveBridgeFloods(
 
   const survivingKings: FloodSnapshot[] = [];
   const defeatedKingData: { unit: Unit; resettingTeamId: string }[] = [];
-  for (const snapshot of snapshots.values()) {
+  const orderedSnapshots = [...snapshots.values()].sort((left, right) =>
+    left.unit.id.localeCompare(right.unit.id),
+  );
+  for (const snapshot of orderedSnapshots) {
     const { unit, origin, resettingTeamId } = snapshot;
     if (unit.type === "ninja") {
       unit.position = { kind: "water", ...origin };
@@ -283,32 +290,54 @@ function resolveBridgeFloods(
 
   const roadAssigned = new Set<string>();
   const unmatched: typeof survivingKings = [];
-  for (const snapshot of randomized(survivingKings, rng)) {
+  const orderedSurvivingKings = [...survivingKings].sort((left, right) =>
+    left.unit.id.localeCompare(right.unit.id),
+  );
+  for (const snapshot of randomized(orderedSurvivingKings, rng)) {
     const occupied = new Set(
       state.units.flatMap((unit) =>
         unit.position.kind === "tile" ? [tileKey(unit.position.x, unit.position.y)] : [],
       ),
     );
-    const candidates = getOperationalRoadTiles(state, snapshot.unit.ownerTeamId)
+    const activeBridgeTiles = new Set(
+      state.constructions
+        .filter((entry) => entry.active && entry.kind === "bridge")
+        .flatMap((entry) => entry.tiles)
+        .map(key),
+    );
+    const candidates = state.map.tiles
+      .filter((tile) => tile.terrain === "road")
       .filter((tile) => !occupied.has(tileKey(tile.x, tile.y)))
       .filter((tile) => !roadAssigned.has(tileKey(tile.x, tile.y)))
-      .filter((tile) => !getConstructionAt(state, tile.x, tile.y, "obstacle"));
+      .filter((tile) => !getConstructionAt(state, tile.x, tile.y, "obstacle"))
+      .filter((tile) => !activeBridgeTiles.has(tileKey(tile.x, tile.y)))
+      .sort((left, right) => left.x - right.x || left.y - right.y);
     if (!candidates.length) {
       unmatched.push(snapshot);
       continue;
     }
     const minimum = Math.min(...candidates.map((tile) => chebyshevDistance(snapshot.origin, tile)));
-    const nearest = randomized(candidates.filter((tile) => chebyshevDistance(snapshot.origin, tile) === minimum), rng)[0];
+    const nearest = randomized(
+      candidates
+        .filter((tile) => chebyshevDistance(snapshot.origin, tile) === minimum)
+        .sort((left, right) => left.x - right.x || left.y - right.y),
+      rng,
+    )[0];
     roadAssigned.add(tileKey(nearest.x, nearest.y));
     snapshot.unit.position = { kind: "tile", x: nearest.x, y: nearest.y };
   }
 
   const noBase: typeof unmatched = [];
-  for (const snapshot of randomized(unmatched, rng)) {
+  const orderedUnmatched = [...unmatched].sort((left, right) =>
+    left.unit.id.localeCompare(right.unit.id),
+  );
+  for (const snapshot of randomized(orderedUnmatched, rng)) {
     const team = state.teams.find((candidate) => candidate.id === snapshot.unit.ownerTeamId);
-    const bases = state.bases.filter(
-      (base) => base.ownerTeamId === snapshot.unit.ownerTeamId && base.slots.some((slot) => !slot.unitId),
-    );
+    const bases = state.bases
+      .filter(
+        (base) => base.ownerTeamId === snapshot.unit.ownerTeamId && base.slots.some((slot) => !slot.unitId),
+      )
+      .sort((left, right) => left.id.localeCompare(right.id));
     if (!bases.length) {
       noBase.push(snapshot);
       continue;
@@ -316,10 +345,14 @@ function resolveBridgeFloods(
     const distance = (base: (typeof bases)[number]) =>
       Math.min(...base.coords.map((cell) => chebyshevDistance(snapshot.origin, cell)));
     const minimum = Math.min(...bases.map(distance));
-    let nearest = bases.filter((base) => distance(base) === minimum);
+    const nearest = bases
+      .filter((base) => distance(base) === minimum)
+      .sort((left, right) => left.id.localeCompare(right.id));
     const home = nearest.find((base) => base.id === team?.homeBaseId);
     const base = home ?? randomized(nearest, rng)[0];
-    const slot = base.slots.find((candidate) => !candidate.unitId)!;
+    const slot = [...base.slots]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .find((candidate) => !candidate.unitId)!;
     slot.unitId = snapshot.unit.id;
     snapshot.unit.position = { kind: "base", baseId: base.id, slotId: slot.id };
   }

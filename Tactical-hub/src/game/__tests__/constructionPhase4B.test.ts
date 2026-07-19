@@ -5,7 +5,6 @@ import {
   assignConstructionManager,
   clearDeadConstructionManagers,
   getConstructionManagementLimit,
-  getOperationalRoadTiles,
   resolveStrategistActions,
   saveStrategistActionIntent,
 } from "../engine/construction";
@@ -48,8 +47,8 @@ function resolveReset(state: GameState, constructionId = "flood-bridge", strateg
   return resolveStrategistActions(state, () => 0);
 }
 
-function blockOperationalRoads(state: GameState, teamId: string) {
-  for (const tile of getOperationalRoadTiles(state, teamId))
+function blockAllRoads(state: GameState, teamId: string) {
+  for (const tile of state.map.tiles.filter((candidate) => candidate.terrain === "road"))
     state.constructions.push({ id: `block-${teamId}-${tile.x}-${tile.y}`, kind: "obstacle", ownerTeamId: "team-1", tiles: [{ x: tile.x, y: tile.y }], placedTurn: 1, active: true });
 }
 
@@ -78,7 +77,7 @@ describe("Phase 4-B bridge reset and construction inheritance", () => {
     expect(resolved.teams.find((team) => team.id === "team-1")?.defeatedUnitCount).toBe(1);
   });
 
-  it("damages a king and retreats it to the nearest operational road", () => {
+  it("damages a king and retreats it to the nearest open road anywhere on the board", () => {
     const state = createInitialGameState(); builder(state); bridge(state);
     const king = state.units.find((unit) => unit.id === "home-2-king")!;
     move(state, king, { kind: "bridge", bridgeId: "flood-bridge", cellIndex: 0 });
@@ -97,7 +96,7 @@ describe("Phase 4-B bridge reset and construction inheritance", () => {
     const relay = state.bases.find((base) => base.id === "neutral-north")!;
     relay.ownerTeamId = "team-2";
     state.teams.find((team) => team.id === "team-2")!.controlledBaseIds.push(relay.id);
-    blockOperationalRoads(state, "team-2");
+    blockAllRoads(state, "team-2");
     const resolved = resolveReset(state);
     expect(resolved.units.find((unit) => unit.id === king.id)?.position).toMatchObject({ kind: "base", baseId: "home-2" });
   });
@@ -106,7 +105,7 @@ describe("Phase 4-B bridge reset and construction inheritance", () => {
     const state = createInitialGameState(); builder(state); bridge(state);
     const king = state.units.find((unit) => unit.id === "home-2-king")!;
     move(state, king, { kind: "bridge", bridgeId: "flood-bridge", cellIndex: 0 });
-    blockOperationalRoads(state, "team-2");
+    blockAllRoads(state, "team-2");
     const home = state.bases.find((base) => base.id === "home-2")!;
     for (const slot of home.slots.filter((entry) => !entry.unitId)) {
       const occupant = addUnit(state, `fill-${slot.id}`, "team-2", "infantry", { kind: "base", baseId: home.id, slotId: slot.id });

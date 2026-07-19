@@ -4,6 +4,7 @@ import { getAttackCandidates } from "../engine/battle";
 import {
   getBridgeCandidates,
   getObstacleCandidates,
+  getOperationalAreaTiles,
   getOperationalRoadTiles,
   getOperationalRoadSectionIds,
   getOwnStrategistPreview,
@@ -129,6 +130,30 @@ describe("Phase 4-A construction", () => {
     expect(candidates).toContainEqual({ x: 4, y: 2 });
     expect(candidates).not.toContainEqual({ x: 4, y: 3 });
     expect(candidates).not.toContainEqual({ x: 4, y: 4 });
+  });
+
+  it("includes a connected active bridge, but not the road section across it, in the operational area", () => {
+    const state = createInitialGameState();
+    const builder = addBuilder(state, "operational-area-builder");
+    state.constructions.push({
+      id: "operational-area-bridge",
+      kind: "bridge",
+      ownerTeamId: "team-2",
+      tiles: [{ x: 4, y: 2 }, { x: 4, y: 3 }],
+      placedTurn: 1,
+      active: true,
+    });
+
+    const operationalRoadKeys = new Set(
+      getOperationalRoadTiles(state, builder.ownerTeamId).map((tile) => `${tile.x},${tile.y}`),
+    );
+    const area = getOperationalAreaTiles(state, builder.ownerTeamId);
+    expect(area).toEqual(expect.arrayContaining([{ x: 4, y: 2 }, { x: 4, y: 3 }]));
+    expect(
+      area
+        .filter((cell) => state.map.tiles.find((tile) => tile.x === cell.x && tile.y === cell.y)?.terrain === "road")
+        .every((cell) => operationalRoadKeys.has(`${cell.x},${cell.y}`)),
+    ).toBe(true);
   });
 
   it("prevents one builder from maintaining two bridges and blocks same-team overlap at input", () => {
