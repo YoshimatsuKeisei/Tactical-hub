@@ -25,6 +25,7 @@ import {
 import { completeSiegeCapture, transferBaseOwnership } from "./capture";
 import { getSiegeState, resetInactiveSieges } from "./siege";
 import { defeatTeamsWithoutBases } from "./defeat";
+import { resolveTeamTeleports } from "./teleport";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -49,6 +50,41 @@ export type MovementValidationResult =
 const directions = [-1, 0, 1]
   .flatMap((dx) => [-1, 0, 1].map((dy) => ({ dx, dy })))
   .filter(({ dx, dy }) => dx || dy);
+
+function getSeatOrder(state: GameState) {
+  return state.movementSeatOrderTeamIds.length
+    ? state.movementSeatOrderTeamIds
+    : state.teams.filter((team) => !team.isNeutral).map((team) => team.id).sort((a, b) => a.localeCompare(b));
+}
+
+function getRotatedActiveMovementOrder(state: GameState, startIndex = state.movementOrderStartIndex) {
+  const seats = getSeatOrder(state);
+  if (!seats.length) return [];
+  const normalizedStart = ((startIndex % seats.length) + seats.length) % seats.length;
+  const active = new Set(state.teams.filter((team) => team.status === "active").map((team) => team.id));
+  return [...seats.slice(normalizedStart), ...seats.slice(0, normalizedStart)].filter((teamId) => active.has(teamId));
+}
+
+export function beginMovementPhase(state: GameState): GameState {
+  const next = structuredClone(state) as GameState;
+  next.movementOrderTeamIds = getRotatedActiveMovementOrder(next);
+  next.movementCompletedTeamIds = [];
+  next.currentMovementTeamId = next.movementOrderTeamIds[0];
+  next.teleportIntents = [];
+  next.movedUnitIdsThisMovementPhase = [];
+  next.phase = next.turnState.phase = "movement_input";
+  return next;
+}
+
+export function getNextMovementTeamId(state: GameState) {
+  const currentIndex = state.currentMovementTeamId
+    ? state.movementOrderTeamIds.indexOf(state.currentMovementTeamId)
+    : -1;
+  return state.movementOrderTeamIds.slice(currentIndex + 1).find((teamId) =>
+    state.teams.some((team) => team.id === teamId && team.status === "active") &&
+    !state.movementCompletedTeamIds.includes(teamId),
+  );
+}
 
 function canEnterWater(unit: Unit) {
   return unit.type === "ninja";
@@ -353,7 +389,17 @@ export function getMovementCandidates(
   state: GameState,
   unitId: string,
 ): UnitPosition[] {
-  return getMovementPaths(state, unitId).map((path) => path.destination);
+  const unit = state.units.find((candidate) => candidate.id === unitId);
+  if (state.phase === "movement_input" && unit?.ownerTeamId !== state.currentMovementTeamId) return [];
+  if (state.movedUnitIdsThisMovementPhase.includes(unitId) || state.teleportIntents.some((intent) => intent.targetUnitId === unitId)) return [];
+  if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
+  const planningState = structuredClone(state) as GameState;
+  const teammatePlans = planningState.turnState.actionIntents
+    .find((intent) => intent.teamId === unit.ownerTeamId)
+    ?.movementIntents.filter((intent) => intent.unitId !== unitId && !intent.stay) ?? [];
+  for (const planned of teammatePlans) applyPosition(planningState, planned.unitId, planned.to);
+  const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
+  return getMovementPaths(planningState, unitId).map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position)));
 }
 
 export function validateMovementPath(
@@ -376,9 +422,23 @@ export function saveMovementIntent(
   state: GameState,
   intent: MovementIntent,
 ): GameState {
+  const unit = state.units.find((candidate) => candidate.id === intent.unitId);
+  if (
+    state.phase !== "movement_input" ||
+    intent.teamId !== state.currentMovementTeamId ||
+    unit?.ownerTeamId !== intent.teamId ||
+    state.movementCompletedTeamIds.includes(intent.teamId)
+  ) return state;
+  if (state.movedUnitIdsThisMovementPhase.includes(intent.unitId) || state.teleportIntents.some((entry) => entry.targetUnitId === intent.unitId || (!intent.stay && samePosition(entry.to, intent.to)))) return state;
   const existing = state.turnState.actionIntents.find(
     (candidate) => candidate.teamId === intent.teamId,
   );
+  if (
+    !intent.stay &&
+    existing?.movementIntents.some((movement) =>
+      movement.unitId !== intent.unitId && !movement.stay && samePosition(movement.to, intent.to),
+    )
+  ) return state;
   const actionIntents = existing
     ? state.turnState.actionIntents.map((candidate) =>
         candidate.teamId === intent.teamId
@@ -433,12 +493,14 @@ function applyRetreatStatus(
   );
 }
 
-export function resolveMovement(state: GameState): GameState {
+function resolveCurrentTeamMovement(state: GameState, teamId: string): GameState {
   const next = structuredClone(state) as GameState;
+  resolveTeamTeleports(next, teamId);
   resetInactiveSieges(next);
   const defendingCountsAtStart = new Map(next.bases.map((base) => [base.id, next.units.filter((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId).length]));
   const intents = next.turnState.actionIntents
-    .flatMap((intent) => intent.movementIntents)
+    .filter((intent) => intent.teamId === teamId)
+    .flatMap((intent) => intent.movementIntents.filter((movement) => movement.teamId === teamId))
     .sort((a, b) => {
       const aUnit = next.units.find((unit) => unit.id === a.unitId);
       const bUnit = next.units.find((unit) => unit.id === b.unitId);
@@ -487,6 +549,7 @@ export function resolveMovement(state: GameState): GameState {
         ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to)
         : undefined;
       applyPosition(next, unit.id, intent.to);
+      next.movedUnitIdsThisMovementPhase.push(unit.id);
       if (retreatEffect === "start" || retreatEffect === "maintain")
         applyRetreatStatus(next, unit.id, true, retreatTargetBaseId);
       if (retreatEffect === "release" || retreatEffect === "complete")
@@ -520,12 +583,9 @@ export function resolveMovement(state: GameState): GameState {
     }
   }
 
-  next.turnState.actionIntents = next.turnState.actionIntents.map((intent) => ({
-    ...intent,
-    movementIntents: [],
-  }));
-  next.unitTurnFlags = [];
-  let capturedWithRewards = false;
+  next.turnState.actionIntents = next.turnState.actionIntents.map((intent) =>
+    intent.teamId === teamId ? { ...intent, movementIntents: [] } : intent,
+  );
   const combatAbandonmentBases = new Set<string>();
   for (const base of [...next.bases]) {
     if (!(defendingCountsAtStart.get(base.id) ?? 0)) continue;
@@ -534,7 +594,7 @@ export function resolveMovement(state: GameState): GameState {
     const siege = getSiegeState(next, base.id);
     if (siege?.active && siege.defenderLossOccurred) {
       const candidates = siege.teamRecords.filter((record) => record.teamId !== siege.defendingTeamId && (record.defenderKills > 0 || record.effectiveAttackTurns > 0)).map((record) => record.teamId);
-      capturedWithRewards = completeSiegeCapture(next, siege, candidates, "combat_abandonment") || capturedWithRewards;
+      completeSiegeCapture(next, siege, candidates, "combat_abandonment");
       combatAbandonmentBases.add(base.id);
     }
   }
@@ -549,12 +609,47 @@ export function resolveMovement(state: GameState): GameState {
   }
   defeatTeamsWithoutBases(next);
   clearInvalidRetreatTargets(next);
+  next.movementCompletedTeamIds = [...new Set([...next.movementCompletedTeamIds, teamId])];
+  next.movementOrderTeamIds = next.movementOrderTeamIds.filter((orderedTeamId) =>
+    next.teams.some((team) => team.id === orderedTeamId && team.status === "active"),
+  );
+  const nextTeamId = next.movementOrderTeamIds.find((orderedTeamId) =>
+    !next.movementCompletedTeamIds.includes(orderedTeamId),
+  );
+  if (nextTeamId) {
+    next.currentMovementTeamId = nextTeamId;
+    next.phase = next.turnState.phase = "movement_input";
+    return next;
+  }
+
+  next.currentMovementTeamId = undefined;
+  next.unitTurnFlags = [];
   next.turnNumber += 1;
-  if (capturedWithRewards && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+  next.turnState.turnNumber = next.turnNumber;
+  const seats = getSeatOrder(next);
+  next.movementOrderStartIndex = seats.length ? (next.movementOrderStartIndex + 1) % seats.length : 0;
+  next.movementOrderTeamIds = getRotatedActiveMovementOrder(next);
+  next.movementCompletedTeamIds = [];
+  next.teleportIntents = [];
+  next.movedUnitIdsThisMovementPhase = [];
+  if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     next.phaseAfterRewards = "attack_input";
     next.phase = "reward_placement";
   } else next.phase = "attack_input";
-  next.turnState.turnNumber = next.turnNumber;
   next.turnState.phase = next.phase;
   return next;
+}
+
+export function submitMovement(state: GameState, teamId: string): GameState {
+  if (
+    state.phase !== "movement_input" ||
+    state.currentMovementTeamId !== teamId ||
+    state.teams.find((team) => team.id === teamId)?.status !== "active" ||
+    state.movementCompletedTeamIds.includes(teamId)
+  ) return state;
+  return resolveCurrentTeamMovement(state, teamId);
+}
+
+export function resolveMovement(state: GameState): GameState {
+  return state.currentMovementTeamId ? submitMovement(state, state.currentMovementTeamId) : state;
 }

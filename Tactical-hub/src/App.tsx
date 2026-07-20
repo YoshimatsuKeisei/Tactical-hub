@@ -18,6 +18,9 @@ export default function App() {
     () => state.units.find((unit) => unit.id === selectedUnitId),
     [selectedUnitId, state.units],
   );
+  const effectiveManualTeamId = state.phase === "movement_input" && state.currentMovementTeamId
+    ? state.currentMovementTeamId
+    : manualTeamId;
 
   function chooseDestination(position: UnitPosition) {
     if (!selectedUnit) return;
@@ -59,7 +62,7 @@ export default function App() {
             onSelectUnit={setSelectedUnitId}
             onChooseDestination={chooseDestination}
             onChooseAttackTarget={chooseAttackTarget}
-            manualTeamId={manualTeamId}
+            manualTeamId={effectiveManualTeamId}
             constructionMode={constructionMode}
             onChooseConstruction={(unitId, kind, tiles) => {
               const unit = state.units.find((candidate) => candidate.id === unitId);
@@ -72,13 +75,15 @@ export default function App() {
       <GameDebugPanel
         state={state}
         selectedUnitId={selectedUnitId}
-        manualTeamId={manualTeamId}
+        manualTeamId={effectiveManualTeamId}
         onManualTeamChange={setManualTeamId}
         constructionMode={constructionMode}
         onConstructionModeChange={setConstructionMode}
         onResolveProduction={() => setState(resolveProduction(state))}
         onResolveMovement={() => {
-          setState(resolveMovement(state));
+          const next = resolveMovement(state);
+          setState(next);
+          if (next.currentMovementTeamId) setManualTeamId(next.currentMovementTeamId);
           setSelectedUnitId(undefined);
         }}
         onResolveBattle={() => {

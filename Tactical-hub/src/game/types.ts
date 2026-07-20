@@ -135,6 +135,8 @@ export type MovementIntent = {
   to: UnitPosition;
   stay: boolean;
 };
+export type TeleportIntent = { teamId: string; strategistUnitId: string; targetUnitId: string; to: UnitPosition };
+export type TeleportCooldown = { strategistUnitId: string; availableFromTurn: number };
 
 export type AttackTarget = {
   kind: "unit";
@@ -289,4 +291,12 @@ export type GameState = {
   strategistActionIntents: StrategistActionIntent[];
   strategistSubmittedTeamIds: string[];
   strategistCooldowns: StrategistCooldown[];
+  movementSeatOrderTeamIds: string[];
+  movementOrderStartIndex: number;
+  movementOrderTeamIds: string[];
+  currentMovementTeamId?: string;
+  movementCompletedTeamIds: string[];
+  teleportIntents: TeleportIntent[];
+  teleportCooldowns: TeleportCooldown[];
+  movedUnitIdsThisMovementPhase: string[];
 };

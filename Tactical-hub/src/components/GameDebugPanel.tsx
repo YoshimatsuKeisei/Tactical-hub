@@ -16,6 +16,7 @@ import {
 import type { GameState } from "../game/types";
 import { positionKey } from "../game/utils/position";
 import { assignConstructionCapacityBonus, assignConstructionManager, getBridgeCandidates, getBuilderUnits, getManagedConstructions, getObstacleCandidates, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
+import { cancelTeleportIntent, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates, isTeleportAvailable, saveTeleportIntent } from "../game/engine/teleport";
 
 type Props = {
   state: GameState;
@@ -31,13 +32,17 @@ type Props = {
 };
 
 export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange }: Props) {
+  const [teleportTargets, setTeleportTargets] = useState<Record<string, string>>({});
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
   const movementIntents = state.turnState.actionIntents.flatMap((intent) => intent.movementIntents);
   const attackIntents = state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []);
   const productionIntents = state.turnState.actionIntents.flatMap((intent) => intent.productionChoices);
   const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const movementCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
-  const activeTeam = state.teams.find((team) => team.id === manualTeamId && team.status === "active") ?? state.teams.find((team) => team.status === "active")!;
+  const movementTeamId = state.phase === "movement_input" ? state.currentMovementTeamId : undefined;
+  const activeTeam = state.teams.find((team) => team.id === (movementTeamId ?? manualTeamId) && team.status === "active") ?? state.teams.find((team) => team.status === "active")!;
+  const currentMovementIndex = state.currentMovementTeamId ? state.movementOrderTeamIds.indexOf(state.currentMovementTeamId) : -1;
+  const nextMovementTeamId = state.movementOrderTeamIds.slice(currentMovementIndex + 1).find((teamId) => !state.movementCompletedTeamIds.includes(teamId));
   const controlledBases = state.bases.filter((base) => activeTeam.controlledBaseIds.includes(base.id) || base.ownerTeamId === activeTeam.id);
   const encouragedUnitIds = getEncouragedUnitIds(state);
   const encourageStrategists = state.units.filter(
@@ -89,11 +94,19 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
           </strong>
           <span>Moves</span>
           <strong>{movementIntents.length}</strong>
+          <span>Movement order</span>
+          <strong>{state.movementOrderTeamIds.join(" → ") || "-"}</strong>
+          <span>Current mover</span>
+          <strong>{state.currentMovementTeamId ?? "-"}</strong>
+          <span>Completed</span>
+          <strong>{state.movementCompletedTeamIds.join(", ") || "none"}</strong>
+          <span>Next mover</span>
+          <strong>{nextMovementTeamId ?? "-"}</strong>
           <span>Attacks</span>
           <strong>{attackIntents.length}</strong>
         </div>
-        <button className="primary sticky-action" onClick={onResolveMovement} disabled={state.phase === "reward_placement"}>
-          Resolve Movement
+        <button className="primary sticky-action" onClick={onResolveMovement} disabled={state.phase !== "movement_input" || !state.currentMovementTeamId}>
+          Confirm Movement / Pass ({state.currentMovementTeamId ?? "-"})
         </button>
       </section>
 
@@ -101,7 +114,12 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         <h2>Manual Team</h2>
         <div className="button-row">
           {state.teams.filter((team) => team.status === "active").map((team) => (
-            <button key={team.id} className={team.id === activeTeam.id ? "primary" : "secondary"} onClick={() => onManualTeamChange(team.id)}>{team.name}</button>
+            <button
+              key={team.id}
+              className={team.id === activeTeam.id ? "primary" : "secondary"}
+              disabled={state.phase === "movement_input" && team.id !== state.currentMovementTeamId}
+              onClick={() => onManualTeamChange(team.id)}
+            >{team.name}</button>
           ))}
         </div>
       </section>
@@ -123,6 +141,27 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
               ))}
             </div>
           ))}
+        </section>
+      ) : null}
+
+      {state.phase === "movement_input" && state.currentMovementTeamId ? (
+        <section>
+          <h2>Teleport</h2>
+          {getTeleportStrategists(state, state.currentMovementTeamId).map((strategist) => {
+            const targets = getTeleportTargetCandidates(state, strategist.id);
+            const destinations = getTeleportDestinationCandidates(state, strategist.id);
+            const selectedTargetId = teleportTargets[strategist.id];
+            const saved = state.teleportIntents.find((intent) => intent.strategistUnitId === strategist.id);
+            return <div className="intent-item" key={strategist.id}>
+              <strong>{strategist.id}: {isTeleportAvailable(state, strategist.id) ? "available" : "cooldown"}</strong>
+              <span>targets: {targets.map((unit) => unit.id).join(", ") || "none"}</span>
+              <div className="button-row">{targets.map((unit) => <button key={unit.id} onClick={() => setTeleportTargets((current) => ({ ...current, [strategist.id]: unit.id }))}>{unit.id}</button>)}</div>
+              <span>destinations: {destinations.length}</span>
+              {selectedTargetId ? <div className="button-row">{destinations.map((to) => <button key={positionKey(to)} onClick={() => onStateChange(saveTeleportIntent(state, { teamId: state.currentMovementTeamId!, strategistUnitId: strategist.id, targetUnitId: selectedTargetId, to }))}>{positionKey(to)}</button>)}</div> : null}
+              <span>saved: {saved ? `${saved.targetUnitId} → ${positionKey(saved.to)}` : "none"}</span>
+              {saved ? <button onClick={() => onStateChange(cancelTeleportIntent(state, strategist.id))}>Cancel Teleport</button> : null}
+            </div>;
+          })}
         </section>
       ) : null}
 
@@ -386,6 +425,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         {selectedUnit?.type === "strategist" ? <div className="button-row">
           <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "builder" } : unit) })}>Set Builder Role</button>
           <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "encourage" } : unit) })}>Set Encourage Role</button>
+          <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "teleporter" } : unit) })}>Set Teleporter Role</button>
         </div> : null}
         <p>Operating: {activeTeam.name}</p>
         <div className="button-row"><button className={constructionMode === "bridge" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("bridge")}>Choose bridge on board</button><button className={constructionMode === "obstacle" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("obstacle")}>Choose obstacle on board</button><button onClick={() => onConstructionModeChange(undefined)}>Clear board mode</button></div>
@@ -447,3 +487,4 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
     </aside>
   );
 }
+import { useState } from "react";

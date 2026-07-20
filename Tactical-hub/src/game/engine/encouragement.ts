@@ -6,9 +6,13 @@ function isAlive(unit: Unit) {
   return unit.position.kind !== "removed" && unit.hp > 0;
 }
 
-function positionCells(state: GameState, position: UnitPosition) {
+export function positionCells(state: GameState, position: UnitPosition) {
   if (position.kind === "tile" || position.kind === "water") return [{ x: position.x, y: position.y }];
   if (position.kind === "base") return state.bases.find((base) => base.id === position.baseId)?.coords ?? [];
+  if (position.kind === "bridge") {
+    const bridge = state.constructions.find((entry) => entry.active && entry.kind === "bridge" && entry.id === position.bridgeId);
+    return bridge?.tiles[position.cellIndex] ? [bridge.tiles[position.cellIndex]] : [];
+  }
   return [];
 }
 
@@ -24,7 +28,8 @@ function isEncourageStrategist(unit: Unit) {
 
 function distanceToNearestBase(state: GameState, unit: Unit) {
   if (unit.position.kind === "base") return 0;
-  return Math.min(...state.bases.map((base) => minDistanceToCells(unit.position, base.coords, state)));
+  const ownedBases = state.bases.filter((base) => base.ownerTeamId === unit.ownerTeamId);
+  return Math.min(...ownedBases.map((base) => minDistanceToCells(unit.position, base.coords, state)));
 }
 
 function isEncouragablePosition(position: UnitPosition) {
@@ -35,6 +40,10 @@ export function getEncourageRadius(state: GameState, strategist: Unit): 1 | 2 {
   return distanceToNearestBase(state, strategist) <= 2 ? 1 : 2;
 }
 
+export function isWithinEncourageRange(state: GameState, unit: Unit, strategist: Unit) {
+  return minDistanceToCells(unit.position, positionCells(state, strategist.position), state) <= getEncourageRadius(state, strategist);
+}
+
 export function isUnitEncouragedByStrategist(state: GameState, unit: Unit, strategist: Unit) {
   if (!isAlive(unit) || !isAlive(strategist)) return false;
   if (!isEncourageStrategist(strategist)) return false;
@@ -42,8 +51,7 @@ export function isUnitEncouragedByStrategist(state: GameState, unit: Unit, strat
   if (unit.ownerTeamId !== strategist.ownerTeamId) return false;
   if (!isEncouragablePosition(unit.position)) return false;
 
-  const radius = getEncourageRadius(state, strategist);
-  return minDistanceToCells(unit.position, positionCells(state, strategist.position), state) <= radius;
+  return isWithinEncourageRange(state, unit, strategist);
 }
 
 export function isUnitEncouraged(state: GameState, unit: Unit) {

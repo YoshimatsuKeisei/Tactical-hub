@@ -4,6 +4,7 @@ import { getTile, getUnitAtBoardCell, tileKey } from "../utils/position";
 import { chebyshevDistance } from "../utils/distance";
 import { getKingCampaign, recordKingDamage } from "./kingCampaign";
 import { resolveKingDefeats, type DefeatedKingPlan } from "./defeat";
+import { beginMovementPhase } from "./movement";
 
 const ORTHOGONAL = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 const key = (cell: BoardCoord) => tileKey(cell.x, cell.y);
@@ -400,11 +401,12 @@ export function resolveStrategistActions(state: GameState, rng: () => number = M
     next.logs.push({ id: `log-construction-place-${next.logs.length}`, turnNumber: next.turnNumber, type: "construction", message: `${intent.teamId} ${intent.strategistUnitId} placed ${kind} at ${intent.tiles!.map(key).join(" / ")}.`, relatedIds: [intent.strategistUnitId] });
   }
   next.strategistActionIntents = []; next.strategistSubmittedTeamIds = [];
+  const movementReady = beginMovementPhase(next);
   if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
-    next.phaseAfterRewards = "movement_input";
-    next.phase = next.turnState.phase = "reward_placement";
-  } else next.phase = next.turnState.phase = "movement_input";
-  return next;
+    movementReady.phaseAfterRewards = "movement_input";
+    movementReady.phase = movementReady.turnState.phase = "reward_placement";
+  }
+  return movementReady;
 }
 
 export function getOwnStrategistPreview(state: GameState, teamId: string) {

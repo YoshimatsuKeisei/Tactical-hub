@@ -569,7 +569,7 @@ describe("retreat", () => {
       ),
     ).toBe(true);
     expect(getRetreatTargetBaseId(resolved.units.find((candidate) => candidate.id === unit.id)!)).toBe("home-1");
-    expect(resolved.unitTurnFlags).toEqual([]);
+    expect(resolved.unitTurnFlags).toContainEqual(expect.objectContaining({ unitId: unit.id, retreatEligible: true }));
   });
 
   it("clears an invalid retreat target without automatically switching to another friendly base", () => {

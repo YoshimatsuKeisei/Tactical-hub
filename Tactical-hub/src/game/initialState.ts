@@ -82,5 +82,13 @@ export function createInitialGameState(): GameState {
     strategistActionIntents: [],
     strategistSubmittedTeamIds: [],
     strategistCooldowns: [],
+    movementSeatOrderTeamIds: ["team-1", "team-2", "team-3", "team-4"],
+    movementOrderStartIndex: 0,
+    movementOrderTeamIds: ["team-1", "team-2", "team-3", "team-4"],
+    currentMovementTeamId: "team-1",
+    movementCompletedTeamIds: [],
+    teleportIntents: [],
+    teleportCooldowns: [],
+    movedUnitIdsThisMovementPhase: [],
   };
 }
