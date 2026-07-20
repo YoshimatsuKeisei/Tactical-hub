@@ -33,16 +33,16 @@ export function getMovementCandidateByBoardCell(
 }
 
 export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction }: Props) {
-  const selectedCandidates = selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
-  const attackCandidates = selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
+  const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
+  const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
   const encourageAreaKeys =
     selectedUnit && selectedUnit.type === "strategist" && selectedUnit.role === "encourage"
       ? getEncourageAreaTileKeys(state, selectedUnit)
       : new Set<string>();
   const retreatIndicators = getRetreatDirectionIndicators(state, selectedUnitId);
-  const previewKeys = new Set(getOwnStrategistPreview(state, manualTeamId).map((entry) => `${entry.x},${entry.y}`));
-  const constructionCandidates = selectedUnit?.ownerTeamId === manualTeamId && selectedUnit.role === "builder"
+  const previewKeys = new Set((state.phase === "strategist_action_input" ? getOwnStrategistPreview(state, manualTeamId) : []).map((entry) => `${entry.x},${entry.y}`));
+  const constructionCandidates = state.phase === "strategist_action_input" && selectedUnit?.ownerTeamId === manualTeamId && selectedUnit.role === "builder"
     ? constructionMode === "bridge" ? getBridgeCandidates(state, selectedUnit.id) : constructionMode === "obstacle" ? getObstacleCandidates(state, selectedUnit.id).map((cell) => [cell]) : []
     : [];
   const constructionByTile = new Map<string, { x: number; y: number }[]>();

@@ -26,6 +26,7 @@ import { completeSiegeCapture, transferBaseOwnership } from "./capture";
 import { getSiegeState, resetInactiveSieges } from "./siege";
 import { defeatTeamsWithoutBases } from "./defeat";
 import { resolveTeamTeleports } from "./teleport";
+import { isTeamProductionPending } from "./productionSchedule";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -69,6 +70,7 @@ export function beginMovementPhase(state: GameState): GameState {
   const next = structuredClone(state) as GameState;
   next.movementOrderTeamIds = getRotatedActiveMovementOrder(next);
   next.movementCompletedTeamIds = [];
+  next.productionCompletedTeamIdsThisTurn = [];
   next.currentMovementTeamId = next.movementOrderTeamIds[0];
   next.teleportIntents = [];
   next.movedUnitIdsThisMovementPhase = [];
@@ -408,6 +410,17 @@ export function getMovementCandidates(
   return getMovementPaths(planningState, unitId).map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position)));
 }
 
+export function getTeamMovementCandidates(state: GameState, teamId: string) {
+  if (state.phase !== "movement_input" || state.currentMovementTeamId !== teamId) return [];
+  return state.units
+    .filter((unit) => unit.ownerTeamId === teamId && unit.hp > 0 && unit.position.kind !== "removed")
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((unit) => ({
+      unitId: unit.id,
+      destinations: getMovementCandidates(state, unit.id).sort((left, right) => positionKey(left).localeCompare(positionKey(right))),
+    }));
+}
+
 export function validateMovementPath(
   state: GameState,
   unit: Unit,
@@ -653,7 +666,16 @@ export function submitMovement(state: GameState, teamId: string): GameState {
     state.teams.find((team) => team.id === teamId)?.status !== "active" ||
     state.movementCompletedTeamIds.includes(teamId)
   ) return state;
-  return resolveCurrentTeamMovement(state, teamId);
+  if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId);
+  const hasSavedProduction = state.turnState.actionIntents.some(
+    (intent) => intent.teamId === teamId && intent.productionChoices.length > 0,
+  );
+  if (hasSavedProduction) return state;
+  const skipped = {
+    ...state,
+    productionCompletedTeamIdsThisTurn: [...new Set([...state.productionCompletedTeamIdsThisTurn, teamId])],
+  };
+  return resolveCurrentTeamMovement(skipped, teamId);
 }
 
 export function resolveMovement(state: GameState): GameState {

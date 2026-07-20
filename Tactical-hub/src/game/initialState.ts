@@ -87,6 +87,7 @@ export function createInitialGameState(): GameState {
     movementOrderTeamIds: ["team-1", "team-2", "team-3", "team-4"],
     currentMovementTeamId: "team-1",
     movementCompletedTeamIds: [],
+    productionCompletedTeamIdsThisTurn: [],
     teleportIntents: [],
     teleportCooldowns: [],
     movedUnitIdsThisMovementPhase: [],

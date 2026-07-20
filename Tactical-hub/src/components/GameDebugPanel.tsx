@@ -2,7 +2,8 @@ import { UNIT_STATS } from "../game/constants";
 import { getAttackCandidates, saveAttackIntent } from "../game/engine/battle";
 import { getEncourageRadius, getEncouragedUnitIds, getEncouragedUnitIdsByStrategist, isUnitEncouraged } from "../game/engine/encouragement";
 import { getMovementCandidates, saveMovementIntent } from "../game/engine/movement";
-import { getAvailableProductionTypes, saveProductionChoice } from "../game/engine/production";
+import { getAvailableProductionTypes, saveProductionChoice, STRATEGIST_ROLES } from "../game/engine/production";
+import { isTeamProductionPending } from "../game/engine/productionSchedule";
 import { getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
 import {
   getNearestEnemyBaseDistance,
@@ -17,6 +18,7 @@ import type { GameState } from "../game/types";
 import { positionKey } from "../game/utils/position";
 import { assignConstructionCapacityBonus, assignConstructionManager, getBridgeCandidates, getBuilderUnits, getManagedConstructions, getObstacleCandidates, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
 import { cancelTeleportIntent, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates, isTeleportAvailable, saveTeleportIntent } from "../game/engine/teleport";
+import { useState, type ReactNode } from "react";
 
 type Props = {
   state: GameState;
@@ -29,9 +31,13 @@ type Props = {
   onResolveBattle: () => void;
   onResolveProduction: () => void;
   onStateChange: (state: GameState) => void;
+  battleResolveDisabled?: boolean;
+  cpuSettingsControls?: ReactNode;
+  cpuLogControls?: ReactNode;
 };
 
-export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange }: Props) {
+export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange, battleResolveDisabled, cpuSettingsControls, cpuLogControls }: Props) {
+  const [panelTab, setPanelTab] = useState<"settings" | "phase" | "logs">("settings");
   const [teleportTargets, setTeleportTargets] = useState<Record<string, string>>({});
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
   const movementIntents = state.turnState.actionIntents.flatMap((intent) => intent.movementIntents);
@@ -55,6 +61,9 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
     : undefined;
   const selectedEnemyBaseDistance = selectedUnit ? getNearestEnemyBaseDistance(state, selectedUnit.ownerTeamId, selectedUnit.position) : undefined;
   const pendingRewards = getPendingRewardRequests(state);
+  const productionPending = state.currentMovementTeamId
+    ? isTeamProductionPending(state, state.currentMovementTeamId)
+    : false;
 
   function attackIntentSummary(attackerUnitId: string, targetUnitId?: string) {
     if (!targetUnitId) return undefined;
@@ -71,13 +80,16 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
 
   return (
     <aside className="debug-panel">
-      <section className="status-card">
-        <h2>Turn</h2>
+      <nav className="debug-tabs" aria-label="Right panel tabs">
+        <button className={panelTab === "settings" ? "primary" : "secondary"} onClick={() => setPanelTab("settings")}>プレイヤー構成・自動進行</button>
+        <button className={panelTab === "phase" ? "primary" : "secondary"} onClick={() => setPanelTab("phase")}>フェーズ操作</button>
+        <button className={panelTab === "logs" ? "primary" : "secondary"} onClick={() => setPanelTab("logs")}>ログ</button>
+      </nav>
+      {panelTab === "settings" ? cpuSettingsControls : null}
+      {panelTab === "logs" ? cpuLogControls : null}
+      <section className="status-card" hidden={panelTab !== "phase"}>
+        <h2>Current Phase Actions</h2>
         <div className="status-grid">
-          <span>Turn</span>
-          <strong>{state.turnNumber}</strong>
-          <span>Phase</span>
-          <strong>{state.phase}</strong>
           <span>Selected</span>
           <strong>{selectedUnit ? `${selectedUnit.id} (${selectedUnit.type})` : "none"}</strong>
           <span>Encouraged</span>
@@ -92,26 +104,23 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
                   : "no"
               : "-"}
           </strong>
-          <span>Moves</span>
-          <strong>{movementIntents.length}</strong>
-          <span>Movement order</span>
-          <strong>{state.movementOrderTeamIds.join(" → ") || "-"}</strong>
-          <span>Current mover</span>
-          <strong>{state.currentMovementTeamId ?? "-"}</strong>
-          <span>Completed</span>
-          <strong>{state.movementCompletedTeamIds.join(", ") || "none"}</strong>
-          <span>Next mover</span>
-          <strong>{nextMovementTeamId ?? "-"}</strong>
-          <span>Attacks</span>
-          <strong>{attackIntents.length}</strong>
+          {state.phase === "movement_input" ? <>
+            <span>Moves</span><strong>{movementIntents.length}</strong>
+            <span>Movement order</span><strong>{state.movementOrderTeamIds.join(" → ") || "-"}</strong>
+            <span>Current mover</span><strong>{state.currentMovementTeamId ?? "-"}</strong>
+            <span>Completed</span><strong>{state.movementCompletedTeamIds.join(", ") || "none"}</strong>
+            <span>Next mover</span><strong>{nextMovementTeamId ?? "-"}</strong>
+          </> : null}
+          {state.phase === "attack_input" ? <><span>Attacks</span><strong>{attackIntents.length}</strong></> : null}
         </div>
-        <button className="primary sticky-action" onClick={onResolveMovement} disabled={state.phase !== "movement_input" || !state.currentMovementTeamId}>
+        {state.phase === "movement_input" && !productionPending ? <button className="primary sticky-action" onClick={onResolveMovement} disabled={!state.currentMovementTeamId}>
           Confirm Movement / Pass ({state.currentMovementTeamId ?? "-"})
-        </button>
+        </button> : null}
+        {productionPending ? <p>生産を確定またはスキップしてから移動してください。</p> : null}
       </section>
 
-      <section>
-        <h2>Manual Team</h2>
+      <section hidden={panelTab !== "phase"}>
+        <h2>操作チーム</h2>
         <div className="button-row">
           {state.teams.filter((team) => team.status === "active").map((team) => (
             <button
@@ -124,7 +133,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         </div>
       </section>
 
-      {state.phase === "reward_placement" ? (
+      {panelTab === "phase" && state.phase === "reward_placement" ? (
         <section>
           <h2>褒賞配置</h2>
           {pendingRewards.map((request) => (
@@ -144,7 +153,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         </section>
       ) : null}
 
-      {state.phase === "movement_input" && state.currentMovementTeamId ? (
+      {panelTab === "phase" && state.phase === "movement_input" && state.currentMovementTeamId && !productionPending ? (
         <section>
           <h2>Teleport</h2>
           {getTeleportStrategists(state, state.currentMovementTeamId).map((strategist) => {
@@ -165,7 +174,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         </section>
       ) : null}
 
-      <section>
+      <section hidden={panelTab !== "phase" || state.phase !== "movement_input" || productionPending}>
         <h2>Retreat</h2>
         {selectedUnit ? (
           <div className="intent-list">
@@ -258,7 +267,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         )}
       </section>
 
-      <section>
+      <section hidden={panelTab !== "settings"}>
         <h2>Legend</h2>
         <div className="legend-grid">
           <span className="legend-swatch base" /> Home / Relay Base
@@ -270,7 +279,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         </div>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "phase" || (state.phase !== "movement_input" && state.phase !== "attack_input")}>
         <h2>Encourage</h2>
         <div className="intent-list">
           {encourageStrategists.length ? (
@@ -288,7 +297,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         </div>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "phase" || (state.phase !== "production" && !productionPending)}>
         <h2>Production</h2>
         {controlledBases.map((base) => {
           const types = getAvailableProductionTypes(state, activeTeam.id, base.id);
@@ -297,14 +306,13 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
               <strong>{base.id}</strong>
               <div className="button-row">
                 {types.length ? (
-                  types.map((unitType) => (
-                    <button
-                      key={unitType}
-                      onClick={() => onStateChange(saveProductionChoice(state, { teamId: activeTeam.id, baseId: base.id, unitType }))}
-                    >
-                      {UNIT_STATS[unitType].label}
-                    </button>
-                  ))
+                  types.flatMap((unitType) => unitType === "strategist"
+                    ? STRATEGIST_ROLES.map((strategistRole) => (
+                      <button key={`${unitType}-${strategistRole}`} onClick={() => onStateChange(saveProductionChoice(state, { teamId: activeTeam.id, baseId: base.id, unitType, strategistRole }))}>
+                        {UNIT_STATS[unitType].label} ({strategistRole})
+                      </button>
+                    ))
+                    : [<button key={unitType} onClick={() => onStateChange(saveProductionChoice(state, { teamId: activeTeam.id, baseId: base.id, unitType }))}>{UNIT_STATS[unitType].label}</button>])
                 ) : (
                   <span>no slot</span>
                 )}
@@ -313,31 +321,33 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
           );
         })}
         <button className="primary" onClick={onResolveProduction} disabled={state.phase === "reward_placement"}>
-          Resolve Production
+          {productionPending ? `生産を確定／スキップ (${state.currentMovementTeamId})` : "Resolve Production"}
         </button>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "phase" || !["production", "movement_input", "attack_input"].includes(state.phase)}>
         <h2>Saved Intents</h2>
         <div className="intent-list">
-          {movementIntents.length ? (
+          {state.phase === "movement_input" && movementIntents.length ? (
             movementIntents.map((intent) => (
               <div key={intent.unitId} className="intent-item">
                 <strong>{intent.unitId}</strong>
                 <span>{intent.stay ? "stay" : JSON.stringify(intent.to)}</span>
               </div>
             ))
-          ) : (
+          ) : state.phase === "movement_input" ? (
             <p>No movement intents saved.</p>
-          )}
+          ) : null}
+          {state.phase === "production" || productionPending ? <p>Production intents: {productionIntents.length}</p> : null}
+          {state.phase === "attack_input" ? <p>Attack intents: {attackIntents.length}</p> : null}
         </div>
         <details>
           <summary>Raw intents</summary>
-          <pre>{JSON.stringify({ productionIntents, movementIntents, attackIntents }, null, 2)}</pre>
+          <pre>{JSON.stringify(state.phase === "production" ? { productionIntents } : state.phase === "movement_input" ? { movementIntents } : { attackIntents }, null, 2)}</pre>
         </details>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "phase" || state.phase !== "attack_input"}>
         <h2>Attack</h2>
         <div className="intent-list">
           {selectedUnit && isRetreating(selectedUnit) ? (
@@ -415,20 +425,18 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
             <p>No attack intents saved.</p>
           )}
         </div>
-        <button className="primary battle-action" onClick={onResolveBattle} disabled={state.phase === "reward_placement"}>
+        <button className="primary battle-action" onClick={onResolveBattle} disabled={state.phase === "reward_placement" || battleResolveDisabled}>
           Resolve Battle
         </button>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "phase" || (state.phase !== "strategist_action_input" && state.phase !== "strategist_action_resolution")}>
         <h2>Strategist Actions</h2>
-        {selectedUnit?.type === "strategist" ? <div className="button-row">
-          <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "builder" } : unit) })}>Set Builder Role</button>
-          <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "encourage" } : unit) })}>Set Encourage Role</button>
-          <button onClick={() => onStateChange({ ...state, units: state.units.map((unit) => unit.id === selectedUnit.id ? { ...unit, role: "teleporter" } : unit) })}>Set Teleporter Role</button>
-        </div> : null}
         <p>Operating: {activeTeam.name}</p>
-        <div className="button-row"><button className={constructionMode === "bridge" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("bridge")}>Choose bridge on board</button><button className={constructionMode === "obstacle" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("obstacle")}>Choose obstacle on board</button><button onClick={() => onConstructionModeChange(undefined)}>Clear board mode</button></div>
+        {getBuilderUnits(state, activeTeam.id).length ? <>
+          <p>盤面で建設型軍師を選択してから、設置する設備を選んでください。</p>
+          <div className="button-row"><button className={constructionMode === "bridge" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("bridge")}>Choose bridge on board</button><button className={constructionMode === "obstacle" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("obstacle")}>Choose obstacle on board</button><button onClick={() => onConstructionModeChange(undefined)}>Clear board mode</button></div>
+        </> : <p>This team has no builder strategist.</p>}
         {getBuilderUnits(state, activeTeam.id).map((builder) => {
           const bridges = getManagedConstructions(state, builder.id, "bridge");
           const obstacles = getManagedConstructions(state, builder.id, "obstacle");
@@ -452,13 +460,13 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         <button onClick={() => onStateChange(resolveStrategistActions(state))} disabled={!state.teams.filter((team) => team.status === "active").every((team) => state.strategistSubmittedTeamIds.includes(team.id)) || state.phase !== "strategist_action_resolution"}>Resolve Strategists</button>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "logs"}>
         <h2>State Summary</h2>
         <p>Units: {state.units.filter((unit) => unit.position.kind !== "removed").length}</p>
         <p>Bases: {state.bases.length}</p>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "logs"}>
         <h2>Home Slots</h2>
         <div className="slot-debug">
           {state.bases
@@ -476,7 +484,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         </div>
       </section>
 
-      <section>
+      <section hidden={panelTab !== "logs"}>
         <h2>Game Log</h2>
         <ol className="log-list" reversed>
           {state.logs.slice(-12).map((log) => (
@@ -487,4 +495,3 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
     </aside>
   );
 }
-import { useState } from "react";

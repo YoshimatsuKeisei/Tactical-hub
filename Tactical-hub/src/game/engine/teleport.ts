@@ -10,7 +10,9 @@ export const isTeleportAvailable = (state: GameState, strategistId: string) =>
   state.turnNumber >= (state.teleportCooldowns.find((entry) => entry.strategistUnitId === strategistId)?.availableFromTurn ?? 0);
 
 export function getTeleportStrategists(state: GameState, teamId: string) {
-  return state.units.filter((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.role === "teleporter" && alive(unit));
+  return state.units
+    .filter((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.role === "teleporter" && alive(unit))
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function ownReservations(state: GameState, teamId: string, exceptStrategistId?: string) {
@@ -53,6 +55,15 @@ export function getTeleportDestinationCandidates(state: GameState, strategistId:
       if (!reservedKeys.has(positionKey(position))) destinations.push(position);
     }
   return destinations.sort((a, b) => positionKey(a).localeCompare(positionKey(b)));
+}
+
+export function getTeamTeleportCandidates(state: GameState, teamId: string) {
+  if (state.phase !== "movement_input" || state.currentMovementTeamId !== teamId) return [];
+  return getTeleportStrategists(state, teamId).map((strategist) => ({
+    strategistUnitId: strategist.id,
+    targets: getTeleportTargetCandidates(state, strategist.id),
+    destinations: getTeleportDestinationCandidates(state, strategist.id),
+  }));
 }
 
 export function saveTeleportIntent(state: GameState, intent: TeleportIntent) {

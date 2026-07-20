@@ -126,6 +126,7 @@ export type ProductionChoice = {
   teamId: string;
   baseId: string;
   unitType: UnitType;
+  strategistRole?: StrategistRole;
 };
 
 export type MovementIntent = {
@@ -296,6 +297,7 @@ export type GameState = {
   movementOrderTeamIds: string[];
   currentMovementTeamId?: string;
   movementCompletedTeamIds: string[];
+  productionCompletedTeamIdsThisTurn: string[];
   teleportIntents: TeleportIntent[];
   teleportCooldowns: TeleportCooldown[];
   movedUnitIdsThisMovementPhase: string[];

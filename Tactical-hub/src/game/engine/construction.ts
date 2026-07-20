@@ -174,6 +174,36 @@ export function saveStrategistActionIntent(state: GameState, intent: StrategistA
   return { ...state, strategistActionIntents: [...state.strategistActionIntents.filter((entry) => entry.strategistUnitId !== strategist.id), intent] };
 }
 
+export function getStrategistActionCandidates(state: GameState, teamId: string): StrategistActionIntent[] {
+  if (
+    state.phase !== "strategist_action_input" ||
+    state.teams.find((team) => team.id === teamId)?.status !== "active" ||
+    state.strategistSubmittedTeamIds.includes(teamId)
+  ) return [];
+  return getBuilderUnits(state, teamId)
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((builder) => {
+      const placements: StrategistActionIntent[] = [
+        ...getBridgeCandidates(state, builder.id).map((tiles) => ({ teamId, strategistUnitId: builder.id, action: "place_bridge" as const, tiles })),
+        ...getObstacleCandidates(state, builder.id).map((cell) => ({ teamId, strategistUnitId: builder.id, action: "place_obstacle" as const, tiles: [cell] })),
+      ];
+      const resets = (["bridge", "obstacle"] as const).flatMap((kind) =>
+        getManagedConstructions(state, builder.id, kind)
+          .slice()
+          .sort((left, right) => left.id.localeCompare(right.id))
+          .map((construction) => ({
+            teamId,
+            strategistUnitId: builder.id,
+            action: (kind === "bridge" ? "reset_bridge" : "reset_obstacle") as StrategistActionIntent["action"],
+            constructionId: construction.id,
+          })),
+      );
+      return [...placements, ...resets, { teamId, strategistUnitId: builder.id, action: "pass" as const }];
+    })
+    .filter((candidate) => saveStrategistActionIntent(state, candidate) !== state);
+}
+
 export function submitStrategistActions(state: GameState, teamId: string) {
   if (state.phase !== "strategist_action_input" || state.teams.find((team) => team.id === teamId)?.status !== "active") return state;
   const next = structuredClone(state) as GameState;

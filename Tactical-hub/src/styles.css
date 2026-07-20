@@ -275,10 +275,35 @@ p {
 }
 
 .status-card {
+  background: #f8fafb;
+}
+
+.debug-tabs {
   position: sticky;
   top: 0;
-  z-index: 4;
+  z-index: 6;
   background: #f8fafb;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 0 0 10px;
+}
+
+.debug-tabs button {
+  padding: 8px 4px;
+  font-size: 12px;
+}
+
+.turn-phase-banner {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  border: 1px solid #c9d0d6;
+  border-radius: 10px;
+  background: #f8fafb;
+  font-size: 16px;
 }
 
 .status-grid {

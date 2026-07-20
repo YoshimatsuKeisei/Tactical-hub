@@ -5,6 +5,17 @@ import { beginStrategistActionPhase } from "./construction";
 
 export function getPendingRewardRequests(state: GameState) { return state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired); }
 
+export function getRewardPlacementCandidates(state: GameState, teamId: string) {
+  if (state.phase !== "reward_placement") return [];
+  return getPendingRewardRequests(state)
+    .filter((request) => request.teamId === teamId)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((request) => request.eligibleBaseIds
+      .slice()
+      .sort((left, right) => left.localeCompare(right))
+      .flatMap((baseId) => getAvailableProductionTypes(state, teamId, baseId).map((unitType) => ({ requestId: request.id, baseId, unitType }))));
+}
+
 export function enqueueRewardRequest(state: GameState, input: { teamId: string; rewardType: RewardType; sourceBaseId: string; sourceKingUnitId?: string; fixedBaseId?: string }) {
   const destinationKind = input.fixedBaseId ? "fixed" as const : "selectable" as const;
   const eligibleBaseIds = input.fixedBaseId ? [input.fixedBaseId] : state.bases.filter((base) => base.ownerTeamId === input.teamId && base.slots.some((slot) => !slot.unitId)).map((base) => base.id);

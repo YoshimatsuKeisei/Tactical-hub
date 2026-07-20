@@ -1,5 +1,9 @@
 import { PRODUCIBLE_UNIT_TYPES, UNIT_STATS } from "../constants";
-import type { GameState, ProductionChoice, Unit, UnitType } from "../types";
+import type { GameState, ProductionChoice, StrategistRole, Unit, UnitType } from "../types";
+import { beginMovementPhase } from "./movement";
+import { isTeamProductionPending } from "./productionSchedule";
+
+export const STRATEGIST_ROLES: StrategistRole[] = ["builder", "encourage", "teleporter"];
 
 function nextUnitId(state: GameState, baseId: string, unitType: UnitType) {
   const count = state.units.filter((unit) => unit.id.startsWith(`${baseId}-${unitType}`)).length;
@@ -25,6 +29,19 @@ export function getAvailableProductionTypes(state: GameState, teamId: string, ba
   });
 }
 
+export function getProductionCandidates(state: GameState, teamId: string): ProductionChoice[] {
+  const canProduce = state.phase === "production" || isTeamProductionPending(state, teamId);
+  if (!canProduce || state.teams.find((team) => team.id === teamId)?.status !== "active") return [];
+  return state.bases
+    .filter((base) => base.ownerTeamId === teamId)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((base) => getAvailableProductionTypes(state, teamId, base.id).flatMap((unitType): ProductionChoice[] =>
+      unitType === "strategist"
+        ? STRATEGIST_ROLES.map((strategistRole) => ({ teamId, baseId: base.id, unitType, strategistRole }))
+        : [{ teamId, baseId: base.id, unitType }],
+    ));
+}
+
 export function saveProductionChoice(state: GameState, choice: ProductionChoice): GameState {
   const actionIntents = upsertProductionChoice(state, choice);
   return { ...state, turnState: { ...state.turnState, actionIntents } };
@@ -48,10 +65,7 @@ function upsertProductionChoice(state: GameState, choice: ProductionChoice) {
   );
 }
 
-export function resolveProduction(state: GameState): GameState {
-  let next = structuredClone(state) as GameState;
-  const choices = next.turnState.actionIntents.flatMap((intent) => intent.productionChoices);
-
+function applyProductionChoices(next: GameState, choices: ProductionChoice[]) {
   for (const choice of choices) {
     const base = next.bases.find((candidate) => candidate.id === choice.baseId);
     const legalTypes = getAvailableProductionTypes(next, choice.teamId, choice.baseId);
@@ -75,7 +89,7 @@ export function resolveProduction(state: GameState): GameState {
       position: { kind: "base", baseId: base.id, slotId: slot.id },
       statuses: [],
     };
-    if (choice.unitType === "strategist") unit.role = "encourage";
+    if (choice.unitType === "strategist") unit.role = choice.strategistRole ?? "encourage";
     slot.unitId = unit.id;
     next.units.push(unit);
     next.logs.push({
@@ -86,7 +100,27 @@ export function resolveProduction(state: GameState): GameState {
       relatedIds: [unit.id, base.id],
     });
   }
+}
+
+export function submitTeamProduction(state: GameState, teamId: string): GameState {
+  if (!isTeamProductionPending(state, teamId)) return state;
+  const next = structuredClone(state) as GameState;
+  const choices = next.turnState.actionIntents
+    .filter((intent) => intent.teamId === teamId)
+    .flatMap((intent) => intent.productionChoices);
+  applyProductionChoices(next, choices);
+  next.turnState.actionIntents = next.turnState.actionIntents.map((intent) =>
+    intent.teamId === teamId ? { ...intent, productionChoices: [] } : intent,
+  );
+  next.productionCompletedTeamIdsThisTurn = [...new Set([...next.productionCompletedTeamIdsThisTurn, teamId])];
+  return next;
+}
+
+export function resolveProduction(state: GameState): GameState {
+  const next = structuredClone(state) as GameState;
+  const choices = next.turnState.actionIntents.flatMap((intent) => intent.productionChoices);
+  applyProductionChoices(next, choices);
 
   next.turnState.actionIntents = next.turnState.actionIntents.map((intent) => ({ ...intent, productionChoices: [] }));
-  return next;
+  return state.phase === "production" ? beginMovementPhase(next) : next;
 }

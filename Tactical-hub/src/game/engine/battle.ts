@@ -300,6 +300,14 @@ export function getAttackCandidates(
   );
 }
 
+export function getTeamAttackCandidates(state: GameState, teamId: string) {
+  if (state.phase !== "attack_input" || state.teams.find((team) => team.id === teamId)?.status !== "active") return [];
+  return state.units
+    .filter((unit) => unit.ownerTeamId === teamId && unit.hp > 0 && unit.position.kind !== "removed")
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((unit) => ({ attackerUnitId: unit.id, targets: getAttackCandidates(state, unit.id) }));
+}
+
 export function saveAttackIntent(
   state: GameState,
   intent: AttackIntent,
