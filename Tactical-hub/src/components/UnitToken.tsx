@@ -7,6 +7,8 @@ type Props = {
   team?: Team;
   selected?: boolean;
   attackTarget?: boolean;
+  attackReady?: boolean;
+  attackComplete?: boolean;
   retreatIndicators?: RetreatDirectionIndicator[];
   onClick?: () => void;
 };
@@ -22,10 +24,10 @@ const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], strin
   "up-left": "↖",
 };
 
-export function UnitToken({ unit, team, selected, attackTarget, retreatIndicators = [], onClick }: Props) {
+export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], onClick }: Props) {
   return (
     <button
-      className={`unit-token ${selected ? "selected" : ""} ${attackTarget ? "attack-target" : ""}`}
+      className={`unit-token ${selected ? "selected" : ""} ${attackTarget ? "attack-target" : ""} ${attackReady ? "attack-ready" : ""} ${attackComplete ? "attack-complete" : ""}`}
       style={{ background: team?.color ?? "#777" }}
       title={`${team?.name ?? unit.ownerTeamId} ${unit.type} HP:${unit.hp}`}
       onClick={(event) => {

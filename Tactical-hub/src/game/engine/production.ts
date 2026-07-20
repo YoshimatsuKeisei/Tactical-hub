@@ -16,9 +16,12 @@ export function getAvailableProductionTypes(state: GameState, teamId: string, ba
 
   return PRODUCIBLE_UNIT_TYPES.filter((unitType) => {
     if (unitType === "ninja") {
-      return !state.units.some(
-        (unit) => unit.ownerTeamId === teamId && unit.type === "ninja" && unit.position.kind !== "removed",
-      );
+      return state.units.filter((unit) => unit.ownerTeamId === teamId && unit.type === "ninja" && unit.hp > 0 && unit.position.kind !== "removed").length < 2;
+    }
+    if (unitType === "archer") {
+      const defeatedTeams = state.teams.filter((team) => !team.isNeutral && team.status !== "active").length;
+      const limit = 3 + defeatedTeams;
+      return state.units.filter((unit) => unit.ownerTeamId === teamId && unit.type === "archer" && unit.hp > 0 && unit.position.kind !== "removed").length < limit;
     }
     if (unitType === "strategist") {
       return state.units.filter(

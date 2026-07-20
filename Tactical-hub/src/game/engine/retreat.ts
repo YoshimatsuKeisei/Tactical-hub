@@ -272,10 +272,14 @@ export function getRetreatTargetBaseIdForMove(
 export function clearInvalidRetreatTargets(state: GameState) {
   const invalidUnitIds = new Set<string>();
   state.units = state.units.map((unit) => {
+    const flag = getUnitTurnFlags(state, unit.id);
+    const contextValid = !flag?.retreatEligible || isRetreatContextValid(state, unit);
+    if (!contextValid) invalidUnitIds.add(unit.id);
     if (!isRetreating(unit)) return unit;
     const targetBaseId = getRetreatTargetBaseId(unit);
     const team = state.teams.find((candidate) => candidate.id === unit.ownerTeamId);
     const valid = Boolean(
+      contextValid &&
       targetBaseId &&
       isAlive(unit) &&
       team?.status === "active" &&
@@ -378,17 +382,18 @@ export function getRetreatDirectionIndicators(
   const unit = unitId ? state.units.find((candidate) => candidate.id === unitId) : undefined;
   if (!unit || unit.position.kind === "removed") return [];
   const retreating = isRetreating(unit);
+  const eligibilityFlag = getUnitTurnFlags(state, unit.id);
+  if (eligibilityFlag?.retreatEligible && !isRetreatContextValid(state, unit)) return [];
   if (!retreating && !isUnitRetreatEligible(state, unit)) return [];
 
-  const retreatTargetBaseId = retreating ? getRetreatTargetBaseId(unit) : undefined;
+  const flag = eligibilityFlag;
+  const retreatTargetBaseId = retreating ? getRetreatTargetBaseId(unit) : flag?.retreatFriendlyBaseIdsAtEligibility?.[0];
   const friendly = retreatTargetBaseId
     ? getLegalRetreatRouteDistance(state, unit.ownerTeamId, unit.position, retreatTargetBaseId)
     : getLegalRetreatRouteDistance(state, unit.ownerTeamId, unit.position);
-  const hostile = getNearestEnemyBaseDistance(
-    state,
-    unit.ownerTeamId,
-    unit.position,
-  );
+  const hostile = flag?.retreatHostileBaseIdsAtEligibility?.length
+    ? { distance: 0, baseIds: flag.retreatHostileBaseIdsAtEligibility }
+    : getNearestEnemyBaseDistance(state, unit.ownerTeamId, unit.position);
 
   return [
     { kind: "friendly" as const, vector: nearestBaseVector(state, unit.position, friendly?.baseIds) },
@@ -422,7 +427,25 @@ export function getUnitTurnFlags(state: GameState, unitId: string) {
 }
 
 export function isUnitRetreatEligible(state: GameState, unit: Unit) {
-  return Boolean(getUnitTurnFlags(state, unit.id)?.retreatEligible);
+  return Boolean(getUnitTurnFlags(state, unit.id)?.retreatEligible && isRetreatContextValid(state, unit));
+}
+
+export function isRetreatContextValid(state: GameState, unit: Unit) {
+  const flag = getUnitTurnFlags(state, unit.id);
+  if (!flag?.retreatEligible || !isAlive(unit) || state.teams.find((team) => team.id === unit.ownerTeamId)?.status !== "active") return false;
+  const friendlyIds = flag.retreatFriendlyBaseIdsAtEligibility;
+  const hostileIds = flag.retreatHostileBaseIdsAtEligibility;
+  if (!friendlyIds?.length || !hostileIds?.length) return true;
+  const friendlyStillFriendly = friendlyIds.some((baseId) => {
+    const base = state.bases.find((entry) => entry.id === baseId);
+    return Boolean(base && getBaseControllerTeamId(state, base) === unit.ownerTeamId && getLegalRetreatRouteDistance(state, unit.ownerTeamId, unit.position, base.id));
+  });
+  const hostileStillHostile = hostileIds.some((baseId) => {
+    const base = state.bases.find((entry) => entry.id === baseId);
+    const controller = base ? getBaseControllerTeamId(state, base) : undefined;
+    return Boolean(controller && controller !== unit.ownerTeamId && state.teams.find((team) => team.id === controller)?.status !== "eliminated");
+  });
+  return friendlyStillFriendly && hostileStillHostile;
 }
 
 export function getRetreatDebugInfo(
@@ -500,6 +523,8 @@ export function buildUnitTurnFlag(
       ?.distance ?? Number.POSITIVE_INFINITY;
   const hasFriendlyBase =
     getControlledFriendlyBases(state, unit.ownerTeamId).length > 0;
+  const friendlyAtEligibility = getLegalRetreatRouteDistance(state, unit.ownerTeamId, positionAtBattleStart)?.baseIds ?? [];
+  const hostileAtEligibility = getNearestEnemyBaseDistance(state, unit.ownerTeamId, positionAtBattleStart)?.baseIds ?? [];
   const enemyBaseWithin3AtBattleStart = enemyBaseDistance <= 3;
   const retreatEligible =
     wasAliveAtBattleStart &&
@@ -532,6 +557,8 @@ export function buildUnitTurnFlag(
       ? enemyBaseDistance
       : undefined,
     enemyBaseWithin3AtBattleStart,
+    retreatFriendlyBaseIdsAtEligibility: friendlyAtEligibility,
+    retreatHostileBaseIdsAtEligibility: hostileAtEligibility,
     wasAliveAtBattleStart,
     survivedPreviousBattle,
     attackedInPreviousBattle,

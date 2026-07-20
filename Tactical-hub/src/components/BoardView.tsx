@@ -1,5 +1,5 @@
 import { getMovementCandidates } from "../game/engine/movement";
-import { getAttackCandidates } from "../game/engine/battle";
+import { getAttackCandidates, getTeamAttackCandidates } from "../game/engine/battle";
 import { getEncourageAreaTileKeys } from "../game/engine/encouragement";
 import { getRetreatDirectionIndicators } from "../game/engine/retreat";
 import { getBridgeCandidates, getConstructionAt, getObstacleCandidates, getOwnStrategistPreview } from "../game/engine/construction";
@@ -8,6 +8,7 @@ import { getUnitAtBoardCell, tileKey } from "../game/utils/position";
 import { getPositionCoord } from "../game/utils/roadTopology";
 import { TileView } from "./TileView";
 import { UnitToken } from "./UnitToken";
+import { useState } from "react";
 
 type Props = {
   state: GameState;
@@ -33,6 +34,7 @@ export function getMovementCandidateByBoardCell(
 }
 
 export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction }: Props) {
+  const [hoveredBridge, setHoveredBridge] = useState<{ key: string; cells: { x: number; y: number }[] }>();
   const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
@@ -46,9 +48,22 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
     ? constructionMode === "bridge" ? getBridgeCandidates(state, selectedUnit.id) : constructionMode === "obstacle" ? getObstacleCandidates(state, selectedUnit.id).map((cell) => [cell]) : []
     : [];
   const constructionByTile = new Map<string, { x: number; y: number }[]>();
-  for (const candidate of constructionCandidates) for (const cell of candidate) if (!constructionByTile.has(`${cell.x},${cell.y}`)) constructionByTile.set(`${cell.x},${cell.y}`, candidate);
+  const bridgeMarkers = new Map<string, { key: string; cells: { x: number; y: number }[] }>();
+  for (const candidate of constructionCandidates) {
+    const candidateKey = candidate.map((cell) => `${cell.x},${cell.y}`).join("|");
+    if (constructionMode === "obstacle") {
+      for (const cell of candidate) constructionByTile.set(`${cell.x},${cell.y}`, candidate);
+    } else if (constructionMode === "bridge") {
+      for (const cell of [candidate[0], candidate.at(-1)!]) if (!bridgeMarkers.has(`${cell.x},${cell.y}`)) bridgeMarkers.set(`${cell.x},${cell.y}`, { key: candidateKey, cells: candidate });
+      if (hoveredBridge?.key === candidateKey) for (const cell of candidate) constructionByTile.set(`${cell.x},${cell.y}`, candidate);
+    }
+  }
   const candidateByCell = getMovementCandidateByBoardCell(state, selectedCandidates);
   const attackByUnitId = new Map(attackCandidates.map((candidate) => [candidate.unitId, candidate]));
+  const savedAttackIds = new Set(state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).map((intent) => intent.attackerUnitId));
+  const teamAttackers = state.phase === "attack_input" ? getTeamAttackCandidates(state, manualTeamId).filter((entry) => entry.targets.length > 0) : [];
+  const attackReadyIds = new Set(teamAttackers.filter((entry) => !savedAttackIds.has(entry.attackerUnitId)).map((entry) => entry.attackerUnitId));
+  const attackCompleteIds = new Set(teamAttackers.filter((entry) => savedAttackIds.has(entry.attackerUnitId)).map((entry) => entry.attackerUnitId));
 
   function getBaseUnitForTile(base: Base, x: number, y: number) {
     const minX = Math.min(...base.coords.map((coord) => coord.x));
@@ -69,6 +84,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
         const destination = tileCandidate ?? baseCandidate;
         const bridge = getConstructionAt(state, tile.x, tile.y, "bridge");
         const obstacle = getConstructionAt(state, tile.x, tile.y, "obstacle");
+        const bridgeMarker = bridgeMarkers.get(`${tile.x},${tile.y}`);
 
         return (
           <TileView
@@ -78,6 +94,8 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
             attackHighlighted={Boolean(attackTarget)}
             encourageHighlighted={encourageAreaKeys.has(`${tile.x},${tile.y}`)}
             constructionPreview={previewKeys.has(`${tile.x},${tile.y}`) || constructionByTile.has(`${tile.x},${tile.y}`)}
+            bridgeCandidateMarker={Boolean(bridgeMarker)}
+            onPointerEnter={bridgeMarker ? () => setHoveredBridge(bridgeMarker) : undefined}
             bridge={Boolean(bridge)}
             obstacle={Boolean(obstacle)}
             onClick={() => {
@@ -93,6 +111,8 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 team={state.teams.find((team) => team.id === boardUnit.ownerTeamId)}
                 selected={boardUnit.id === selectedUnitId}
                 attackTarget={attackByUnitId.has(boardUnit.id)}
+                attackReady={attackReadyIds.has(boardUnit.id)}
+                attackComplete={attackCompleteIds.has(boardUnit.id)}
                 retreatIndicators={boardUnit.id === selectedUnitId ? retreatIndicators : []}
                 onClick={() => {
                   const target = attackByUnitId.get(boardUnit.id);
@@ -107,6 +127,8 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 team={state.teams.find((team) => team.id === baseUnit.ownerTeamId)}
                 selected={baseUnit.id === selectedUnitId}
                 attackTarget={attackByUnitId.has(baseUnit.id)}
+                attackReady={attackReadyIds.has(baseUnit.id)}
+                attackComplete={attackCompleteIds.has(baseUnit.id)}
                 retreatIndicators={baseUnit.id === selectedUnitId ? retreatIndicators : []}
                 onClick={() => {
                   const target = attackByUnitId.get(baseUnit.id);

@@ -110,7 +110,51 @@ function makeNorthRelayHostile(state: GameState) {
   state.teams.find((team) => team.id === "team-2")!.controlledBaseIds.push("neutral-north");
 }
 
+function ownershipContextFixture(retreating = false) {
+  const state = createInitialGameState();
+  makeNorthRelayHostile(state);
+  const unit = addUnit(state, `ownership-context-${retreating}`, "team-1", "infantry", { kind: "tile", x: 8, y: 1 });
+  markRetreatEligible(state, unit.id);
+  Object.assign(state.unitTurnFlags[0], {
+    retreatFriendlyBaseIdsAtEligibility: ["home-1"],
+    retreatHostileBaseIdsAtEligibility: ["neutral-north"],
+  });
+  if (retreating) unit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
+  return { state, unit };
+}
+
+function setBaseController(state: GameState, baseId: string, teamId: string) {
+  for (const team of state.teams) team.controlledBaseIds = team.controlledBaseIds.filter((id) => id !== baseId);
+  state.teams.find((team) => team.id === teamId)!.controlledBaseIds.push(baseId);
+  state.bases.find((base) => base.id === baseId)!.ownerTeamId = teamId;
+}
+
 describe("retreat", () => {
+  it.each([false, true])("keeps the retreat right while the original hostile/friendly ownership context remains (retreating=%s)", (retreating) => {
+    const { state, unit } = ownershipContextFixture(retreating);
+    clearInvalidRetreatTargets(state);
+    expect(isUnitRetreatEligible(state, unit)).toBe(true);
+    expect(getRetreatDirectionIndicators(state, unit.id)).toHaveLength(2);
+    expect(isRetreating(state.units.find((entry) => entry.id === unit.id)!)).toBe(retreating);
+  });
+
+  it.each([
+    ["both hostile", "team-2", "team-2"],
+    ["both friendly", "team-1", "team-1"],
+    ["ownership sides swapped", "team-2", "team-1"],
+  ])("removes unused eligibility and active retreat when the context becomes %s", (_, homeController, northController) => {
+    for (const retreating of [false, true]) {
+      const { state, unit } = ownershipContextFixture(retreating);
+      setBaseController(state, "home-1", homeController);
+      setBaseController(state, "neutral-north", northController);
+      expect(isUnitRetreatEligible(state, unit)).toBe(false);
+      expect(getRetreatDirectionIndicators(state, unit.id)).toEqual([]);
+      clearInvalidRetreatTargets(state);
+      expect(state.unitTurnFlags.find((flag) => flag.unitId === unit.id)?.retreatEligible).toBe(false);
+      expect(isRetreating(state.units.find((entry) => entry.id === unit.id)!)).toBe(false);
+    }
+  });
+
   it("uses legal road routes and treats neutral or enemy bases as blockers", () => {
     const neutralBlocked = createInitialGameState();
     expect(getLegalRetreatRouteDistance(neutralBlocked, "team-1", { kind: "tile", x: 18, y: 1 })).toBeUndefined();

@@ -52,9 +52,9 @@ export function getOperationalAreaTiles(state: GameState, teamId: string): Board
         entry.active &&
         entry.kind === "bridge" &&
         entry.tiles.some((cell) =>
-          ORTHOGONAL.some(({ dx, dy }) =>
+          [-1, 0, 1].some((dx) => [-1, 0, 1].some((dy) => (dx !== 0 || dy !== 0) &&
             operationalRoads.has(tileKey(cell.x + dx, cell.y + dy)),
-          ),
+          )),
         ),
     )
     .flatMap((bridge) => bridge.tiles);

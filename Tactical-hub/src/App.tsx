@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
-import { resolveBattle, saveAttackIntent } from "./game/engine/battle";
+import { getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
 import { saveMovementIntent, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
@@ -58,10 +58,10 @@ export default function App() {
 
   useEffect(() => {
     if (!cpuRunning || cpuPaused) return;
-    const delay = cpuSpeed === "normal" ? 700 : cpuSpeed === "fast" ? 150 : 10;
+    const delay = state.phase === "attack_input" ? 10 : cpuSpeed === "normal" ? 700 : cpuSpeed === "fast" ? 150 : 10;
     const timer = window.setInterval(advanceCpu, delay);
     return () => window.clearInterval(timer);
-  }, [advanceCpu, cpuPaused, cpuRunning, cpuSpeed]);
+  }, [advanceCpu, cpuPaused, cpuRunning, cpuSpeed, state.phase]);
 
   function chooseDestination(position: UnitPosition) {
     if (!selectedUnit) return;
@@ -81,6 +81,7 @@ export default function App() {
     if (!selectedUnit) return;
     if ((cpuSettings[selectedUnit.ownerTeamId] ?? "human") !== "human") return;
     if (isRetreating(selectedUnit)) return;
+    if (state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).some((intent) => intent.attackerUnitId === selectedUnit.id)) return;
     setState(
       saveAttackIntent(state, {
         teamId: selectedUnit.ownerTeamId,
@@ -89,7 +90,49 @@ export default function App() {
         pass: false,
       }),
     );
+    setSelectedUnitId(undefined);
   }
+
+  useEffect(() => {
+    if (state.phase !== "attack_input") return;
+    let next = state;
+    for (const team of state.teams.filter((entry) => entry.status === "active" && (cpuSettings[entry.id] ?? "human") === "human")) {
+      for (const attacker of getTeamAttackCandidates(next, team.id).filter((entry) => entry.targets.length === 1)) {
+        const alreadySaved = next.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).some((intent) => intent.attackerUnitId === attacker.attackerUnitId);
+        if (!alreadySaved) next = saveAttackIntent(next, { teamId: team.id, attackerUnitId: attacker.attackerUnitId, target: attacker.targets[0], pass: false });
+      }
+    }
+    if (next !== state) setState(next);
+  }, [cpuSettings, state]);
+
+  function chooseDeterministicAttackTarget(unitId: string, targets: AttackTarget[]) {
+    const hash = [...unitId].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0, cpuRuntime.rngState >>> 0);
+    return targets[hash % targets.length];
+  }
+
+  function resolveBattleAfterCompletingHumanChoices() {
+    let completed = state;
+    for (const team of state.teams.filter((entry) => entry.status === "active" && (cpuSettings[entry.id] ?? "human") === "human")) {
+      for (const attacker of getTeamAttackCandidates(completed, team.id).filter((entry) => entry.targets.length > 0)) {
+        const alreadySaved = completed.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).some((intent) => intent.attackerUnitId === attacker.attackerUnitId);
+        if (!alreadySaved) completed = saveAttackIntent(completed, { teamId: team.id, attackerUnitId: attacker.attackerUnitId, target: chooseDeterministicAttackTarget(attacker.attackerUnitId, attacker.targets), pass: false });
+      }
+    }
+    const resolved = resolveBattleWithHiddenCpuIntents(completed, cpuRuntime);
+    runtimeRef.current = resolved.runtime;
+    setCpuRuntime(resolved.runtime);
+    setState(resolved.state);
+    setSelectedUnitId(undefined);
+  }
+
+  useEffect(() => {
+    if (state.phase !== "attack_input") return;
+    const humanTeams = state.teams.filter((team) => team.status === "active" && (cpuSettings[team.id] ?? "human") === "human");
+    const hasHumanChoice = humanTeams.some((team) => getTeamAttackCandidates(state, team.id).some((entry) => entry.targets.length > 1));
+    const cpuTeams = state.teams.filter((team) => team.status === "active" && cpuSettings[team.id] === "random_cpu");
+    const cpuReady = cpuTeams.every((team) => cpuRuntime.completedAttackTeamIds.includes(team.id));
+    if (!hasHumanChoice && cpuReady) resolveBattleAfterCompletingHumanChoices();
+  }, [cpuRuntime.completedAttackTeamIds, cpuSettings, state]);
 
   return (
     <main className="app-shell">
@@ -139,11 +182,7 @@ export default function App() {
           setSelectedUnitId(undefined);
         }}
         onResolveBattle={() => {
-          const resolved = resolveBattleWithHiddenCpuIntents(state, cpuRuntime);
-          runtimeRef.current = resolved.runtime;
-          setCpuRuntime(resolved.runtime);
-          setState(resolved.state);
-          setSelectedUnitId(undefined);
+          resolveBattleAfterCompletingHumanChoices();
         }}
         battleResolveDisabled={state.phase === "attack_input" && state.teams.some((team) => team.status === "active" && cpuSettings[team.id] === "random_cpu" && !cpuRuntime.completedAttackTeamIds.includes(team.id))}
         onStateChange={setState}

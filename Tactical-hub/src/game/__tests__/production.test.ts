@@ -125,4 +125,21 @@ describe("production", () => {
     state = submitTeamProduction(state, "team-1");
     expect(state.units.find((unit) => unit.id.startsWith("home-1-strategist-") && unit.hp > 0)?.role).toBe("builder");
   });
+
+  it("caps ninjas at two living units", () => {
+    const state = createInitialGameState();
+    for (let index = 0; index < 2; index += 1) state.units.push({ id: `limit-ninja-${index}`, ownerTeamId: "team-1", type: "ninja", hp: 1, position: { kind: "water", x: 8 + index, y: 6 }, statuses: [] });
+    expect(getAvailableProductionTypes(state, "team-1", "home-1")).not.toContain("ninja");
+    state.units.find((unit) => unit.id === "limit-ninja-0")!.position = { kind: "removed", reason: "defeated" };
+    expect(getAvailableProductionTypes(state, "team-1", "home-1")).toContain("ninja");
+  });
+
+  it.each([[0, 3], [1, 4], [2, 5]])("raises the archer cap by one for each defeated team (%i => %i)", (defeatedCount, limit) => {
+    const state = createInitialGameState();
+    state.teams.filter((team) => !team.isNeutral && team.id !== "team-1").slice(0, defeatedCount).forEach((team) => { team.status = "defeated"; });
+    for (let index = 0; index < limit; index += 1) state.units.push({ id: `limit-archer-${index}`, ownerTeamId: "team-1", type: "archer", hp: 1, position: { kind: "tile", x: 8 + index, y: 6 }, statuses: [] });
+    expect(getAvailableProductionTypes(state, "team-1", "home-1")).not.toContain("archer");
+    state.units.at(-1)!.position = { kind: "removed", reason: "defeated" };
+    expect(getAvailableProductionTypes(state, "team-1", "home-1")).toContain("archer");
+  });
 });

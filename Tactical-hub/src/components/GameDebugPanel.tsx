@@ -16,7 +16,7 @@ import {
 } from "../game/engine/retreat";
 import type { GameState } from "../game/types";
 import { positionKey } from "../game/utils/position";
-import { assignConstructionCapacityBonus, assignConstructionManager, getBridgeCandidates, getBuilderUnits, getManagedConstructions, getObstacleCandidates, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
+import { assignConstructionCapacityBonus, assignConstructionManager, getBuilderUnits, getManagedConstructions, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
 import { cancelTeleportIntent, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates, isTeleportAvailable, saveTeleportIntent } from "../game/engine/teleport";
 import { useState, type ReactNode } from "react";
 
@@ -442,9 +442,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
           const obstacles = getManagedConstructions(state, builder.id, "obstacle");
           return <div className="intent-item" key={builder.id}>
             <strong>{builder.id}</strong>
-            {getBridgeCandidates(state, builder.id).map((tiles) => <button key={JSON.stringify(tiles)} onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "place_bridge", tiles }))}>Bridge {tiles.map((cell) => `${cell.x},${cell.y}`).join("-")}</button>)}
             {bridges.map((bridge) => <button key={bridge.id} onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "reset_bridge", constructionId: bridge.id }))}>Reset bridge {bridge.id}</button>)}
-            {getObstacleCandidates(state, builder.id).map((cell) => <button key={`${cell.x},${cell.y}`} onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "place_obstacle", tiles: [cell] }))}>Obstacle {cell.x},{cell.y}</button>)}
             {obstacles.map((obstacle) => <button key={obstacle.id} onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "reset_obstacle", constructionId: obstacle.id }))}>Reset obstacle {obstacle.id}</button>)}
             {(activeTeam.conqueredTeamIds?.length ?? 0) === 1 ? <button onClick={() => onStateChange(assignConstructionCapacityBonus(state, activeTeam.id, builder.id))}>Assign extra construction slots</button> : null}
             <button onClick={() => onStateChange(saveStrategistActionIntent(state, { teamId: builder.ownerTeamId, strategistUnitId: builder.id, action: "pass" }))}>Pass</button>

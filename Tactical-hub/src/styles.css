@@ -119,6 +119,16 @@ p {
   z-index: 3;
 }
 
+.unit-token.attack-ready {
+  box-shadow: 0 0 0 4px #f2cc46, 0 0 12px rgba(242, 204, 70, .9);
+}
+
+.unit-token.attack-complete {
+  filter: grayscale(.75);
+  opacity: .72;
+  box-shadow: 0 0 0 2px #7c8792;
+}
+
 .tile.encourage-highlighted {
   box-shadow: inset 0 0 0 3px #2aa198;
 }
@@ -480,6 +490,17 @@ pre {
 }
 .tile.construction-preview::after {
   content: ""; position: absolute; inset: 2px; background: rgba(160, 160, 170, .45); pointer-events: none; z-index: 2;
+}
+.tile.bridge-candidate-marker::before {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #e73535;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px #25384a;
+  z-index: 4;
 }
 .tile.active-bridge { background: #9a795c; }
 .tile.active-bridge::before { content: "橋"; position: absolute; color: #fff; opacity: .8; }

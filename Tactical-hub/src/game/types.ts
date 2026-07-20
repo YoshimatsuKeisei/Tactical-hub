@@ -180,6 +180,8 @@ export type UnitTurnFlags = {
   positionAtBattleStart?: UnitPosition;
   enemyBaseDistanceAtBattleStart?: number;
   enemyBaseWithin3AtBattleStart?: boolean;
+  retreatFriendlyBaseIdsAtEligibility?: string[];
+  retreatHostileBaseIdsAtEligibility?: string[];
   wasAliveAtBattleStart: boolean;
   survivedPreviousBattle: boolean;
   attackedInPreviousBattle: boolean;
