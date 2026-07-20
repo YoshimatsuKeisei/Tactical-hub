@@ -294,8 +294,28 @@ export function canMoveBetweenGroundPositions(
   from: UnitPosition,
   to: UnitPosition,
 ): boolean {
-  if (from.kind === "water" || to.kind === "water") {
-    return true;
+  const physicallyOnBridge = (position: UnitPosition) => {
+    if (position.kind === "bridge") return true;
+    const coord = getPositionCoord(state, position);
+    return Boolean(coord && getBridgePositionAt(state, coord.x, coord.y));
+  };
+  const physicallyOnLake = (position: UnitPosition) => {
+    if (physicallyOnBridge(position)) return false;
+    const coord = getPositionCoord(state, position);
+    return Boolean(coord && getTile(state.map.tiles, coord.x, coord.y)?.terrain === "lake");
+  };
+  const fromLake = physicallyOnLake(from);
+  const toLake = physicallyOnLake(to);
+  const fromBridge = physicallyOnBridge(from);
+  const toBridge = physicallyOnBridge(to);
+
+  if ((fromLake && toBridge) || (fromBridge && toLake)) return false;
+
+  if (from.kind === "water" || to.kind === "water" || fromLake || toLake) {
+    // Water movement is a direct lake-cell edge. An active bridge occupies its
+    // own position kind, so a ninja cannot climb onto it from the lake or step
+    // off it into the lake.
+    return !fromBridge && !toBridge;
   }
 
   if (from.kind === "bridge" || to.kind === "bridge") {

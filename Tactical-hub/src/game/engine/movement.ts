@@ -188,6 +188,10 @@ function nextGroundPositionsFromBase(
         continue;
       }
 
+      // Base-to-lake movement is intentionally undefined. Ninjas enter and
+      // leave water only through an adjacent normal ground tile.
+      if (position.kind === "water") continue;
+
       /*
        * 地上へ退城する場合は、
        * この拠点へ接続した道区間だけを許可する。
@@ -295,6 +299,8 @@ export function getMovementPaths(
       const base = getBaseAtTile(state.bases, x, y);
 
       if (base) {
+        // Lake-to-base movement is intentionally undefined.
+        if (current.position.kind === "water") continue;
         /*
          * 地上から入城する場合、
          * 現在の道区間がその拠点へ接続している必要がある。
