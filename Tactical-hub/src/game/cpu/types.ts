@@ -42,6 +42,8 @@ export type CpuDecision =
   | { kind: "resolve_battle"; teamId: string }
   | { kind: "resolve_strategists"; teamId: string };
 
+export type CpuPolicy = (state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings) => CpuDecision | undefined;
+
 export function createCpuRuntime(seed: number, maxAppliedSteps = 10_000): CpuRuntime {
   const normalized = seed >>> 0;
   return {
