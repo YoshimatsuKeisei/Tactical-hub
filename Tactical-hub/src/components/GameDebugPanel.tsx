@@ -4,7 +4,7 @@ import { getEncourageRadius, getEncouragedUnitIds, getEncouragedUnitIdsByStrateg
 import { getMovementCandidates, saveMovementIntent } from "../game/engine/movement";
 import { getAvailableProductionTypes, saveProductionChoice, STRATEGIST_ROLES } from "../game/engine/production";
 import { isTeamProductionPending } from "../game/engine/productionSchedule";
-import { getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
+import { getEligibleRewardBaseIds, getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
 import {
   getNearestEnemyBaseDistance,
   getNearestFriendlyBaseDistance,
@@ -140,7 +140,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
             <div className="intent-item" key={request.id}>
               <strong>{rewardLabel(request.rewardType)}</strong>
               <span>対象: {request.teamId} / 発生元: {request.sourceKingUnitId ?? request.sourceBaseId}</span>
-              {request.eligibleBaseIds.map((baseId) => (
+              {getEligibleRewardBaseIds(state, request).map((baseId) => (
                 <div className="button-row" key={baseId}>
                   <span>{baseId}</span>
                   {getAvailableProductionTypes(state, request.teamId, baseId).map((unitType) => (

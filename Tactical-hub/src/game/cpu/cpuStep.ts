@@ -10,7 +10,7 @@ import { getRandomCpuDecision } from "./randomCpuPolicy";
 import type { CpuActionLog, CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
 
 function contextKey(state: GameState) { return `${state.turnNumber}:${state.phase}`; }
-function syncContext(runtime: CpuRuntime, state: GameState) {
+export function syncCpuContext(runtime: CpuRuntime, state: GameState) {
   const key = contextKey(state);
   if (runtime.contextKey === key) return;
   runtime.contextKey = key;
@@ -46,7 +46,7 @@ export type CpuStepResult = { state: GameState; runtime: CpuRuntime; applied: bo
 
 export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, settings: CpuTeamSettings, policy: CpuPolicy = getRandomCpuDecision, instrumentation?: CpuStepInstrumentation): CpuStepResult {
   const runtime = structuredClone(sourceRuntime) as CpuRuntime;
-  syncContext(runtime, state);
+  syncCpuContext(runtime, state);
   if (runtime.stoppedReason) return { state, runtime, applied: false };
   if (runtime.appliedStepCount >= runtime.maxAppliedSteps) {
     runtime.stoppedReason = `CPU safety limit ${runtime.maxAppliedSteps} reached`;

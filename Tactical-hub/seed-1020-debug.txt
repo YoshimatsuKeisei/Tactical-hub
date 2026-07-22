@@ -1,0 +1,428 @@
+﻿
+> sim:headless
+> vite-node src/game/cpu/headlessCli.ts --players 4 --matches 1 --seed 1020 --max-turns 100 --max-actions 30000 --mode debug
+
+npm.cmd : [33mThe CJS build of Vite's Node API is deprecated. See https://vite
+.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.
+[39m
+発生場所 行:1 文字:1
++ npm.cmd run sim:headless -- --players 4 --matches 1 --seed 1020 --max ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([33mThe CJS bu...e details.[39m 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{
+  "matches": [
+    {
+      "seed": 1020,
+      "participantCount": 4,
+      "endReason": "phase_stall",
+      "endTurn": 31,
+      "phase": "movement_input",
+      "currentMovementTeamId": "team-4",
+      "actionCount": 1836,
+      "actionSequenceHash": "200371bb",
+      "violations": [],
+      "error": "CPU action produced no state or policy progress",
+      "recentActions": [
+        {
+          "id": "cpu-2446",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-1",
+          "action": "attack pass",
+          "detail": "home-1-infantry-1"
+        },
+        {
+          "id": "cpu-2447",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-1",
+          "action": "attack",
+          "detail": "home-1-king -> neutral-north-infantry"
+        },
+        {
+          "id": "cpu-2448",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-1",
+          "action": "attack pass",
+          "detail": "home-1-ninja-1"
+        },
+        {
+          "id": "cpu-2449",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-1",
+          "action": "attack pass",
+          "detail": "home-1-ninja-2"
+        },
+        {
+          "id": "cpu-2450",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-1",
+          "action": "attack pass",
+          "detail": "home-1-strategist"
+        },
+        {
+          "id": "cpu-2451",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-1",
+          "action": "attack pass",
+          "detail": "home-1-strategist-2"
+        },
+        {
+          "id": "cpu-2452",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-archer-1"
+        },
+        {
+          "id": "cpu-2453",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-cavalry-1"
+        },
+        {
+          "id": "cpu-2454",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-cavalry-2"
+        },
+        {
+          "id": "cpu-2455",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-infantry-1"
+        },
+        {
+          "id": "cpu-2456",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-king"
+        },
+        {
+          "id": "cpu-2457",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-ninja-1"
+        },
+        {
+          "id": "cpu-2458",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-strategist"
+        },
+        {
+          "id": "cpu-2459",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-2",
+          "action": "attack pass",
+          "detail": "home-2-strategist-2"
+        },
+        {
+          "id": "cpu-2460",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-archer-1"
+        },
+        {
+          "id": "cpu-2461",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-cavalry-1"
+        },
+        {
+          "id": "cpu-2462",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-engineer-1"
+        },
+        {
+          "id": "cpu-2463",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-infantry-1"
+        },
+        {
+          "id": "cpu-2464",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-king"
+        },
+        {
+          "id": "cpu-2465",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-ninja-1"
+        },
+        {
+          "id": "cpu-2466",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-strategist"
+        },
+        {
+          "id": "cpu-2467",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-3",
+          "action": "attack pass",
+          "detail": "home-3-strategist-2"
+        },
+        {
+          "id": "cpu-2468",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-archer-1"
+        },
+        {
+          "id": "cpu-2469",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-cavalry-1"
+        },
+        {
+          "id": "cpu-2470",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-infantry-1"
+        },
+        {
+          "id": "cpu-2471",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-infantry-2"
+        },
+        {
+          "id": "cpu-2472",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-infantry-3"
+        },
+        {
+          "id": "cpu-2473",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-infantry-4"
+        },
+        {
+          "id": "cpu-2474",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-king"
+        },
+        {
+          "id": "cpu-2475",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "teamId": "team-4",
+          "action": "attack pass",
+          "detail": "home-4-strategist"
+        },
+        {
+          "id": "cpu-2476",
+          "turnNumber": 31,
+          "phase": "attack_input",
+          "action": "resolve simultaneous battle"
+        },
+        {
+          "id": "cpu-2477",
+          "turnNumber": 31,
+          "phase": "strategist_action_input",
+          "teamId": "team-1",
+          "action": "pass",
+          "detail": "home-1-strategist-2"
+        },
+        {
+          "id": "cpu-2478",
+          "turnNumber": 31,
+          "phase": "strategist_action_input",
+          "teamId": "team-1",
+          "action": "confirm strategist actions"
+        },
+        {
+          "id": "cpu-2479",
+          "turnNumber": 31,
+          "phase": "strategist_action_input",
+          "teamId": "team-2",
+          "action": "confirm strategist actions"
+        },
+        {
+          "id": "cpu-2480",
+          "turnNumber": 31,
+          "phase": "strategist_action_input",
+          "teamId": "team-3",
+          "action": "confirm strategist actions"
+        },
+        {
+          "id": "cpu-2481",
+          "turnNumber": 31,
+          "phase": "strategist_action_input",
+          "teamId": "team-4",
+          "action": "confirm strategist actions"
+        },
+        {
+          "id": "cpu-2482",
+          "turnNumber": 31,
+          "phase": "strategist_action_resolution",
+          "action": "resolve strategist actions"
+        },
+        {
+          "id": "cpu-2483",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "production",
+          "detail": "home-3:infantry"
+        },
+        {
+          "id": "cpu-2484",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "confirm production / skip"
+        },
+        {
+          "id": "cpu-2485",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "movement pass",
+          "detail": "home-3-archer-1"
+        },
+        {
+          "id": "cpu-2486",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "move",
+          "detail": "home-3-cavalry-1 -> 18,20"
+        },
+        {
+          "id": "cpu-2487",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "movement pass",
+          "detail": "home-3-engineer-1"
+        },
+        {
+          "id": "cpu-2488",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "movement pass",
+          "detail": "home-3-infantry-1"
+        },
+        {
+          "id": "cpu-2489",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "movement pass",
+          "detail": "home-3-infantry-2"
+        },
+        {
+          "id": "cpu-2490",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "move",
+          "detail": "home-3-king -> 19,18"
+        },
+        {
+          "id": "cpu-2491",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "move",
+          "detail": "home-3-ninja-1 -> 15,18"
+        },
+        {
+          "id": "cpu-2492",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "move",
+          "detail": "home-3-strategist -> 20,15"
+        },
+        {
+          "id": "cpu-2493",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "movement pass",
+          "detail": "home-3-strategist-2"
+        },
+        {
+          "id": "cpu-2494",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-3",
+          "action": "confirm movement"
+        },
+        {
+          "id": "cpu-2495",
+          "turnNumber": 31,
+          "phase": "movement_input",
+          "teamId": "team-4",
+          "action": "confirm production / skip"
+        }
+      ],
+      "invariantCheckCount": 1837
+    }
+  ],
+  "settledCount": 0,
+  "turnLimitCount": 0,
+  "exceptionCount": 0,
+  "invariantViolationCount": 0,
+  "phaseStallCount": 1,
+  "actionLimitCount": 0
+}

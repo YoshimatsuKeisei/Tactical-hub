@@ -6,6 +6,7 @@ import { advanceVisualCpuOneStep, advanceVisualCpuTick, resolveBattleWithHiddenC
 import { createCpuRuntime, type CpuTeamSettings } from "../cpu/types";
 import { positionKey } from "../utils/position";
 import { submitTeamProduction } from "../engine/production";
+import { getHeadlessProgressSignature } from "../cpu/headlessSimulation";
 
 const allCpu = (): CpuTeamSettings => ({ "team-1": "random_cpu", "team-2": "random_cpu", "team-3": "random_cpu", "team-4": "random_cpu" });
 const allHuman = (): CpuTeamSettings => ({ "team-1": "human", "team-2": "human", "team-3": "human", "team-4": "human" });
@@ -34,6 +35,37 @@ describe("Phase 5-B Random CPU and Visual Runner", () => {
     expect(state.productionCompletedTeamIdsThisTurn).toContain("team-1");
     expect(state.units.length).toBeGreaterThan(initialUnitCount);
     expect(state.currentMovementTeamId).toBe("team-1");
+    expect(getRandomCpuDecision(state, runtime, { ...allHuman(), "team-1": "random_cpu" })?.kind).toMatch(/movement|teleport/);
+  });
+
+  it("treats production skip as progress and continues with the same team's movement", () => {
+    let state = createInitialGameState();
+    for (const slot of state.bases.find((base) => base.id === "home-1")!.slots) slot.unitId ??= `occupied-${slot.id}`;
+    let runtime = createCpuRuntime(1020);
+    const before = getHeadlessProgressSignature(state, runtime);
+    const confirmed = advanceVisualCpuOneStep(state, runtime, { ...allHuman(), "team-1": "random_cpu" });
+    state = confirmed.state; runtime = confirmed.runtime;
+    expect(confirmed.runtime.logs.at(-1)?.action).toBe("confirm production / skip");
+    expect(state.productionCompletedTeamIdsThisTurn).toContain("team-1");
+    expect(getHeadlessProgressSignature(state, runtime)).not.toBe(before);
+    const next = advanceVisualCpuOneStep(state, runtime, { ...allHuman(), "team-1": "random_cpu" });
+    expect(next.runtime.logs.at(-1)?.action).toMatch(/move|movement pass/);
+  });
+
+  it("processes every production base before confirmation and then enters movement", () => {
+    let state = createInitialGameState();
+    const extra = state.bases.find((base) => base.id === "neutral-north")!;
+    extra.ownerTeamId = "team-1";
+    state.teams.find((team) => team.id === "team-1")!.controlledBaseIds.push(extra.id);
+    let runtime = createCpuRuntime(2040);
+    const initialUnits = state.units.length;
+    for (let index = 0; index < 20 && !state.productionCompletedTeamIdsThisTurn.includes("team-1"); index += 1) {
+      const step = advanceVisualCpuOneStep(state, runtime, { ...allHuman(), "team-1": "random_cpu" });
+      state = step.state; runtime = step.runtime;
+    }
+    expect(runtime.processedKeys).toEqual(expect.arrayContaining(["movement-production:team-1:home-1", "movement-production:team-1:neutral-north"]));
+    expect(state.productionCompletedTeamIdsThisTurn).toContain("team-1");
+    expect(state.units.length).toBeGreaterThan(initialUnits);
     expect(getRandomCpuDecision(state, runtime, { ...allHuman(), "team-1": "random_cpu" })?.kind).toMatch(/movement|teleport/);
   });
 

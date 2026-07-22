@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { UNIT_STATS } from "../constants";
-import { getTeamAttackCandidates, saveAttackIntent } from "../engine/battle";
-import { getStrategistActionCandidates, saveStrategistActionIntent } from "../engine/construction";
-import { getTeamMovementCandidates, saveMovementIntent, submitMovement, validateMovementPath } from "../engine/movement";
-import { getProductionCandidates, resolveProduction, saveProductionChoice } from "../engine/production";
+import { getAttackCandidates, getTeamAttackCandidates, getTeamAttackerUnitIds, saveAttackIntent } from "../engine/battle";
+import { getBuilderUnits, getStrategistActionCandidates, getStrategistActionCandidatesForUnit, saveStrategistActionIntent } from "../engine/construction";
+import { getMovementCandidates, getTeamMovementCandidates, getTeamMovementUnitIds, saveMovementIntent, submitMovement, validateMovementPath } from "../engine/movement";
+import { getProductionCandidates, getProductionCandidatesForBase, resolveProduction, saveProductionChoice } from "../engine/production";
 import { getRewardPlacementCandidates, placeRewardUnit } from "../engine/reward";
 import { getTeamTeleportCandidates, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
 import { createInitialGameState } from "../initialState";
@@ -125,5 +125,32 @@ describe("Phase 5-A CPU candidate access", () => {
     const reordered = structuredClone(state);
     reordered.units.reverse();
     expect(getTeamMovementCandidates(reordered, "team-1")).toEqual(first);
+  });
+
+  it("keeps target-unit enumeration exactly equal to the existing whole-team APIs", () => {
+    const production = setPhase(createInitialGameState(), "production");
+    const productionByTarget = production.bases.filter((base) => base.ownerTeamId === "team-1").sort((a, b) => a.id.localeCompare(b.id)).flatMap((base) => getProductionCandidatesForBase(production, "team-1", base.id));
+    expect(productionByTarget).toEqual(getProductionCandidates(production, "team-1"));
+
+    const movement = createInitialGameState();
+    addUnit(movement, "target-api-ninja", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
+    const movementByTarget = getTeamMovementUnitIds(movement, "team-1").map((unitId) => ({ unitId, destinations: getMovementCandidates(movement, unitId).sort((a, b) => positionKey(a).localeCompare(positionKey(b))) }));
+    expect(movementByTarget).toEqual(getTeamMovementCandidates(movement, "team-1"));
+
+    const attack = setPhase(structuredClone(movement), "attack_input");
+    addUnit(attack, "target-api-enemy", "team-2", "infantry", { kind: "tile", x: 4, y: 1 });
+    const attackByTarget = getTeamAttackerUnitIds(attack, "team-1").map((attackerUnitId) => ({ attackerUnitId, targets: getAttackCandidates(attack, attackerUnitId) }));
+    expect(attackByTarget).toEqual(getTeamAttackCandidates(attack, "team-1"));
+
+    const construction = setPhase(createInitialGameState(), "strategist_action_input");
+    construction.units.find((unit) => unit.id === "home-1-strategist")!.role = "builder";
+    const constructionByTarget = getBuilderUnits(construction, "team-1").slice().sort((a, b) => a.id.localeCompare(b.id)).flatMap((builder) => getStrategistActionCandidatesForUnit(construction, "team-1", builder.id));
+    expect(constructionByTarget).toEqual(getStrategistActionCandidates(construction, "team-1"));
+    expect(constructionByTarget.some((candidate) => candidate.action === "pass")).toBe(true);
+
+    for (const [whole, targeted] of [[getProductionCandidates(production, "team-1"), productionByTarget], [getTeamMovementCandidates(movement, "team-1"), movementByTarget], [getTeamAttackCandidates(attack, "team-1"), attackByTarget], [getStrategistActionCandidates(construction, "team-1"), constructionByTarget]]) {
+      expect(targeted).toHaveLength(whole.length);
+      expect(targeted).toEqual(whole);
+    }
   });
 });

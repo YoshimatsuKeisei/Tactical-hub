@@ -5,14 +5,20 @@ import { beginStrategistActionPhase } from "./construction";
 
 export function getPendingRewardRequests(state: GameState) { return state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired); }
 
+export function getEligibleRewardBaseIds(state: GameState, request: RewardPlacementRequest) {
+  if (request.destinationKind === "fixed") return request.fixedBaseId ? [request.fixedBaseId] : [];
+  return state.bases
+    .filter((base) => base.ownerTeamId === request.teamId && base.slots.some((slot) => !slot.unitId))
+    .map((base) => base.id)
+    .sort((left, right) => left.localeCompare(right));
+}
+
 export function getRewardPlacementCandidates(state: GameState, teamId: string) {
   if (state.phase !== "reward_placement") return [];
   return getPendingRewardRequests(state)
     .filter((request) => request.teamId === teamId)
     .sort((left, right) => left.id.localeCompare(right.id))
-    .flatMap((request) => request.eligibleBaseIds
-      .slice()
-      .sort((left, right) => left.localeCompare(right))
+    .flatMap((request) => getEligibleRewardBaseIds(state, request)
       .flatMap((baseId) => getAvailableProductionTypes(state, teamId, baseId).map((unitType) => ({ requestId: request.id, baseId, unitType }))));
 }
 
@@ -42,7 +48,7 @@ export function placeRewardUnit(state: GameState, requestId: string, baseId: str
   const request = next.rewardPlacementRequests.find((entry) => entry.id === requestId);
   const base = next.bases.find((entry) => entry.id === baseId);
   const slot = base?.slots.find((entry) => !entry.unitId);
-  const eligible = request && (request.destinationKind === "fixed" ? request.fixedBaseId === baseId : request.eligibleBaseIds.includes(baseId));
+  const eligible = request && getEligibleRewardBaseIds(next, request).includes(baseId);
   const legalTypes = request ? getAvailableProductionTypes(next, request.teamId, baseId) : [];
   if (!request || request.completed || request.expired || !base || !slot || !eligible || !PRODUCIBLE_UNIT_TYPES.includes(unitType) || !legalTypes.includes(unitType)) return state;
   const unit: Unit = { id: `${base.id}-${unitType}-reward-${next.units.length + 1}`, ownerTeamId: request.teamId, type: unitType, hp: UNIT_STATS[unitType].hp, position: { kind: "base", baseId, slotId: slot.id }, statuses: [] };

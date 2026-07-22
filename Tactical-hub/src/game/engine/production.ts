@@ -38,11 +38,17 @@ export function getProductionCandidates(state: GameState, teamId: string): Produ
   return state.bases
     .filter((base) => base.ownerTeamId === teamId)
     .sort((left, right) => left.id.localeCompare(right.id))
-    .flatMap((base) => getAvailableProductionTypes(state, teamId, base.id).flatMap((unitType): ProductionChoice[] =>
-      unitType === "strategist"
-        ? STRATEGIST_ROLES.map((strategistRole) => ({ teamId, baseId: base.id, unitType, strategistRole }))
-        : [{ teamId, baseId: base.id, unitType }],
-    ));
+    .flatMap((base) => getProductionCandidatesForBase(state, teamId, base.id));
+}
+
+export function getProductionCandidatesForBase(state: GameState, teamId: string, baseId: string): ProductionChoice[] {
+  const canProduce = state.phase === "production" || isTeamProductionPending(state, teamId);
+  if (!canProduce || state.teams.find((team) => team.id === teamId)?.status !== "active" || state.bases.find((base) => base.id === baseId)?.ownerTeamId !== teamId) return [];
+  return getAvailableProductionTypes(state, teamId, baseId).flatMap((unitType): ProductionChoice[] =>
+    unitType === "strategist"
+      ? STRATEGIST_ROLES.map((strategistRole) => ({ teamId, baseId, unitType, strategistRole }))
+      : [{ teamId, baseId, unitType }],
+  );
 }
 
 export function saveProductionChoice(state: GameState, choice: ProductionChoice): GameState {

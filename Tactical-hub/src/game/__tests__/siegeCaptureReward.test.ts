@@ -89,4 +89,21 @@ describe("攻略状態・占領・褒賞", () => {
     expect(resolved.turnState.actionIntents).toEqual(state.turnState.actionIntents);
     expect(resolved.phase).toBe("attack_input");
   });
+
+  it("does not let a defeated team capture a base or receive its reward later in the same resolution", () => {
+    const state = createInitialGameState();
+    state.teams.find((team) => team.id === "team-1")!.status = "defeated";
+    const siege: SiegeState = {
+      baseId: "neutral-north",
+      defendingTeamId: "neutral",
+      active: true,
+      defenderLossOccurred: true,
+      fallCandidateTeamIds: ["team-1"],
+      teamRecords: [{ teamId: "team-1", defenderKills: 1, effectiveAttackTurns: 1 }],
+    };
+    state.siegeStates.push(siege);
+    expect(completeSiegeCapture(state, siege, ["team-1"], "annihilation")).toBe(false);
+    expect(state.bases.find((base) => base.id === siege.baseId)?.ownerTeamId).toBe("neutral");
+    expect(state.rewardPlacementRequests).toHaveLength(0);
+  });
 });

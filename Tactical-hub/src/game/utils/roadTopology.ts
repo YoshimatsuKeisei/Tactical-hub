@@ -110,6 +110,64 @@ function positionRoadSections(state: GameState, position: UnitPosition) {
   return [];
 }
 
+export type RoadAttackTopologyContext = {
+  readonly sectionsByPositionKey: Map<string, readonly string[]>;
+  readonly sectionAdjacency: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly roadOrBridgeByCoord: Map<string, UnitPosition | null>;
+  readonly baseByCoord: ReadonlyMap<string, ReturnType<typeof getBaseAtTile>>;
+};
+
+function buildSectionAdjacency(state: GameState) {
+  const adjacency = new Map<string, Set<string>>();
+  for (const bridge of state.constructions.filter((entry) => entry.active && entry.kind === "bridge")) {
+    const sections = bridgeRoadSections(state, bridge.id);
+    for (const left of sections) for (const right of sections) if (left !== right) {
+      if (!adjacency.has(left)) adjacency.set(left, new Set());
+      adjacency.get(left)!.add(right);
+    }
+  }
+  return adjacency;
+}
+
+export function createRoadAttackTopologyContext(state: GameState): RoadAttackTopologyContext {
+  const baseByCoord = new Map<string, ReturnType<typeof getBaseAtTile>>();
+  for (const base of state.bases) for (const coord of base.coords) baseByCoord.set(`${coord.x},${coord.y}`, base);
+  return { sectionsByPositionKey: new Map(), sectionAdjacency: buildSectionAdjacency(state), roadOrBridgeByCoord: new Map(), baseByCoord };
+}
+
+function contextRoadOrBridgePositionAt(state: GameState, x: number, y: number, context?: RoadAttackTopologyContext) {
+  if (!context) return roadOrBridgePositionAt(state, x, y);
+  const key = `${x},${y}`;
+  if (context.roadOrBridgeByCoord.has(key)) return context.roadOrBridgeByCoord.get(key) ?? undefined;
+  const position = roadOrBridgePositionAt(state, x, y);
+  context.roadOrBridgeByCoord.set(key, position ?? null);
+  return position;
+}
+
+function contextPositionRoadSections(state: GameState, position: UnitPosition, context?: RoadAttackTopologyContext) {
+  if (!context) return positionRoadSections(state, position);
+  const key = attackPathKey(position);
+  const cached = context.sectionsByPositionKey.get(key);
+  if (cached) return cached;
+  const sections = positionRoadSections(state, position);
+  context.sectionsByPositionKey.set(key, sections);
+  return sections;
+}
+
+function sectionsAreConnected(state: GameState, left: string, right: string, context?: RoadAttackTopologyContext) {
+  if (!context) return areRoadSectionsDynamicallyConnected(state, left, right);
+  if (left === right) return true;
+  const queue = [left], seen = new Set(queue);
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const next of context.sectionAdjacency.get(current) ?? []) {
+      if (next === right) return true;
+      if (!seen.has(next)) { seen.add(next); queue.push(next); }
+    }
+  }
+  return false;
+}
+
 function attackPathKey(position: UnitPosition) {
   if (position.kind === "base") return `base:${position.baseId}`;
   if (position.kind === "tile") return `tile:${position.x}:${position.y}`;
@@ -134,23 +192,24 @@ function sectionsConnectPositions(
   state: GameState,
   left: UnitPosition,
   right: UnitPosition,
+  context?: RoadAttackTopologyContext,
 ) {
-  return positionRoadSections(state, left).some((leftSection) =>
-    positionRoadSections(state, right).some((rightSection) =>
-      areRoadSectionsDynamicallyConnected(state, leftSection, rightSection),
+  return contextPositionRoadSections(state, left, context).some((leftSection) =>
+    contextPositionRoadSections(state, right, context).some((rightSection) =>
+      sectionsAreConnected(state, leftSection, rightSection, context),
     ),
   );
 }
 
-function attackPathNeighbors(state: GameState, position: UnitPosition) {
+function attackPathNeighbors(state: GameState, position: UnitPosition, context?: RoadAttackTopologyContext) {
   const neighbors = new Map<string, UnitPosition>();
 
   if (position.kind === "base") {
     const base = state.bases.find((candidate) => candidate.id === position.baseId);
     for (const coord of base?.coords ?? []) {
       for (const { dx, dy } of adjacentDirections) {
-        const neighbor = roadOrBridgePositionAt(state, coord.x + dx, coord.y + dy);
-        if (!neighbor || !sectionsConnectPositions(state, position, neighbor)) continue;
+        const neighbor = contextRoadOrBridgePositionAt(state, coord.x + dx, coord.y + dy, context);
+        if (!neighbor || !sectionsConnectPositions(state, position, neighbor, context)) continue;
         neighbors.set(attackPathKey(neighbor), neighbor);
       }
     }
@@ -164,19 +223,19 @@ function attackPathNeighbors(state: GameState, position: UnitPosition) {
   for (const { dx, dy } of adjacentDirections) {
     const x = coord.x + dx;
     const y = coord.y + dy;
-    const base = getBaseAtTile(state.bases, x, y);
+    const base = context ? context.baseByCoord.get(`${x},${y}`) : getBaseAtTile(state.bases, x, y);
     if (base) {
       const basePosition: UnitPosition = {
         kind: "base",
         baseId: base.id,
         slotId: "attack-path",
       };
-      if (sectionsConnectPositions(state, position, basePosition))
+      if (sectionsConnectPositions(state, position, basePosition, context))
         neighbors.set(attackPathKey(basePosition), basePosition);
       continue;
     }
 
-    const neighbor = roadOrBridgePositionAt(state, x, y);
+    const neighbor = contextRoadOrBridgePositionAt(state, x, y, context);
     if (
       neighbor &&
       canMoveBetweenGroundPositions(state, position, neighbor)
@@ -194,24 +253,20 @@ export function getRoadAttackDistance(
   state: GameState,
   from: UnitPosition,
   to: UnitPosition,
+  context?: RoadAttackTopologyContext,
 ): number {
   if (from.kind === "water" || to.kind === "water") {
-    if (from.kind !== "water" || to.kind !== "water")
-      return Number.POSITIVE_INFINITY;
+    if (from.kind !== "water" || to.kind !== "water") return Number.POSITIVE_INFINITY;
     return Math.max(Math.abs(from.x - to.x), Math.abs(from.y - to.y));
   }
-  if (from.kind === "removed" || to.kind === "removed")
-    return Number.POSITIVE_INFINITY;
-
+  if (from.kind === "removed" || to.kind === "removed") return Number.POSITIVE_INFINITY;
   const targetKey = attackPathKey(to);
-  const queue: { position: UnitPosition; distance: number }[] = [
-    { position: from, distance: 0 },
-  ];
+  const queue: { position: UnitPosition; distance: number }[] = [{ position: from, distance: 0 }];
   const visited = new Set([attackPathKey(from)]);
   while (queue.length) {
     const current = queue.shift()!;
     if (attackPathKey(current.position) === targetKey) return current.distance;
-    for (const neighbor of attackPathNeighbors(state, current.position)) {
+    for (const neighbor of attackPathNeighbors(state, current.position, context)) {
       const key = attackPathKey(neighbor);
       if (visited.has(key)) continue;
       visited.add(key);
@@ -349,6 +404,7 @@ export function canAttackAcrossRoadTopology(
   state: GameState,
   attackerPosition: UnitPosition,
   targetPosition: UnitPosition,
+  context?: RoadAttackTopologyContext,
 ): boolean {
   /*
    * 水上戦は既存の水上忍者ルールへ任せる。
@@ -361,9 +417,9 @@ export function canAttackAcrossRoadTopology(
    * 地上同士は同一道区間のみ攻撃可能。
    */
   if (["tile", "bridge"].includes(attackerPosition.kind) && ["tile", "bridge"].includes(targetPosition.kind)) {
-    const attackerSections = positionRoadSections(state, attackerPosition);
-    const targetSections = positionRoadSections(state, targetPosition);
-    return attackerSections.some((left) => targetSections.some((right) => areRoadSectionsDynamicallyConnected(state, left, right)));
+    const attackerSections = contextPositionRoadSections(state, attackerPosition, context);
+    const targetSections = contextPositionRoadSections(state, targetPosition, context);
+    return attackerSections.some((left) => targetSections.some((right) => sectionsAreConnected(state, left, right, context)));
   }
 
   /*
@@ -373,11 +429,11 @@ export function canAttackAcrossRoadTopology(
    * 従来どおり拠点内の敵を攻撃できる。
    */
   if (["tile", "bridge"].includes(attackerPosition.kind) && targetPosition.kind === "base") {
-    const attackerSections = positionRoadSections(state, attackerPosition);
-    const targetSections = positionRoadSections(state, targetPosition);
+    const attackerSections = contextPositionRoadSections(state, attackerPosition, context);
+    const targetSections = contextPositionRoadSections(state, targetPosition, context);
     return attackerSections.some((left) =>
       targetSections.some((right) =>
-        areRoadSectionsDynamicallyConnected(state, left, right),
+        sectionsAreConnected(state, left, right, context),
       ),
     );
   }
@@ -389,11 +445,11 @@ export function canAttackAcrossRoadTopology(
    * 既存射程内なら攻撃できる。
    */
   if (attackerPosition.kind === "base" && ["tile", "bridge"].includes(targetPosition.kind)) {
-    const attackerSections = positionRoadSections(state, attackerPosition);
-    const targetSections = positionRoadSections(state, targetPosition);
+    const attackerSections = contextPositionRoadSections(state, attackerPosition, context);
+    const targetSections = contextPositionRoadSections(state, targetPosition, context);
     return attackerSections.some((left) =>
       targetSections.some((right) =>
-        areRoadSectionsDynamicallyConnected(state, left, right),
+        sectionsAreConnected(state, left, right, context),
       ),
     );
   }

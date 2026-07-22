@@ -96,7 +96,7 @@ describe("Phase 5-C headless simulation", () => {
   });
 
   it("returns an end-only profile with counts and timing summaries", () => {
-    const result = runHeadlessMatch({ participantCount: 4, seed: 45, maxTurns: 1, mode: "training", profile: true });
+    const result = runHeadlessMatch({ participantCount: 4, seed: 45, maxTurns: 2, mode: "training", profile: true });
     expect(result.profile?.total.calls).toBe(1);
     expect(result.profile?.total.totalMs).toBeGreaterThan(0);
     expect(result.profile?.total.percentage).toBe(100);
@@ -107,8 +107,29 @@ describe("Phase 5-C headless simulation", () => {
     expect(result.profile?.invariantChecks.calls).toBe(result.invariantCheckCount);
     expect(result.profile?.actionLogging.calls).toBeGreaterThan(0);
     expect(result.profile?.otherRunner.calls).toBe(1);
+    expect(result.legalEnumerationBreakdown?.byCategory.movement).toEqual(expect.objectContaining({ calls: expect.any(Number), totalMs: expect.any(Number), averageMs: expect.any(Number), maxMs: expect.any(Number) }));
+    expect(result.legalEnumerationBreakdown?.byCategory.movementRangePathSearch.calls).toBeGreaterThan(0);
+    expect(result.legalEnumerationBreakdown?.byCategory.attackTargetSearch.calls).toBeGreaterThan(0);
+    for (const category of ["attackLivingEnemyList", "attackUnitCoordinateBaseSearch", "attackStaticRangePrefilter", "attackRangeDistance", "attackRoadSectionConnection", "attackAcrossBaseBlocking", "attackBaseBlocking", "attackBridgeConnection", "attackLakeNinjaRule", "attackBasicFilter", "attackCandidateIdGeneration", "attackPostProcessing", "attackFinalLegalCheck"]) {
+      expect(result.legalEnumerationBreakdown?.byCategory[category]).toEqual(expect.objectContaining({ calls: expect.any(Number), totalMs: expect.any(Number), averageMs: expect.any(Number), maxMs: expect.any(Number) }));
+    }
+    expect(Object.keys(result.legalEnumerationBreakdown?.byPhase ?? {})).toContain("movement_input");
     for (const entry of Object.values(result.profile!)) {
       expect(entry).toEqual(expect.objectContaining({ calls: expect.any(Number), totalMs: expect.any(Number), averageMs: expect.any(Number), maxMs: expect.any(Number), percentage: expect.any(Number) }));
     }
+  });
+
+  it("does not falsely stall after team-4 confirms production for seed 1020", () => {
+    const debug = runHeadlessMatch({ participantCount: 4, seed: 1020, maxTurns: 31, maxActions: 30_000, mode: "debug", historyLimit: 500 });
+    const training = runHeadlessMatch({ participantCount: 4, seed: 1020, maxTurns: 31, maxActions: 30_000, mode: "training" });
+    const replay = runHeadlessMatch({ participantCount: 4, seed: 1020, maxTurns: 31, maxActions: 30_000, mode: "training" });
+    expect(debug.endReason).not.toBe("phase_stall");
+    expect(training.endReason).not.toBe("phase_stall");
+    expect(replay.endReason).toBe(training.endReason);
+    expect(replay.actionSequenceHash).toBe(training.actionSequenceHash);
+    const actions = debug.recentActions ?? [];
+    const confirmation = actions.findIndex((entry) => entry.turnNumber === 31 && entry.teamId === "team-4" && entry.action === "confirm production / skip");
+    expect(confirmation).toBeGreaterThanOrEqual(0);
+    expect(actions.slice(confirmation + 1).some((entry) => entry.teamId === "team-4" && /move|movement pass/.test(entry.action))).toBe(true);
   });
 });

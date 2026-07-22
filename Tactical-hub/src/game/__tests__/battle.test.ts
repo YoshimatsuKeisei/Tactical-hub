@@ -3,8 +3,10 @@ import { UNIT_STATS } from "../constants";
 import {
   applyEncouragementToDenominator,
   getAttackCandidates,
+  getAttackEnumerationContext,
   getBaseAttackDenominator,
   getFinalAttackDenominator,
+  getTeamAttackCandidates,
   resolveBattle,
   saveAttackIntent,
 } from "../engine/battle";
@@ -108,6 +110,25 @@ function saveAttacks(
 }
 
 describe("battle", () => {
+  it.each([3, 4] as const)("keeps whole-team and target-unit attack candidates identical in a %i-player state", (players) => {
+    const state = createInitialGameState();
+    state.phase = state.turnState.phase = "attack_input";
+    if (players === 3) state.teams.find((team) => team.id === "team-4")!.status = "defeated";
+    const archer = addUnit(state, `equivalence-archer-${players}`, "team-1", "archer", { kind: "tile", x: 4, y: 1 });
+    addUnit(state, `equivalence-near-${players}`, "team-2", "infantry", { kind: "tile", x: 5, y: 1 });
+    addUnit(state, `equivalence-far-${players}`, "team-2", "infantry", { kind: "tile", x: 8, y: 1 });
+    addUnit(state, `equivalence-water-${players}`, "team-2", "ninja", { kind: "water", x: 4, y: 2 });
+    state.constructions.push({ id: `equivalence-obstacle-${players}`, kind: "obstacle", ownerTeamId: "team-3", tiles: [{ x: 6, y: 1 }], placedTurn: 1, active: true });
+    const whole = getTeamAttackCandidates(state, "team-1");
+    const context = getAttackEnumerationContext(state);
+    expect(getAttackEnumerationContext(state)).toBe(context);
+    for (const entry of whole) expect(getAttackCandidates(state, entry.attackerUnitId, context)).toEqual(entry.targets);
+    expect(getAttackCandidates(state, archer.id, context)).toEqual(whole.find((entry) => entry.attackerUnitId === archer.id)?.targets);
+
+    const changed = structuredClone(state);
+    changed.units.find((unit) => unit.id === archer.id)!.position = { kind: "tile", x: 7, y: 1 };
+    expect(getAttackEnumerationContext(changed)).not.toBe(context);
+  });
   it("lets range 1 units target adjacent enemies only", () => {
     const state = createInitialGameState();
     putUnit(state, "home-1-strategist", { kind: "tile", x: 4, y: 1 });

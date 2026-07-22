@@ -38,7 +38,9 @@ function closestTeamDistance(state: GameState, teamId: string, baseId: string) {
 }
 
 export function selectCaptureTeam(state: GameState, siege: SiegeState, candidateTeamIds: string[], rng: () => number = Math.random) {
-  let candidates = [...new Set(candidateTeamIds)].filter((id) => id !== siege.defendingTeamId);
+  let candidates = [...new Set(candidateTeamIds)].filter((id) =>
+    id !== siege.defendingTeamId && state.teams.some((team) => team.id === id && team.status === "active"),
+  );
   if (candidates.length <= 1) return candidates[0];
   const record = (id: string) => siege.teamRecords.find((entry) => entry.teamId === id);
   const maxKills = Math.max(...candidates.map((id) => record(id)?.defenderKills ?? 0));

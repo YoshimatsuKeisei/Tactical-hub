@@ -22,6 +22,7 @@ import {
   isRetreating,
   withRetreatingStatus,
 } from "./retreat";
+import { measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import { completeSiegeCapture, transferBaseOwnership } from "./capture";
 import { getSiegeState, resetInactiveSieges } from "./siege";
 import { defeatTeamsWithoutBases } from "./defeat";
@@ -401,24 +402,39 @@ export function getMovementCandidates(
   if (state.phase === "movement_input" && unit?.ownerTeamId !== state.currentMovementTeamId) return [];
   if (state.movedUnitIdsThisMovementPhase.includes(unitId) || state.teleportIntents.some((intent) => intent.targetUnitId === unitId)) return [];
   if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
-  const planningState = structuredClone(state) as GameState;
-  const teammatePlans = planningState.turnState.actionIntents
-    .find((intent) => intent.teamId === unit.ownerTeamId)
-    ?.movementIntents.filter((intent) => intent.unitId !== unitId && !intent.stay) ?? [];
-  for (const planned of teammatePlans) applyPosition(planningState, planned.unitId, planned.to);
+  const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
+    // Candidate planning only changes unit positions and BaseSlot occupancy.
+    // Keep all other dynamic state read-only and copy exactly those collections.
+    const plannedState: GameState = {
+      ...state,
+      units: state.units.slice(),
+      bases: state.bases.map((base) => ({ ...base, slots: base.slots.map((slot) => ({ ...slot })) })),
+    };
+    const teammatePlans = plannedState.turnState.actionIntents
+      .find((intent) => intent.teamId === unit.ownerTeamId)
+      ?.movementIntents.filter((intent) => intent.unitId !== unitId && !intent.stay) ?? [];
+    for (const planned of teammatePlans) applyPosition(plannedState, planned.unitId, planned.to);
+    return plannedState;
+  });
   const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
-  return getMovementPaths(planningState, unitId).map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position)));
+  return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(planningState, unitId).map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
 }
 
 export function getTeamMovementCandidates(state: GameState, teamId: string) {
   if (state.phase !== "movement_input" || state.currentMovementTeamId !== teamId) return [];
+  return getTeamMovementUnitIds(state, teamId)
+    .map((unitId) => ({
+      unitId,
+      destinations: getMovementCandidates(state, unitId).sort((left, right) => positionKey(left).localeCompare(positionKey(right))),
+    }));
+}
+
+export function getTeamMovementUnitIds(state: GameState, teamId: string) {
+  if (state.phase !== "movement_input" || state.currentMovementTeamId !== teamId) return [];
   return state.units
     .filter((unit) => unit.ownerTeamId === teamId && unit.hp > 0 && unit.position.kind !== "removed")
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((unit) => ({
-      unitId: unit.id,
-      destinations: getMovementCandidates(state, unit.id).sort((left, right) => positionKey(left).localeCompare(positionKey(right))),
-    }));
+    .map((unit) => unit.id);
 }
 
 export function validateMovementPath(
@@ -637,7 +653,10 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string): GameState
   );
   if (nextTeamId) {
     next.currentMovementTeamId = nextTeamId;
-    next.phase = next.turnState.phase = "movement_input";
+    if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+      next.phaseAfterRewards = "movement_input";
+      next.phase = next.turnState.phase = "reward_placement";
+    } else next.phase = next.turnState.phase = "movement_input";
     return next;
   }
 
@@ -666,6 +685,14 @@ export function submitMovement(state: GameState, teamId: string): GameState {
     state.teams.find((team) => team.id === teamId)?.status !== "active" ||
     state.movementCompletedTeamIds.includes(teamId)
   ) return state;
+  if (state.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+    return {
+      ...state,
+      phase: "reward_placement",
+      phaseAfterRewards: "movement_input",
+      turnState: { ...state.turnState, phase: "reward_placement" },
+    };
+  }
   if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId);
   const hasSavedProduction = state.turnState.actionIntents.some(
     (intent) => intent.teamId === teamId && intent.productionChoices.length > 0,

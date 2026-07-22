@@ -9,7 +9,7 @@ import type {
   UnitType,
 } from "../types";
 import { positionKey } from "../utils/position";
-import { canAttackAcrossRoadTopology, getRoadAttackDistance } from "../utils/roadTopology";
+import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, type RoadAttackTopologyContext } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
 import { getMovementCandidates } from "./movement";
@@ -17,6 +17,7 @@ import { beginStrategistActionPhase } from "./construction";
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
+import { measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
 
 type AttackDenominatorContext = {
@@ -129,6 +130,49 @@ function isProtectedByOkuzashiki(state: GameState, target: Unit) {
   });
 }
 
+export type AttackEnumerationContext = {
+  readonly sourceState: GameState;
+  readonly unitsRef: GameState["units"];
+  readonly basesRef: GameState["bases"];
+  readonly constructionsRef: GameState["constructions"];
+  readonly unitById: ReadonlyMap<string, Unit>;
+  readonly enemiesByTeamId: ReadonlyMap<string, readonly Unit[]>;
+  readonly protectedUnitIds: ReadonlySet<string>;
+  readonly encouragedUnitIds: ReadonlySet<string>;
+  readonly coordByUnitId: ReadonlyMap<string, { x: number; y: number } | undefined>;
+  readonly roadTopology: RoadAttackTopologyContext;
+  readonly distances: Map<string, number>;
+};
+
+const attackContextCache = new WeakMap<GameState["units"], AttackEnumerationContext>();
+
+export function getAttackEnumerationContext(state: GameState): AttackEnumerationContext {
+  const cached = attackContextCache.get(state.units);
+  if (cached && state.phase === "attack_input" && cached.unitsRef === state.units && cached.basesRef === state.bases && cached.constructionsRef === state.constructions) return cached;
+  const context = measureLegalSegment("attackUnitCoordinateBaseSearch", () => {
+    const unitById = new Map(state.units.map((unit) => [unit.id, unit]));
+    const living = measureLegalSegment("attackLivingEnemyList", () => state.units.filter(isAlive));
+    const teamIds = state.teams.map((team) => team.id);
+    const enemiesByTeamId = new Map(teamIds.map((teamId) => [teamId, living.filter((unit) => unit.ownerTeamId !== teamId)]));
+    const protectedUnitIds = measureLegalSegment("attackBaseBlocking", () => new Set(living.filter((unit) => isProtectedByOkuzashiki(state, unit)).map((unit) => unit.id)));
+    return {
+      sourceState: state,
+      unitsRef: state.units,
+      basesRef: state.bases,
+      constructionsRef: state.constructions,
+      unitById,
+      enemiesByTeamId,
+      protectedUnitIds,
+      encouragedUnitIds: getEncouragedUnitIds(state),
+      coordByUnitId: new Map(living.map((unit) => [unit.id, getPositionCoord(state, unit.position)])),
+      roadTopology: createRoadAttackTopologyContext(state),
+      distances: new Map<string, number>(),
+    } satisfies AttackEnumerationContext;
+  });
+  if (state.phase === "attack_input") attackContextCache.set(state.units, context);
+  return context;
+}
+
 export function getBaseAttackDenominator(
   attackerType: UnitType,
   targetType: UnitType,
@@ -204,14 +248,18 @@ function canAttackByPositionRule(attacker: Unit, target: Unit) {
   return true;
 }
 
-function canAttackUnit(state: GameState, attacker: Unit, target: Unit) {
-  if (!canAttackByPositionRule(attacker, target)) return false;
-  if (!getAttackDenominators(attacker, target, false)) return false;
-  return true;
+function candidateDistance(state: GameState, attacker: Unit, target: Unit, topology?: RoadAttackTopologyContext) {
+  return getRoadAttackDistance(state, attacker.position, target.position, topology);
 }
 
-function candidateDistance(state: GameState, attacker: Unit, target: Unit) {
-  return getRoadAttackDistance(state, attacker.position, target.position);
+function contextDistance(state: GameState, attacker: Unit, target: Unit, context?: AttackEnumerationContext) {
+  if (!context) return candidateDistance(state, attacker, target);
+  const key = `${attacker.id}\u0000${target.id}`;
+  const cached = context.distances.get(key);
+  if (cached !== undefined) return cached;
+  const distance = candidateDistance(state, attacker, target, context.roadTopology);
+  context.distances.set(key, distance);
+  return distance;
 }
 
 function targetSortKey(
@@ -219,6 +267,7 @@ function targetSortKey(
   attacker: Unit,
   target: Unit,
   encouragedUnitIds: Set<string>,
+  distance = candidateDistance(state, attacker, target),
 ): [number, number, number, number, number, number, string] {
   const baseHp = UNIT_STATS[target.type].hp;
   const denominator = getAttackDenominators(
@@ -232,7 +281,7 @@ function targetSortKey(
     target.type === "engineer" || target.type === "strategist" ? 0 : 1,
     target.hp < baseHp ? 0 : 1,
     target.position.kind === "base" ? 0 : 1,
-    candidateDistance(state, attacker, target),
+    distance,
     target.id,
   ];
 }
@@ -253,59 +302,67 @@ export function sortAttackCandidates(
   attacker: Unit,
   targets: Unit[],
   encouragedUnitIds = getEncouragedUnitIds(state),
+  context?: AttackEnumerationContext,
 ) {
-  return [...targets].sort((a, b) =>
-    compareSortKey(
-      targetSortKey(state, attacker, a, encouragedUnitIds),
-      targetSortKey(state, attacker, b, encouragedUnitIds),
-    ),
-  );
+  const keys = new Map(targets.map((target) => [target.id, targetSortKey(state, attacker, target, encouragedUnitIds, contextDistance(state, attacker, target, context))]));
+  return [...targets].sort((a, b) => compareSortKey(keys.get(a.id)!, keys.get(b.id)!));
 }
 
 export function getAttackCandidates(
   state: GameState,
   attackerUnitId: string,
+  context = getAttackEnumerationContext(state),
 ): AttackTarget[] {
-  const attacker = state.units.find((unit) => unit.id === attackerUnitId);
+  return measureLegalSegment("attackTargetSearch", () => getAttackCandidatesCore(state, attackerUnitId, context));
+}
+
+function getAttackCandidatesCore(state: GameState, attackerUnitId: string, context: AttackEnumerationContext): AttackTarget[] {
+  const attacker = context.unitById.get(attackerUnitId);
   if (!attacker || !isAlive(attacker)) return [];
   if (isRetreating(attacker)) return [];
 
   const range = UNIT_STATS[attacker.type].range;
   if (range <= 0) return [];
 
-  const targets = state.units
-    .filter((target) => target.id !== attacker.id)
-    .filter((target) => isAlive(target))
-    .filter((target) => target.ownerTeamId !== attacker.ownerTeamId)
-    .filter((target) => !isProtectedByOkuzashiki(state, target))
-    .filter((target) => canAttackUnit(state, attacker, target))
-    .filter((target) =>
-      canAttackAcrossRoadTopology(state, attacker.position, target.position),
-    )
-    .filter(
-      (target) =>
-        getRoadAttackDistance(state, attacker.position, target.position) <= range,
-    );
+  const enemies = context.enemiesByTeamId.get(attacker.ownerTeamId) ?? [];
+  const targets = measureLegalSegment("attackBasicFilter", () => enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id)));
+  const legal: Unit[] = [];
+  for (const target of targets) {
+    if (!measureLegalSegment("attackLakeNinjaRule", () => canAttackByPositionRule(attacker, target))) continue;
+    if (!measureLegalSegment("attackFinalLegalCheck", () => Boolean(getAttackDenominators(attacker, target, false)))) continue;
+    const attackerCoord = context.coordByUnitId.get(attacker.id), targetCoord = context.coordByUnitId.get(target.id);
+    if (attackerCoord && targetCoord && !measureLegalSegment("attackStaticRangePrefilter", () => Math.max(Math.abs(attackerCoord.x - targetCoord.x), Math.abs(attackerCoord.y - targetCoord.y)) <= range)) continue;
+    const topologyCategory = attacker.position.kind === "base" || target.position.kind === "base"
+      ? "attackAcrossBaseBlocking"
+      : attacker.position.kind === "bridge" || target.position.kind === "bridge"
+        ? "attackBridgeConnection"
+        : "attackRoadSectionConnection";
+    if (!measureLegalSegment(topologyCategory, () => canAttackAcrossRoadTopology(state, attacker.position, target.position, context.roadTopology))) continue;
+    const distance = measureLegalSegment("attackRangeDistance", () => contextDistance(state, attacker, target, context));
+    if (distance > range) continue;
+    legal.push(target);
+  }
 
-  const encouragedUnitIds = getEncouragedUnitIds(state);
-  return sortAttackCandidates(state, attacker, targets, encouragedUnitIds).map(
-    (target) => ({
-      ...targetForUnit(target),
-      ...getAttackDenominators(
-        attacker,
-        target,
-        encouragedUnitIds.has(attacker.id),
-      ),
-    }),
-  );
+  const sorted = measureLegalSegment("attackPostProcessing", () => sortAttackCandidates(state, attacker, legal, context.encouragedUnitIds as Set<string>, context));
+  return measureLegalSegment("attackCandidateIdGeneration", () => sorted.map((target) => ({
+    ...targetForUnit(target),
+    ...getAttackDenominators(attacker, target, context.encouragedUnitIds.has(attacker.id)),
+  })));
 }
 
 export function getTeamAttackCandidates(state: GameState, teamId: string) {
   if (state.phase !== "attack_input" || state.teams.find((team) => team.id === teamId)?.status !== "active") return [];
+  const context = getAttackEnumerationContext(state);
+  return getTeamAttackerUnitIds(state, teamId)
+    .map((unitId) => ({ attackerUnitId: unitId, targets: getAttackCandidates(state, unitId, context) }));
+}
+
+export function getTeamAttackerUnitIds(state: GameState, teamId: string) {
+  if (state.phase !== "attack_input" || state.teams.find((team) => team.id === teamId)?.status !== "active") return [];
   return state.units
     .filter((unit) => unit.ownerTeamId === teamId && unit.hp > 0 && unit.position.kind !== "removed")
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((unit) => ({ attackerUnitId: unit.id, targets: getAttackCandidates(state, unit.id) }));
+    .map((unit) => unit.id);
 }
 
 export function saveAttackIntent(
@@ -667,7 +724,7 @@ export function resolveBattle(
   clearInvalidRetreatTargets(next);
   captured = captured || kingDefeatApplied;
   resetInactiveSieges(next);
-  if (captured && next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+  if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     next.phaseAfterRewards = "strategist_action_input";
     next.phase = "reward_placement";
   } else next.phase = "strategist_action_input";

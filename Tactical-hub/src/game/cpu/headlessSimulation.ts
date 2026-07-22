@@ -10,6 +10,8 @@ export type HeadlessMode = "debug" | "sweep" | "training";
 export type HeadlessProfileCategory = "legalEnumeration" | "policySelection" | "actionApplication" | "invariantChecks" | "stallDetection" | "actionLogging" | "otherRunner" | "total";
 export type HeadlessProfileEntry = { calls: number; totalMs: number; averageMs: number; maxMs: number; percentage: number };
 export type HeadlessProfile = Record<HeadlessProfileCategory, HeadlessProfileEntry>;
+export type LegalEnumerationProfileEntry = Omit<HeadlessProfileEntry, "percentage">;
+export type LegalEnumerationBreakdown = { byCategory: Record<string, LegalEnumerationProfileEntry>; byPhase: Record<string, LegalEnumerationProfileEntry> };
 export type HeadlessMatchOptions = {
   participantCount: 3 | 4;
   seed: number;
@@ -37,6 +39,7 @@ export type HeadlessMatchResult = {
   recentActions?: CpuActionLog[];
   invariantCheckCount: number;
   profile?: HeadlessProfile;
+  legalEnumerationBreakdown?: LegalEnumerationBreakdown;
   finalState: GameState;
 };
 export type HeadlessBatchResult = {
@@ -101,12 +104,13 @@ export function checkHeadlessInvariants(state: GameState, runtime?: CpuRuntime) 
     const position = unit.position as Extract<Unit["position"], { kind: "base" }>;
     if (state.bases.find((base) => base.id === position.baseId)?.slots.find((slot) => slot.id === position.slotId)?.unitId !== unit.id) violations.push(`base unit missing reciprocal slot: ${unit.id}`);
   }
-  if (state.phase === "movement_input") {
+  const rewardInterruptsMovement = state.phase === "reward_placement" && state.phaseAfterRewards === "movement_input";
+  if (state.phase === "movement_input" || rewardInterruptsMovement) {
     const team = state.teams.find((entry) => entry.id === state.currentMovementTeamId);
     if (!team || team.status !== "active") violations.push(`movement assigned to inactive/missing team: ${state.currentMovementTeamId ?? "none"}`);
   } else if (state.currentMovementTeamId) violations.push(`current movement team exists outside movement phase: ${state.currentMovementTeamId}`);
   if (state.turnState.phase !== state.phase) violations.push(`phase mismatch: state=${state.phase} turnState=${state.turnState.phase}`);
-  if (state.teleportIntents.length && state.phase !== "movement_input") violations.push(`teleport intents exist outside movement phase: ${state.phase}`);
+  if (state.teleportIntents.length && state.phase !== "movement_input" && !rewardInterruptsMovement) violations.push(`teleport intents exist outside movement phase: ${state.phase}`);
   if (state.phase === "strategist_action_resolution" && !state.teams.filter((team) => team.status === "active").every((team) => state.strategistSubmittedTeamIds.includes(team.id))) violations.push("strategist resolution started before all active teams submitted");
   const unitById = new Map(state.units.map((unit) => [unit.id, unit]));
   const constructionById = new Map(state.constructions.map((entry) => [entry.id, entry]));
@@ -145,19 +149,30 @@ function profileCollector(enabled: boolean) {
     if (!enabled) return;
     const entry = values[key]; entry.calls += 1; entry.totalMs += milliseconds; entry.maxMs = Math.max(entry.maxMs, milliseconds);
   };
+  const legalCategoryNames = ["production", "movement", "retreat", "ninjaMovement", "teleport", "attack", "reward", "constructionStrategist", "confirmPass", "movementRangePathSearch", "attackTargetSearch", "boardOccupancyGeneration", "unitBaseEquipmentSearch", "postProcessing", "attackLivingEnemyList", "attackUnitCoordinateBaseSearch", "attackStaticRangePrefilter", "attackRangeDistance", "attackRoadSectionConnection", "attackAcrossBaseBlocking", "attackBaseBlocking", "attackBridgeConnection", "attackLakeNinjaRule", "attackBasicFilter", "attackCandidateIdGeneration", "attackPostProcessing", "attackFinalLegalCheck"];
+  const legalCategories = new Map<string, MutableProfileEntry>(legalCategoryNames.map((key) => [key, { calls: 0, totalMs: 0, maxMs: 0 }]));
+  const legalPhases = new Map<string, MutableProfileEntry>();
+  const addDynamic = (target: Map<string, MutableProfileEntry>, key: string, milliseconds: number) => {
+    if (!enabled) return;
+    const entry = target.get(key) ?? { calls: 0, totalMs: 0, maxMs: 0 };
+    entry.calls += 1; entry.totalMs += milliseconds; entry.maxMs = Math.max(entry.maxMs, milliseconds); target.set(key, entry);
+  };
+  const summarize = (target: Map<string, MutableProfileEntry>) => Object.fromEntries([...target].map(([key, entry]) => [key, { ...entry, averageMs: entry.calls ? entry.totalMs / entry.calls : 0 }]));
   const finish = (totalMs: number): HeadlessProfile | undefined => {
     if (!enabled) return undefined;
     const measured = Object.values(values).reduce((sum, entry) => sum + entry.totalMs, 0);
     const all: Record<string, MutableProfileEntry> = { ...values, otherRunner: { calls: 1, totalMs: Math.max(0, totalMs - measured), maxMs: Math.max(0, totalMs - measured) }, total: { calls: 1, totalMs, maxMs: totalMs } };
     return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, { ...entry, averageMs: entry.calls ? entry.totalMs / entry.calls : 0, percentage: totalMs ? entry.totalMs / totalMs * 100 : 0 }])) as HeadlessProfile;
   };
-  return { add, finish };
+  const finishLegal = (): LegalEnumerationBreakdown | undefined => enabled ? { byCategory: summarize(legalCategories), byPhase: summarize(legalPhases) } : undefined;
+  return { add, addLegalCategory: (key: string, ms: number) => addDynamic(legalCategories, key, ms), addLegalPhase: (key: string, ms: number) => addDynamic(legalPhases, key, ms), finish, finishLegal };
 }
 
-function progressSignature(state: GameState, runtime: CpuRuntime) {
+export function getHeadlessProgressSignature(state: GameState, runtime: CpuRuntime) {
   const living = state.units.filter((unit) => unit.hp > 0 && unit.position.kind !== "removed").length;
   const intents = state.turnState.actionIntents.reduce((sum, entry) => sum + entry.productionChoices.length + entry.movementIntents.length + (entry.attackIntents?.length ?? 0), 0);
-  return [state.turnNumber, state.phase, state.currentMovementTeamId ?? "-", state.teams.filter((team) => team.status === "active").length, living, intents, state.teleportIntents.length, state.strategistActionIntents.length, state.strategistSubmittedTeamIds.length, state.rewardPlacementRequests.filter((entry) => !entry.completed && !entry.expired).length, state.constructions.filter((entry) => entry.active).length, runtime.rngState, runtime.contextKey, runtime.processedKeys.length, runtime.completedProductionTeamIds.length, runtime.completedAttackTeamIds.length, runtime.hiddenAttackIntents.length].join(":");
+  const completedProduction = state.productionCompletedTeamIdsThisTurn.slice().sort().join(",");
+  return [state.turnNumber, state.phase, state.currentMovementTeamId ?? "-", state.teams.filter((team) => team.status === "active").length, living, intents, completedProduction, state.teleportIntents.length, state.strategistActionIntents.length, state.strategistSubmittedTeamIds.length, state.rewardPlacementRequests.filter((entry) => !entry.completed && !entry.expired).length, state.constructions.filter((entry) => entry.active).length, runtime.rngState, runtime.contextKey, runtime.processedKeys.length, runtime.completedProductionTeamIds.length, runtime.completedAttackTeamIds.length, runtime.hiddenAttackIntents.length].join(":");
 }
 
 function importantResolutionSignature(state: GameState) {
@@ -182,12 +197,12 @@ function updateActionHash(hash: number, decision: CpuDecision) {
   return hash;
 }
 
-function result(options: HeadlessMatchOptions, state: GameState, runtime: CpuRuntime, endReason: HeadlessEndReason, actionHash: number, invariantCheckCount: number, profile: HeadlessProfile | undefined, violations: string[] = [], error?: string): HeadlessMatchResult {
+function result(options: HeadlessMatchOptions, state: GameState, runtime: CpuRuntime, endReason: HeadlessEndReason, actionHash: number, invariantCheckCount: number, profile: HeadlessProfile | undefined, legalEnumerationBreakdown: LegalEnumerationBreakdown | undefined, violations: string[] = [], error?: string): HeadlessMatchResult {
   const active = state.teams.filter((team) => !team.isNeutral && team.status === "active");
   const mode = options.mode ?? "debug";
   const failed = !["victory", "turn_limit"].includes(endReason);
   const recentActions = mode === "debug" || (mode === "sweep" && failed) ? runtime.logs.slice(-(options.historyLimit ?? 50)) : undefined;
-  return { seed: options.seed, participantCount: options.participantCount, endReason, winnerTeamId: active.length === 1 ? active[0].id : undefined, endTurn: state.turnNumber, phase: state.phase, currentMovementTeamId: state.currentMovementTeamId, actionCount: runtime.appliedStepCount, actionSequenceHash: actionHash.toString(16).padStart(8, "0"), violations, error, recentActions, invariantCheckCount, profile, finalState: state };
+  return { seed: options.seed, participantCount: options.participantCount, endReason, winnerTeamId: active.length === 1 ? active[0].id : undefined, endTurn: state.turnNumber, phase: state.phase, currentMovementTeamId: state.currentMovementTeamId, actionCount: runtime.appliedStepCount, actionSequenceHash: actionHash.toString(16).padStart(8, "0"), violations, error, recentActions, invariantCheckCount, profile, legalEnumerationBreakdown, finalState: state };
 }
 
 export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchResult {
@@ -206,14 +221,19 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
     return violations;
   };
   const settings: CpuTeamSettings = Object.fromEntries(state.teams.filter((team) => !team.isNeutral && team.status === "active").map((team) => [team.id, "random_cpu"]));
-  const policy = options.policy ?? (options.profile ? createProfiledRandomCpuPolicy((enumerationMs, policyTotalMs) => { timings.add("legalEnumeration", enumerationMs); timings.add("policySelection", Math.max(0, policyTotalMs - enumerationMs)); }) : getRandomCpuDecision);
+  const policy = options.policy ?? (options.profile ? createProfiledRandomCpuPolicy((enumerationMs, policyTotalMs, details) => {
+    timings.add("legalEnumeration", enumerationMs);
+    timings.add("policySelection", Math.max(0, policyTotalMs - enumerationMs));
+    timings.addLegalPhase(details[0]?.phase ?? state.phase, enumerationMs);
+    for (const detail of details) timings.addLegalCategory(detail.category, detail.milliseconds);
+  }) : getRandomCpuDecision);
   const phaseCounts = new Map<string, number>();
-  let previous = progressSignature(state, runtime);
+  let previous = getHeadlessProgressSignature(state, runtime);
   let previousImportant = importantResolutionSignature(state);
   const finish = (endReason: HeadlessEndReason, violations: string[] = [], error?: string) => {
     const finalReason = violations.length ? "invariant_violation" : endReason;
     const totalMs = performance.now() - matchStarted;
-    return result(options, state, runtime, finalReason, actionHash, invariantCheckCount, timings.finish(totalMs), violations, error);
+    return result(options, state, runtime, finalReason, actionHash, invariantCheckCount, timings.finish(totalMs), timings.finishLegal(), violations, error);
   };
   try {
     if (state.teams.filter((team) => !team.isNeutral && team.status === "active").length <= 1) return finish("victory");
@@ -248,7 +268,7 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
         if (violations.length) return finish("invariant_violation", violations);
       }
       const stallStarted = options.profile ? performance.now() : 0;
-      const current = progressSignature(state, runtime);
+      const current = getHeadlessProgressSignature(state, runtime);
       const stalled = current === previous;
       timings.add("stallDetection", options.profile ? performance.now() - stallStarted : 0);
       if (stalled) return finish("phase_stall", [], "CPU action produced no state or policy progress");
