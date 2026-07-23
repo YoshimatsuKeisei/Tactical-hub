@@ -276,6 +276,34 @@ export function getRoadAttackDistance(
   return Number.POSITIVE_INFINITY;
 }
 
+/**
+ * Builds an exact single-cost distance lookup from one fixed destination.
+ * The attack-path graph is undirected: ground/bridge edges use the symmetric
+ * canMoveBetweenGroundPositions rule, base entrance edges are emitted in both
+ * directions, and dynamic road-section connectivity is symmetric.
+ */
+export function createRoadAttackDistanceLookup(
+  state: GameState,
+  to: UnitPosition,
+  context: RoadAttackTopologyContext = createRoadAttackTopologyContext(state),
+): (from: UnitPosition) => number {
+  if (to.kind === "water") return (from) => from.kind === "water" ? Math.max(Math.abs(from.x - to.x), Math.abs(from.y - to.y)) : Number.POSITIVE_INFINITY;
+  if (to.kind === "removed") return () => Number.POSITIVE_INFINITY;
+  const distances = new Map<string, number>([[attackPathKey(to), 0]]);
+  const queue: UnitPosition[] = [to];
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index];
+    const nextDistance = distances.get(attackPathKey(current))! + 1;
+    for (const neighbor of attackPathNeighbors(state, current, context)) {
+      const key = attackPathKey(neighbor);
+      if (distances.has(key)) continue;
+      distances.set(key, nextDistance);
+      queue.push(neighbor);
+    }
+  }
+  return (from) => from.kind === "water" || from.kind === "removed" ? Number.POSITIVE_INFINITY : distances.get(attackPathKey(from)) ?? Number.POSITIVE_INFINITY;
+}
+
 export function areRoadSectionsDynamicallyConnected(state: GameState, a: string, b: string) {
   if (a === b) return true;
   const adjacency = new Map<string, Set<string>>();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getRandomCpuDecision } from "../cpu/randomCpuPolicy";
+import { createHeuristicCpuPolicy } from "../cpu/heuristicCpuPolicy";
 import { checkHeadlessInvariants, createHeadlessInitialState, runHeadlessBatch, runHeadlessMatch } from "../cpu/headlessSimulation";
 
 describe("Phase 5-C headless simulation", () => {
@@ -117,6 +118,29 @@ describe("Phase 5-C headless simulation", () => {
     for (const entry of Object.values(result.profile!)) {
       expect(entry).toEqual(expect.objectContaining({ calls: expect.any(Number), totalMs: expect.any(Number), averageMs: expect.any(Number), maxMs: expect.any(Number), percentage: expect.any(Number) }));
     }
+    expect(result.profiling).toEqual(expect.objectContaining({ enabled: true, matchElapsedMs: expect.any(Number), overlapWarning: expect.stringContaining("overlap") }));
+    expect(result.profiling?.turnBuckets.reduce((sum, bucket) => sum + bucket.actionCount, 0)).toBe(result.actionCount);
+    expect(result.profiling?.sections.map((entry) => entry.totalMs)).toEqual([...result.profiling!.sections.map((entry) => entry.totalMs)].sort((left, right) => right - left));
+    for (const section of result.profiling?.sections ?? []) {
+      expect(Number.isFinite(section.totalMs)).toBe(true);
+      expect(Number.isFinite(section.averageMs)).toBe(true);
+      expect(section.totalMs).toBeGreaterThanOrEqual(0);
+      expect(section.callCount).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("keeps Random and Heuristic outcomes unchanged when profiling is enabled", () => {
+    const randomPlain = runHeadlessMatch({ participantCount: 4, seed: 451, maxTurns: 1, mode: "training" });
+    const randomProfiled = runHeadlessMatch({ participantCount: 4, seed: 451, maxTurns: 1, mode: "training", profile: true });
+    expect({ hash: randomProfiled.actionSequenceHash, count: randomProfiled.actionCount, reason: randomProfiled.endReason }).toEqual({ hash: randomPlain.actionSequenceHash, count: randomPlain.actionCount, reason: randomPlain.endReason });
+    const heuristicPlain = runHeadlessMatch({ participantCount: 4, seed: 452, maxTurns: 1, mode: "training", policy: createHeuristicCpuPolicy() });
+    const heuristicProfiled = runHeadlessMatch({ participantCount: 4, seed: 452, maxTurns: 1, mode: "training", policy: createHeuristicCpuPolicy(), profile: true });
+    expect({ hash: heuristicProfiled.actionSequenceHash, count: heuristicProfiled.actionCount, reason: heuristicProfiled.endReason }).toEqual({ hash: heuristicPlain.actionSequenceHash, count: heuristicPlain.actionCount, reason: heuristicPlain.endReason });
+    expect(heuristicProfiled.profiling?.sections.some((entry) => entry.name === "legal.heuristicCandidateEvaluation")).toBe(true);
+    expect(heuristicProfiled.profiling?.heuristicDistanceCache).toEqual(expect.objectContaining({ searchCount: expect.any(Number), hitCount: expect.any(Number), missCount: expect.any(Number), hitRate: expect.any(Number) }));
+    expect(heuristicProfiled.profiling!.heuristicDistanceCache!.searchCount).toBeGreaterThan(0);
+    expect(heuristicProfiled.profiling!.heuristicDistanceCache!.hitCount).toBeGreaterThan(0);
+    expect(randomPlain.profiling).toBeUndefined();
   });
 
   it("does not falsely stall after team-4 confirms production for seed 1020", () => {

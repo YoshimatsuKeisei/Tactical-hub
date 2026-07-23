@@ -528,7 +528,7 @@ function applyRetreatStatus(
   );
 }
 
-function resolveCurrentTeamMovement(state: GameState, teamId: string): GameState {
+function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () => number): GameState {
   const next = structuredClone(state) as GameState;
   resolveTeamTeleports(next, teamId);
   resetInactiveSieges(next);
@@ -629,7 +629,7 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string): GameState
     const siege = getSiegeState(next, base.id);
     if (siege?.active && siege.defenderLossOccurred) {
       const candidates = siege.teamRecords.filter((record) => record.teamId !== siege.defendingTeamId && (record.defenderKills > 0 || record.effectiveAttackTurns > 0)).map((record) => record.teamId);
-      completeSiegeCapture(next, siege, candidates, "combat_abandonment");
+      completeSiegeCapture(next, siege, candidates, "combat_abandonment", rng);
       combatAbandonmentBases.add(base.id);
     }
   }
@@ -678,7 +678,7 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string): GameState
   return next;
 }
 
-export function submitMovement(state: GameState, teamId: string): GameState {
+export function submitMovement(state: GameState, teamId: string, rng: () => number = Math.random): GameState {
   if (
     state.phase !== "movement_input" ||
     state.currentMovementTeamId !== teamId ||
@@ -693,7 +693,7 @@ export function submitMovement(state: GameState, teamId: string): GameState {
       turnState: { ...state.turnState, phase: "reward_placement" },
     };
   }
-  if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId);
+  if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId, rng);
   const hasSavedProduction = state.turnState.actionIntents.some(
     (intent) => intent.teamId === teamId && intent.productionChoices.length > 0,
   );
@@ -702,9 +702,9 @@ export function submitMovement(state: GameState, teamId: string): GameState {
     ...state,
     productionCompletedTeamIdsThisTurn: [...new Set([...state.productionCompletedTeamIdsThisTurn, teamId])],
   };
-  return resolveCurrentTeamMovement(skipped, teamId);
+  return resolveCurrentTeamMovement(skipped, teamId, rng);
 }
 
-export function resolveMovement(state: GameState): GameState {
-  return state.currentMovementTeamId ? submitMovement(state, state.currentMovementTeamId) : state;
+export function resolveMovement(state: GameState, rng: () => number = Math.random): GameState {
+  return state.currentMovementTeamId ? submitMovement(state, state.currentMovementTeamId, rng) : state;
 }

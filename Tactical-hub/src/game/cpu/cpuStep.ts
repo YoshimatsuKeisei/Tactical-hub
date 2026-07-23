@@ -23,7 +23,7 @@ export type CpuStepInstrumentation = {
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
   onPolicy?: (milliseconds: number) => void;
-  onApply?: (milliseconds: number) => void;
+  onApply?: (milliseconds: number, decision: CpuDecision, phaseBefore: GameState["phase"], phaseAfter: GameState["phase"], turnBefore: number, turnAfter: number) => void;
   onLog?: (milliseconds: number) => void;
   onDecision?: (decision: CpuDecision) => void;
 };
@@ -60,7 +60,10 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
   instrumentation?.onDecision?.(decision);
   const applyStarted = instrumentation?.onApply ? performance.now() : 0;
   let actionLogMs = 0;
-  const actionInstrumentation = instrumentation ? { ...instrumentation, onLog: (milliseconds: number) => { actionLogMs += milliseconds; instrumentation.onLog?.(milliseconds); } } : undefined;
+  const measuresApplication = Boolean(instrumentation?.onApply);
+  const actionInstrumentation = measuresApplication
+    ? { ...instrumentation, onLog: (milliseconds: number) => { actionLogMs += milliseconds; instrumentation?.onLog?.(milliseconds); } }
+    : instrumentation;
   const writeLog = (teamId: string | undefined, action: string, detail?: string, error?: string) => log(runtime, state, teamId, action, detail, error, actionInstrumentation);
   let next = state;
   switch (decision.kind) {
@@ -83,7 +86,7 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       runtime.processedKeys.push(decision.actorKey);
       writeLog(decision.teamId, decision.intent ? "teleport" : "teleport pass", decision.intent ? `${decision.intent.strategistUnitId}:${decision.intent.targetUnitId} -> ${positionKey(decision.intent.to)}` : decision.strategistUnitId);
       break;
-    case "submit_movement": next = submitMovement(state, decision.teamId); writeLog(decision.teamId, "confirm movement"); break;
+    case "submit_movement": next = submitMovement(state, decision.teamId, injectedRng(runtime)); writeLog(decision.teamId, "confirm movement"); break;
     case "attack":
       runtime.hiddenAttackIntents = [...runtime.hiddenAttackIntents.filter((entry) => entry.attackerUnitId !== decision.intent.attackerUnitId), decision.intent];
       runtime.processedKeys.push(decision.actorKey);
@@ -106,7 +109,7 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     case "submit_strategist": next = submitStrategistActions(state, decision.teamId); writeLog(decision.teamId, "confirm strategist actions"); break;
     case "resolve_strategists": next = resolveStrategistActions(state, injectedRng(runtime)); writeLog(undefined, "resolve strategist actions"); break;
   }
-  instrumentation?.onApply?.(Math.max(0, performance.now() - applyStarted - actionLogMs));
+  instrumentation?.onApply?.(Math.max(0, performance.now() - applyStarted - actionLogMs), decision, state.phase, next.phase, state.turnNumber, next.turnNumber);
   runtime.appliedStepCount += 1;
   return { state: next, runtime, applied: true };
 }

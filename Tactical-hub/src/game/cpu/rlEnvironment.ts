@@ -53,11 +53,11 @@ export type RlResult = {
 
 export type RlRewardFunction = (state: GameState, result: Omit<RlResult, "rewards">) => Record<string, number>;
 
-type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision };
+export type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision };
 
 const activeTeamIds = (state: GameState) => state.teams.filter((team) => !team.isNeutral && team.status === "active").map((team) => team.id);
 const tileId = (position: UnitPosition) => positionKey(position);
-const actionKey = (decision: CpuDecision) => {
+export const getCpuDecisionActionKey = (decision: CpuDecision) => {
   switch (decision.kind) {
     case "production": return `production:${decision.teamId}:${decision.actorKey}:${decision.choice ? `${decision.choice.baseId}:${decision.choice.unitType}:${decision.choice.strategistRole ?? ""}` : "pass"}`;
     case "movement": return `movement:${decision.teamId}:${decision.unitId}:${decision.to ? tileId(decision.to) : "pass"}`;
@@ -70,7 +70,7 @@ const actionKey = (decision: CpuDecision) => {
 };
 
 function describe(decision: CpuDecision): RlLegalAction {
-  const base: RlLegalAction = { actionKey: actionKey(decision), actionType: decision.kind, actorTeamId: decision.teamId };
+  const base: RlLegalAction = { actionKey: getCpuDecisionActionKey(decision), actionType: decision.kind, actorTeamId: decision.teamId };
   switch (decision.kind) {
     case "production": return { ...base, baseId: decision.choice?.baseId, unitType: decision.choice?.unitType };
     case "movement": return { ...base, unitId: decision.unitId, tileId: decision.to ? tileId(decision.to) : undefined };
@@ -241,8 +241,8 @@ export class RlEnvironment {
     const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, "random_cpu"]));
     const decision = policy(this.state, policyRuntime, settings);
     if (!decision) throw new Error("RL policy returned no action at a decision point");
-    const selected = this.decisions.find((entry) => entry.action.actionKey === actionKey(decision));
-    if (!selected) throw new Error(`RL policy selected an action outside the legal list: ${actionKey(decision)}`);
+    const selected = this.decisions.find((entry) => entry.action.actionKey === getCpuDecisionActionKey(decision));
+    if (!selected) throw new Error(`RL policy selected an action outside the legal list: ${getCpuDecisionActionKey(decision)}`);
     this.runtime = policyRuntime;
     return this.step(selected.action.actionKey);
   }

@@ -10,13 +10,13 @@ import { positionKey } from "../utils/position";
 import type { CpuDecision, CpuRuntime, CpuTeamSettings } from "./types";
 import { withLegalProfileSink } from "./legalEnumerationProfile";
 
-function nextRandom(runtime: CpuRuntime) {
+export function nextCpuRandom(runtime: CpuRuntime) {
   runtime.rngState = (Math.imul(runtime.rngState, 1664525) + 1013904223) >>> 0;
   return runtime.rngState / 0x1_0000_0000;
 }
 
 function choose<T>(runtime: CpuRuntime, values: T[]) {
-  return values[Math.floor(nextRandom(runtime) * values.length)];
+  return values[Math.floor(nextCpuRandom(runtime) * values.length)];
 }
 
 const activeTeamIds = (state: GameState) => state.teams.filter((team) => team.status === "active").map((team) => team.id);

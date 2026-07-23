@@ -49,7 +49,7 @@ describe("攻略状態・占領・褒賞", () => {
       { teamId: "team-1", defenderKills: 1, effectiveAttackTurns: 1 },
       { teamId: "team-2", defenderKills: 8, effectiveAttackTurns: 8 },
     ] };
-    expect(selectCaptureTeam(state, siege, ["team-1"])).toBe("team-1");
+    expect(selectCaptureTeam(state, siege, ["team-1"], () => 0)).toBe("team-1");
   });
 
   it("所有権情報を重複なく一括更新し攻略状態を消す", () => {
@@ -70,7 +70,7 @@ describe("攻略状態・占領・褒賞", () => {
       { teamId: "team-3", defenderKills: 2, effectiveAttackTurns: 1 },
     ] };
     state.siegeStates.push(siege);
-    expect(completeSiegeCapture(state, siege, ["team-1"], "annihilation")).toBe(true);
+    expect(completeSiegeCapture(state, siege, ["team-1"], "annihilation", () => 0)).toBe(true);
     expect(state.rewardPlacementRequests.filter((request) => request.rewardType === "capture_reward")).toHaveLength(1);
     expect(state.rewardPlacementRequests.filter((request) => request.rewardType === "contribution_compensation").map((request) => request.teamId).sort()).toEqual(["team-2", "team-3"]);
   });
@@ -102,7 +102,7 @@ describe("攻略状態・占領・褒賞", () => {
       teamRecords: [{ teamId: "team-1", defenderKills: 1, effectiveAttackTurns: 1 }],
     };
     state.siegeStates.push(siege);
-    expect(completeSiegeCapture(state, siege, ["team-1"], "annihilation")).toBe(false);
+    expect(completeSiegeCapture(state, siege, ["team-1"], "annihilation", () => 0)).toBe(false);
     expect(state.bases.find((base) => base.id === siege.baseId)?.ownerTeamId).toBe("neutral");
     expect(state.rewardPlacementRequests).toHaveLength(0);
   });

@@ -17,7 +17,7 @@ import { beginStrategistActionPhase } from "./construction";
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
-import { measureLegalSegment } from "../cpu/legalEnumerationProfile";
+import { isLegalProfilingEnabled, measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
 
 type AttackDenominatorContext = {
@@ -313,10 +313,11 @@ export function getAttackCandidates(
   attackerUnitId: string,
   context = getAttackEnumerationContext(state),
 ): AttackTarget[] {
-  return measureLegalSegment("attackTargetSearch", () => getAttackCandidatesCore(state, attackerUnitId, context));
+  if (!isLegalProfilingEnabled()) return getAttackCandidatesCore(state, attackerUnitId, context, false);
+  return measureLegalSegment("attackTargetSearch", () => getAttackCandidatesCore(state, attackerUnitId, context, true));
 }
 
-function getAttackCandidatesCore(state: GameState, attackerUnitId: string, context: AttackEnumerationContext): AttackTarget[] {
+function getAttackCandidatesCore(state: GameState, attackerUnitId: string, context: AttackEnumerationContext, profile: boolean): AttackTarget[] {
   const attacker = context.unitById.get(attackerUnitId);
   if (!attacker || !isAlive(attacker)) return [];
   if (isRetreating(attacker)) return [];
@@ -325,29 +326,48 @@ function getAttackCandidatesCore(state: GameState, attackerUnitId: string, conte
   if (range <= 0) return [];
 
   const enemies = context.enemiesByTeamId.get(attacker.ownerTeamId) ?? [];
-  const targets = measureLegalSegment("attackBasicFilter", () => enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id)));
+  const targets = profile
+    ? measureLegalSegment("attackBasicFilter", () => enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id)))
+    : enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id));
   const legal: Unit[] = [];
   for (const target of targets) {
-    if (!measureLegalSegment("attackLakeNinjaRule", () => canAttackByPositionRule(attacker, target))) continue;
-    if (!measureLegalSegment("attackFinalLegalCheck", () => Boolean(getAttackDenominators(attacker, target, false)))) continue;
+    const positionAllowed = profile
+      ? measureLegalSegment("attackLakeNinjaRule", () => canAttackByPositionRule(attacker, target))
+      : canAttackByPositionRule(attacker, target);
+    if (!positionAllowed) continue;
+    const denominatorAllowed = profile
+      ? measureLegalSegment("attackFinalLegalCheck", () => Boolean(getAttackDenominators(attacker, target, false)))
+      : Boolean(getAttackDenominators(attacker, target, false));
+    if (!denominatorAllowed) continue;
     const attackerCoord = context.coordByUnitId.get(attacker.id), targetCoord = context.coordByUnitId.get(target.id);
-    if (attackerCoord && targetCoord && !measureLegalSegment("attackStaticRangePrefilter", () => Math.max(Math.abs(attackerCoord.x - targetCoord.x), Math.abs(attackerCoord.y - targetCoord.y)) <= range)) continue;
+    const withinStaticRange = !attackerCoord || !targetCoord || (profile
+      ? measureLegalSegment("attackStaticRangePrefilter", () => Math.max(Math.abs(attackerCoord.x - targetCoord.x), Math.abs(attackerCoord.y - targetCoord.y)) <= range)
+      : Math.max(Math.abs(attackerCoord.x - targetCoord.x), Math.abs(attackerCoord.y - targetCoord.y)) <= range);
+    if (!withinStaticRange) continue;
     const topologyCategory = attacker.position.kind === "base" || target.position.kind === "base"
       ? "attackAcrossBaseBlocking"
       : attacker.position.kind === "bridge" || target.position.kind === "bridge"
         ? "attackBridgeConnection"
         : "attackRoadSectionConnection";
-    if (!measureLegalSegment(topologyCategory, () => canAttackAcrossRoadTopology(state, attacker.position, target.position, context.roadTopology))) continue;
-    const distance = measureLegalSegment("attackRangeDistance", () => contextDistance(state, attacker, target, context));
+    const topologyAllowed = profile
+      ? measureLegalSegment(topologyCategory, () => canAttackAcrossRoadTopology(state, attacker.position, target.position, context.roadTopology))
+      : canAttackAcrossRoadTopology(state, attacker.position, target.position, context.roadTopology);
+    if (!topologyAllowed) continue;
+    const distance = profile
+      ? measureLegalSegment("attackRangeDistance", () => contextDistance(state, attacker, target, context))
+      : contextDistance(state, attacker, target, context);
     if (distance > range) continue;
     legal.push(target);
   }
 
-  const sorted = measureLegalSegment("attackPostProcessing", () => sortAttackCandidates(state, attacker, legal, context.encouragedUnitIds as Set<string>, context));
-  return measureLegalSegment("attackCandidateIdGeneration", () => sorted.map((target) => ({
+  const sorted = profile
+    ? measureLegalSegment("attackPostProcessing", () => sortAttackCandidates(state, attacker, legal, context.encouragedUnitIds as Set<string>, context))
+    : sortAttackCandidates(state, attacker, legal, context.encouragedUnitIds as Set<string>, context);
+  const createTargets = () => sorted.map((target) => ({
     ...targetForUnit(target),
     ...getAttackDenominators(attacker, target, context.encouragedUnitIds.has(attacker.id)),
-  })));
+  }));
+  return profile ? measureLegalSegment("attackCandidateIdGeneration", createTargets) : createTargets();
 }
 
 export function getTeamAttackCandidates(state: GameState, teamId: string) {

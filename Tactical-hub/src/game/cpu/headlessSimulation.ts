@@ -2,7 +2,11 @@ import { createInitialGameState } from "../initialState";
 import type { GameState, Unit } from "../types";
 import { positionKey } from "../utils/position";
 import { advanceCpuOneStep } from "./cpuStep";
+import type { HeuristicCpuPolicy } from "./heuristicCpuPolicy";
+import { stableDiagnosticHash, summarizeTraceState, type HeadlessTraceEntry } from "./headlessTrace";
+import { withLegalProfileSink } from "./legalEnumerationProfile";
 import { createProfiledRandomCpuPolicy, getRandomCpuDecision } from "./randomCpuPolicy";
+import { getCpuDecisionActionKey } from "./rlEnvironment";
 import { createCpuRuntime, type CpuActionLog, type CpuDecision, type CpuPolicy, type CpuRuntime, type CpuTeamSettings } from "./types";
 
 export type HeadlessEndReason = "victory" | "turn_limit" | "exception" | "invariant_violation" | "phase_stall" | "action_limit";
@@ -12,6 +16,9 @@ export type HeadlessProfileEntry = { calls: number; totalMs: number; averageMs: 
 export type HeadlessProfile = Record<HeadlessProfileCategory, HeadlessProfileEntry>;
 export type LegalEnumerationProfileEntry = Omit<HeadlessProfileEntry, "percentage">;
 export type LegalEnumerationBreakdown = { byCategory: Record<string, LegalEnumerationProfileEntry>; byPhase: Record<string, LegalEnumerationProfileEntry> };
+export type HeadlessProfilingSection = { name: string; totalMs: number; callCount: number; averageMs: number; percentOfMatchElapsed: number };
+export type HeadlessTurnBucket = { fromTurn: number; toTurn: number | null; elapsedMs: number; actionCount: number; msPerAction: number; legalActionGenerationCount: number; pathfindingCount: number; averageLivingUnitCount: number };
+export type HeadlessProfiling = { enabled: true; matchElapsedMs: number; overlapWarning: string; sections: HeadlessProfilingSection[]; turnBuckets: HeadlessTurnBucket[]; heuristicDistanceCache?: { searchCount: number; hitCount: number; missCount: number; hitRate: number } };
 export type HeadlessMatchOptions = {
   participantCount: 3 | 4;
   seed: number;
@@ -21,8 +28,10 @@ export type HeadlessMatchOptions = {
   historyLimit?: number;
   mode?: HeadlessMode;
   profile?: boolean;
+  trace?: boolean;
   initialState?: GameState;
   policy?: CpuPolicy;
+  onProgress?: () => void;
 };
 export type HeadlessMatchResult = {
   seed: number;
@@ -40,6 +49,8 @@ export type HeadlessMatchResult = {
   invariantCheckCount: number;
   profile?: HeadlessProfile;
   legalEnumerationBreakdown?: LegalEnumerationBreakdown;
+  profiling?: HeadlessProfiling;
+  trace?: HeadlessTraceEntry[];
   finalState: GameState;
 };
 export type HeadlessBatchResult = {
@@ -152,11 +163,17 @@ function profileCollector(enabled: boolean) {
   const legalCategoryNames = ["production", "movement", "retreat", "ninjaMovement", "teleport", "attack", "reward", "constructionStrategist", "confirmPass", "movementRangePathSearch", "attackTargetSearch", "boardOccupancyGeneration", "unitBaseEquipmentSearch", "postProcessing", "attackLivingEnemyList", "attackUnitCoordinateBaseSearch", "attackStaticRangePrefilter", "attackRangeDistance", "attackRoadSectionConnection", "attackAcrossBaseBlocking", "attackBaseBlocking", "attackBridgeConnection", "attackLakeNinjaRule", "attackBasicFilter", "attackCandidateIdGeneration", "attackPostProcessing", "attackFinalLegalCheck"];
   const legalCategories = new Map<string, MutableProfileEntry>(legalCategoryNames.map((key) => [key, { calls: 0, totalMs: 0, maxMs: 0 }]));
   const legalPhases = new Map<string, MutableProfileEntry>();
+  const sections = new Map<string, MutableProfileEntry>();
+  const bucketDefinitions = [[1, 50], [51, 100], [101, 150], [151, 200], [201, null]] as const;
+  type MutableBucket = { elapsedMs: number; actionCount: number; legalActionGenerationCount: number; pathfindingCount: number; livingUnitTotal: number; livingUnitSamples: number };
+  const buckets = bucketDefinitions.map((): MutableBucket => ({ elapsedMs: 0, actionCount: 0, legalActionGenerationCount: 0, pathfindingCount: 0, livingUnitTotal: 0, livingUnitSamples: 0 }));
+  const bucketIndex = (turn: number) => turn <= 50 ? 0 : turn <= 100 ? 1 : turn <= 150 ? 2 : turn <= 200 ? 3 : 4;
   const addDynamic = (target: Map<string, MutableProfileEntry>, key: string, milliseconds: number) => {
     if (!enabled) return;
     const entry = target.get(key) ?? { calls: 0, totalMs: 0, maxMs: 0 };
     entry.calls += 1; entry.totalMs += milliseconds; entry.maxMs = Math.max(entry.maxMs, milliseconds); target.set(key, entry);
   };
+  const addSection = (name: string, milliseconds: number) => addDynamic(sections, name, milliseconds);
   const summarize = (target: Map<string, MutableProfileEntry>) => Object.fromEntries([...target].map(([key, entry]) => [key, { ...entry, averageMs: entry.calls ? entry.totalMs / entry.calls : 0 }]));
   const finish = (totalMs: number): HeadlessProfile | undefined => {
     if (!enabled) return undefined;
@@ -165,7 +182,53 @@ function profileCollector(enabled: boolean) {
     return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, { ...entry, averageMs: entry.calls ? entry.totalMs / entry.calls : 0, percentage: totalMs ? entry.totalMs / totalMs * 100 : 0 }])) as HeadlessProfile;
   };
   const finishLegal = (): LegalEnumerationBreakdown | undefined => enabled ? { byCategory: summarize(legalCategories), byPhase: summarize(legalPhases) } : undefined;
-  return { add, addLegalCategory: (key: string, ms: number) => addDynamic(legalCategories, key, ms), addLegalPhase: (key: string, ms: number) => addDynamic(legalPhases, key, ms), finish, finishLegal };
+  const finishDetailed = (totalMs: number): HeadlessProfiling | undefined => {
+    if (!enabled) return undefined;
+    const detailedSections = [...sections.entries()].map(([name, entry]) => ({
+      name,
+      totalMs: entry.totalMs,
+      callCount: entry.calls,
+      averageMs: entry.calls ? entry.totalMs / entry.calls : 0,
+      percentOfMatchElapsed: totalMs ? entry.totalMs / totalMs * 100 : 0,
+    })).sort((left, right) => right.totalMs - left.totalMs || left.name.localeCompare(right.name));
+    return {
+      enabled: true,
+      matchElapsedMs: totalMs,
+      overlapWarning: "Sections include nested/inclusive measurements; their totalMs values overlap and must not be summed to match matchElapsedMs.",
+      sections: detailedSections,
+      turnBuckets: buckets.map((bucket, index) => ({
+        fromTurn: bucketDefinitions[index][0],
+        toTurn: bucketDefinitions[index][1],
+        elapsedMs: bucket.elapsedMs,
+        actionCount: bucket.actionCount,
+        msPerAction: bucket.actionCount ? bucket.elapsedMs / bucket.actionCount : 0,
+        legalActionGenerationCount: bucket.legalActionGenerationCount,
+        pathfindingCount: bucket.pathfindingCount,
+        averageLivingUnitCount: bucket.livingUnitSamples ? bucket.livingUnitTotal / bucket.livingUnitSamples : 0,
+      })),
+      heuristicDistanceCache: (() => {
+        const hitCount = sections.get("legal.heuristicDistanceCacheHit")?.calls ?? 0;
+        const missCount = sections.get("legal.heuristicDistanceCacheMiss")?.calls ?? 0;
+        const searchCount = sections.get("legal.heuristicDistanceSearch")?.calls ?? 0;
+        return hitCount + missCount ? { searchCount, hitCount, missCount, hitRate: hitCount / (hitCount + missCount) } : undefined;
+      })(),
+    };
+  };
+  return {
+    add: (key: typeof categories[number], ms: number) => { add(key, ms); addSection(key, ms); },
+    addSection,
+    addLegalCategory: (key: string, ms: number, turn?: number) => {
+      addDynamic(legalCategories, key, ms); addSection(`legal.${key}`, ms);
+      if (turn !== undefined && /(path|distance|range)/i.test(key)) buckets[bucketIndex(turn)].pathfindingCount += 1;
+    },
+    addLegalPhase: (key: string, ms: number) => { addDynamic(legalPhases, key, ms); addSection(`legal.phase.${key}`, ms); },
+    recordLegalGeneration: (turn: number, ms: number) => { buckets[bucketIndex(turn)].legalActionGenerationCount += 1; addSection("legalActionGeneration", ms); },
+    recordAction: (turn: number, elapsedMs: number, livingUnits: number) => { const bucket = buckets[bucketIndex(turn)]; bucket.elapsedMs += elapsedMs; bucket.actionCount += 1; bucket.livingUnitTotal += livingUnits; bucket.livingUnitSamples += 1; },
+    measure<T>(name: string, operation: () => T): T { if (!enabled) return operation(); const started = performance.now(); const value = operation(); addSection(name, performance.now() - started); return value; },
+    finish,
+    finishLegal,
+    finishDetailed,
+  };
 }
 
 export function getHeadlessProgressSignature(state: GameState, runtime: CpuRuntime) {
@@ -197,22 +260,23 @@ function updateActionHash(hash: number, decision: CpuDecision) {
   return hash;
 }
 
-function result(options: HeadlessMatchOptions, state: GameState, runtime: CpuRuntime, endReason: HeadlessEndReason, actionHash: number, invariantCheckCount: number, profile: HeadlessProfile | undefined, legalEnumerationBreakdown: LegalEnumerationBreakdown | undefined, violations: string[] = [], error?: string): HeadlessMatchResult {
+function result(options: HeadlessMatchOptions, state: GameState, runtime: CpuRuntime, endReason: HeadlessEndReason, actionHash: number, invariantCheckCount: number, profile: HeadlessProfile | undefined, legalEnumerationBreakdown: LegalEnumerationBreakdown | undefined, profiling: HeadlessProfiling | undefined, trace: HeadlessTraceEntry[] | undefined, violations: string[] = [], error?: string): HeadlessMatchResult {
   const active = state.teams.filter((team) => !team.isNeutral && team.status === "active");
   const mode = options.mode ?? "debug";
   const failed = !["victory", "turn_limit"].includes(endReason);
   const recentActions = mode === "debug" || (mode === "sweep" && failed) ? runtime.logs.slice(-(options.historyLimit ?? 50)) : undefined;
-  return { seed: options.seed, participantCount: options.participantCount, endReason, winnerTeamId: active.length === 1 ? active[0].id : undefined, endTurn: state.turnNumber, phase: state.phase, currentMovementTeamId: state.currentMovementTeamId, actionCount: runtime.appliedStepCount, actionSequenceHash: actionHash.toString(16).padStart(8, "0"), violations, error, recentActions, invariantCheckCount, profile, legalEnumerationBreakdown, finalState: state };
+  return { seed: options.seed, participantCount: options.participantCount, endReason, winnerTeamId: active.length === 1 ? active[0].id : undefined, endTurn: state.turnNumber, phase: state.phase, currentMovementTeamId: state.currentMovementTeamId, actionCount: runtime.appliedStepCount, actionSequenceHash: actionHash.toString(16).padStart(8, "0"), violations, error, recentActions, invariantCheckCount, profile, legalEnumerationBreakdown, profiling, trace, finalState: state };
 }
 
 export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchResult {
-  let state = structuredClone(options.initialState ?? createHeadlessInitialState(options.participantCount)) as GameState;
-  let runtime = createCpuRuntime(options.seed, options.maxActions ?? 100_000);
-  const mode = options.mode ?? "debug";
   const matchStarted = performance.now();
   const timings = profileCollector(Boolean(options.profile));
+  let state = timings.measure("initialStateGeneration", () => structuredClone(options.initialState ?? createHeadlessInitialState(options.participantCount)) as GameState);
+  let runtime = createCpuRuntime(options.seed, options.maxActions ?? 100_000);
+  const mode = options.mode ?? "debug";
   let invariantCheckCount = 0;
   let actionHash = 2166136261;
+  const traceEntries: HeadlessTraceEntry[] | undefined = options.trace ? [] : undefined;
   const inspect = () => {
     const start = options.profile ? performance.now() : 0;
     const violations = checkHeadlessInvariants(state, runtime);
@@ -221,19 +285,42 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
     return violations;
   };
   const settings: CpuTeamSettings = Object.fromEntries(state.teams.filter((team) => !team.isNeutral && team.status === "active").map((team) => [team.id, "random_cpu"]));
-  const policy = options.policy ?? (options.profile ? createProfiledRandomCpuPolicy((enumerationMs, policyTotalMs, details) => {
+  const recordPolicyProfile = (enumerationMs: number, policyTotalMs: number, details: { category: string; phase: GameState["phase"]; milliseconds: number }[]) => {
+    timings.addSection("policyTotal", policyTotalMs);
     timings.add("legalEnumeration", enumerationMs);
     timings.add("policySelection", Math.max(0, policyTotalMs - enumerationMs));
     timings.addLegalPhase(details[0]?.phase ?? state.phase, enumerationMs);
-    for (const detail of details) timings.addLegalCategory(detail.category, detail.milliseconds);
-  }) : getRandomCpuDecision);
+    timings.recordLegalGeneration(state.turnNumber, enumerationMs);
+    for (const detail of details) timings.addLegalCategory(detail.category, detail.milliseconds, state.turnNumber);
+  };
+  let policy: CpuPolicy;
+  if (!options.policy) policy = options.profile ? createProfiledRandomCpuPolicy(recordPolicyProfile) : getRandomCpuDecision;
+  else if (!options.profile) policy = options.policy;
+  else {
+    const sourcePolicy = options.policy;
+    policy = (policyState, policyRuntime, policySettings) => {
+      const details: { category: string; phase: GameState["phase"]; milliseconds: number }[] = [];
+      const started = performance.now();
+      const decision = withLegalProfileSink((category, milliseconds) => details.push({ category, phase: policyState.phase, milliseconds }), () => sourcePolicy(policyState, policyRuntime, policySettings));
+      const totalMs = performance.now() - started;
+      const topLevel = new Set(["production", "movement", "retreat", "ninjaMovement", "teleport", "attack", "reward", "constructionStrategist"]);
+      const enumerationMs = details.filter((detail) => topLevel.has(detail.category)).reduce((sum, detail) => sum + detail.milliseconds, 0);
+      recordPolicyProfile(enumerationMs, totalMs, details);
+      return decision;
+    };
+  }
+  (options.policy as Partial<HeuristicCpuPolicy> | undefined)?.setDecisionDiagnosticsEnabled?.(Boolean(traceEntries));
   const phaseCounts = new Map<string, number>();
   let previous = getHeadlessProgressSignature(state, runtime);
   let previousImportant = importantResolutionSignature(state);
   const finish = (endReason: HeadlessEndReason, violations: string[] = [], error?: string) => {
     const finalReason = violations.length ? "invariant_violation" : endReason;
+    const built = timings.measure("resultAggregation", () => result(options, state, runtime, finalReason, actionHash, invariantCheckCount, undefined, undefined, undefined, traceEntries, violations, error));
     const totalMs = performance.now() - matchStarted;
-    return result(options, state, runtime, finalReason, actionHash, invariantCheckCount, timings.finish(totalMs), timings.finishLegal(), violations, error);
+    built.profile = timings.finish(totalMs);
+    built.legalEnumerationBreakdown = timings.finishLegal();
+    built.profiling = timings.finishDetailed(totalMs);
+    return built;
   };
   try {
     if (state.teams.filter((team) => !team.isNeutral && team.status === "active").length <= 1) return finish("victory");
@@ -250,16 +337,55 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
       const phaseCount = (phaseCounts.get(phaseKey) ?? 0) + 1;
       phaseCounts.set(phaseKey, phaseCount);
       if (phaseCount > (options.maxActionsPerPhase ?? 5_000)) return finish("action_limit", [], `phase action limit reached: ${phaseKey}`);
+      const actionTurn = state.turnNumber;
+      const actionPhase = state.phase;
+      const actionIndex = runtime.appliedStepCount;
+      const traceStateBefore = traceEntries ? summarizeTraceState(state) : undefined;
+      const traceRngBefore = runtime.rngState;
+      let selectedDecision: CpuDecision | undefined;
+      const livingUnitCount = options.profile ? state.units.filter((unit) => unit.hp > 0 && unit.position.kind !== "removed").length : 0;
+      const actionStarted = options.profile ? performance.now() : 0;
       const step = advanceCpuOneStep(state, runtime, settings, policy, {
         logMode: mode === "debug" ? "full" : mode === "sweep" ? "ring" : "none",
         logLimit: options.historyLimit ?? 50,
-        onPolicy: options.profile && options.policy ? (ms) => timings.add("policySelection", ms) : undefined,
-        onApply: options.profile ? (ms) => timings.add("actionApplication", ms) : undefined,
+        onApply: options.profile ? (ms, decision, phaseBefore, phaseAfter, turnBefore, turnAfter) => {
+          timings.add("actionApplication", ms);
+          if (decision.kind === "resolve_battle") timings.addSection("battleResolution", ms);
+          if (phaseBefore !== phaseAfter) timings.addSection("phaseTransition", ms);
+          if (turnBefore !== turnAfter) timings.addSection("turnTransition", ms);
+        } : undefined,
         onLog: options.profile ? (ms) => timings.add("actionLogging", ms) : undefined,
-        onDecision: (decision) => { actionHash = updateActionHash(actionHash, decision); },
+        onDecision: (decision) => {
+          selectedDecision = decision;
+          if (options.profile) timings.measure("actionSequenceHash", () => { actionHash = updateActionHash(actionHash, decision); });
+          else actionHash = updateActionHash(actionHash, decision);
+        },
       });
       state = step.state; runtime = step.runtime;
+      if (options.onProgress && runtime.appliedStepCount % 128 === 0) options.onProgress();
       if (!step.applied) return finish(runtime.stoppedReason ? "action_limit" : "phase_stall", [], runtime.stoppedReason ?? "CPU policy returned no action");
+      if (traceEntries && traceStateBefore && selectedDecision) {
+        const diagnosticSource = options.policy as Partial<HeuristicCpuPolicy> | undefined;
+        const diagnostics = diagnosticSource?.getLastDecisionDiagnostics?.();
+        traceEntries.push({
+          actionIndex,
+          seed: options.seed,
+          turn: actionTurn,
+          phase: actionPhase,
+          actorTeamId: selectedDecision.teamId,
+          targetBaseId: diagnostics?.targetBaseId ?? (selectedDecision.teamId !== "all" ? diagnosticSource?.getTargetBaseId?.(selectedDecision.teamId, options.seed) : undefined),
+          legalActionCount: diagnostics?.legalActionKeys.length,
+          legalActionKeys: diagnostics ? [...diagnostics.legalActionKeys] : undefined,
+          legalActionKeysHash: diagnostics ? stableDiagnosticHash(diagnostics.legalActionKeys) : undefined,
+          selectedActionKey: getCpuDecisionActionKey(selectedDecision),
+          rngStateBefore: traceRngBefore,
+          rngStateAfter: runtime.rngState,
+          stateBefore: traceStateBefore,
+          stateAfter: summarizeTraceState(state),
+          distanceCache: diagnostics ? { ...diagnostics.distanceCache } : undefined,
+        });
+      }
+      if (options.profile) timings.recordAction(actionTurn, performance.now() - actionStarted, livingUnitCount);
       const important = importantResolutionSignature(state);
       const shouldInspect = mode === "debug" || (mode === "sweep" && important !== previousImportant);
       previousImportant = important;
@@ -281,6 +407,10 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
 
 export function runHeadlessBatch(input: Omit<HeadlessMatchOptions, "seed"> & { matchCount: number; seedStart: number }): HeadlessBatchResult {
   const matches = Array.from({ length: input.matchCount }, (_, index) => runHeadlessMatch({ ...input, seed: input.seedStart + index }));
+  return summarizeHeadlessMatches(matches);
+}
+
+export function summarizeHeadlessMatches(matches: HeadlessMatchResult[]): HeadlessBatchResult {
   return {
     matches,
     settledCount: matches.filter((match) => match.endReason === "victory").length,

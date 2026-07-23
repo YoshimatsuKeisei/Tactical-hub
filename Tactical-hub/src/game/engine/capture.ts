@@ -37,7 +37,7 @@ function closestTeamDistance(state: GameState, teamId: string, baseId: string) {
   return distances.length ? Math.min(...distances) : Number.POSITIVE_INFINITY;
 }
 
-export function selectCaptureTeam(state: GameState, siege: SiegeState, candidateTeamIds: string[], rng: () => number = Math.random) {
+export function selectCaptureTeam(state: GameState, siege: SiegeState, candidateTeamIds: string[], rng: () => number) {
   let candidates = [...new Set(candidateTeamIds)].filter((id) =>
     id !== siege.defendingTeamId && state.teams.some((team) => team.id === id && team.status === "active"),
   );
@@ -72,7 +72,7 @@ export function transferBaseOwnership(state: GameState, baseId: string, teamId: 
   state.logs.push({ id: `log-capture-owner-${state.logs.length}`, turnNumber: state.turnNumber, type: "capture", message: `所有権移転: ${baseId} → ${teamId}`, relatedIds: [baseId, teamId] });
 }
 
-export function completeSiegeCapture(state: GameState, siege: SiegeState, candidateTeamIds: string[], reason: "annihilation" | "combat_abandonment", rng: () => number = Math.random) {
+export function completeSiegeCapture(state: GameState, siege: SiegeState, candidateTeamIds: string[], reason: "annihilation" | "combat_abandonment", rng: () => number) {
   const teamId = selectCaptureTeam(state, siege, candidateTeamIds, rng);
   if (!teamId) {
     state.logs.push({ id: `log-capture-held-${state.logs.length}`, turnNumber: state.turnNumber, type: "capture", message: `占領チームを決定できないため処理保留: ${siege.baseId}`, relatedIds: [siege.baseId] });

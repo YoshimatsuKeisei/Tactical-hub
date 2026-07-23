@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveBattle } from "../engine/battle";
 import { getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
 import { submitTeamProduction } from "../engine/production";
@@ -57,13 +57,25 @@ describe("mandatory reward and compensation placement flow", () => {
       defendingTeamId: "team-1",
       active: true,
       defenderLossOccurred: true,
-      fallCandidateTeamIds: ["team-2"],
-      teamRecords: [{ teamId: "team-2", defenderKills: 1, effectiveAttackTurns: 1 }],
+      fallCandidateTeamIds: ["team-2", "team-3"],
+      teamRecords: [
+        { teamId: "team-2", defenderKills: 1, effectiveAttackTurns: 1 },
+        { teamId: "team-3", defenderKills: 1, effectiveAttackTurns: 1 },
+      ],
     });
+    const tiedPosition = { kind: "tile", x: 4, y: 1 } as const;
+    for (const unit of state.units.filter((entry) => entry.ownerTeamId === "team-2" || entry.ownerTeamId === "team-3")) unit.position = tiedPosition;
     const destination = getMovementCandidates(state, mover.id).find((candidate) => candidate.kind === "tile");
     expect(destination).toBeDefined();
     state = saveMovementIntent(state, { teamId: "team-1", unitId: mover.id, from: mover.position, to: destination!, stay: false });
-    state = submitMovement(state, "team-1");
+    let rngCalls = 0;
+    const unseededRandom = vi.spyOn(Math, "random").mockImplementation(() => { throw new Error("unseeded Math.random was used"); });
+    try {
+      state = submitMovement(state, "team-1", () => { rngCalls += 1; return 0; });
+    } finally {
+      unseededRandom.mockRestore();
+    }
+    expect(rngCalls).toBe(1);
     expect(state).toMatchObject({ phase: "reward_placement", phaseAfterRewards: "movement_input", currentMovementTeamId: "team-2" });
     const generated = state.rewardPlacementRequests.find((entry) => entry.rewardType === "capture_reward" && !entry.completed && !entry.expired);
     expect(generated).toMatchObject({ teamId: "team-2", fixedBaseId: "home-1" });
