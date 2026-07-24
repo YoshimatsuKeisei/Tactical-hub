@@ -5,7 +5,7 @@ import { getProductionCandidatesForBase } from "../engine/production";
 import { isTeamProductionPending } from "../engine/productionSchedule";
 import { getRewardPlacementCandidates } from "../engine/reward";
 import { getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
-import type { GameState, UnitPosition } from "../types";
+import type { GameState, StrategistActionKind, StrategistRole, UnitPosition } from "../types";
 import { positionKey } from "../utils/position";
 import { advanceCpuOneStep, syncCpuContext } from "./cpuStep";
 import { createHeadlessInitialState } from "./headlessSimulation";
@@ -18,28 +18,50 @@ export type RlLegalAction = {
   actionKey: string;
   actionType: RlActionType;
   actorTeamId: string;
+  isPass: boolean;
   unitId?: string;
   targetId?: string;
   tileId?: string;
+  tileIds?: string[];
   baseId?: string;
+  slotId?: string;
   unitType?: string;
+  strategistRole?: StrategistRole;
+  strategistActionKind?: StrategistActionKind;
   requestId?: string;
   constructionId?: string;
 };
 
 export type RlObservation = {
+  config: GameState["config"];
+  map: GameState["map"];
   turnNumber: number;
   phase: GameState["phase"];
   actorTeamId?: string;
   observingTeamId: string;
+  actionIntents: GameState["turnState"]["actionIntents"];
   currentMovementTeamId?: string;
+  movementSeatOrderTeamIds: string[];
+  movementOrderStartIndex: number;
   movementOrderTeamIds: string[];
   movementCompletedTeamIds: string[];
+  movedUnitIdsThisMovementPhase: string[];
+  productionCompletedTeamIdsThisTurn: string[];
   teams: GameState["teams"];
   units: GameState["units"];
   bases: GameState["bases"];
+  unitTurnFlags: GameState["unitTurnFlags"];
+  siegeStates: GameState["siegeStates"];
+  kingCampaignStates: GameState["kingCampaignStates"];
   constructions: GameState["constructions"];
+  strategistActionIntents: GameState["strategistActionIntents"];
+  strategistSubmittedTeamIds: string[];
+  strategistCooldowns: GameState["strategistCooldowns"];
+  teleportIntents: GameState["teleportIntents"];
+  teleportCooldowns: GameState["teleportCooldowns"];
+  rewardPlacementRequests: GameState["rewardPlacementRequests"];
   pendingRewardRequestIds: string[];
+  phaseAfterRewards?: GameState["phaseAfterRewards"];
 };
 
 export type RlResult = {
@@ -69,21 +91,36 @@ export const getCpuDecisionActionKey = (decision: CpuDecision) => {
   }
 };
 
-function describe(decision: CpuDecision): RlLegalAction {
-  const base: RlLegalAction = { actionKey: getCpuDecisionActionKey(decision), actionType: decision.kind, actorTeamId: decision.teamId };
+export function describeRlDecision(decision: CpuDecision): RlLegalAction {
+  const isPass = (decision.kind === "production" && !decision.choice)
+    || (decision.kind === "movement" && !decision.to)
+    || (decision.kind === "teleport" && !decision.intent)
+    || (decision.kind === "attack" && decision.intent.pass)
+    || (decision.kind === "strategist" && decision.intent.action === "pass");
+  const base: RlLegalAction = { actionKey: getCpuDecisionActionKey(decision), actionType: decision.kind, actorTeamId: decision.teamId, isPass };
   switch (decision.kind) {
-    case "production": return { ...base, baseId: decision.choice?.baseId, unitType: decision.choice?.unitType };
+    case "production": return { ...base, baseId: decision.choice?.baseId, unitType: decision.choice?.unitType, strategistRole: decision.choice?.strategistRole };
     case "movement": return { ...base, unitId: decision.unitId, tileId: decision.to ? tileId(decision.to) : undefined };
     case "teleport": return { ...base, unitId: decision.strategistUnitId, targetId: decision.intent?.targetUnitId, tileId: decision.intent ? tileId(decision.intent.to) : undefined };
-    case "attack": return { ...base, unitId: decision.intent.attackerUnitId, targetId: decision.intent.target?.unitId };
+    case "attack": return { ...base, unitId: decision.intent.attackerUnitId, targetId: decision.intent.target?.unitId, baseId: decision.intent.target?.baseId, slotId: decision.intent.target?.slotId };
     case "reward": return { ...base, requestId: decision.requestId, baseId: decision.baseId, unitType: decision.unitType };
-    case "strategist": return { ...base, unitId: decision.intent.strategistUnitId, constructionId: decision.intent.constructionId, tileId: decision.intent.tiles?.map((cell) => `${cell.x},${cell.y}`).join("/") };
+    case "strategist": {
+      const tileIds = decision.intent.tiles?.map((cell) => `${cell.x},${cell.y}`);
+      return {
+        ...base,
+        unitId: decision.intent.strategistUnitId,
+        constructionId: decision.intent.constructionId,
+        strategistActionKind: decision.intent.action,
+        tileId: tileIds?.join("/"),
+        tileIds,
+      };
+    }
     default: return base;
   }
 }
 
 function wrap(decisions: CpuDecision[]): EnumeratedDecision[] {
-  return decisions.map((decision) => ({ decision, action: describe(decision) }));
+  return decisions.map((decision) => ({ decision, action: describeRlDecision(decision) }));
 }
 
 export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime): EnumeratedDecision[] {
@@ -208,18 +245,35 @@ export class RlEnvironment {
   getObservation(teamId: string): RlObservation {
     if (!this.state.teams.some((team) => team.id === teamId && !team.isNeutral)) throw new Error(`Unknown observing team: ${teamId}`);
     return structuredClone({
+      config: this.state.config,
+      map: this.state.map,
       turnNumber: this.state.turnNumber,
       phase: this.state.phase,
       actorTeamId: this.getCurrentActorTeamId(),
       observingTeamId: teamId,
+      actionIntents: this.state.turnState.actionIntents.filter((intent) => intent.teamId === teamId),
       currentMovementTeamId: this.state.currentMovementTeamId,
+      movementSeatOrderTeamIds: this.state.movementSeatOrderTeamIds,
+      movementOrderStartIndex: this.state.movementOrderStartIndex,
       movementOrderTeamIds: this.state.movementOrderTeamIds,
       movementCompletedTeamIds: this.state.movementCompletedTeamIds,
+      movedUnitIdsThisMovementPhase: this.state.movedUnitIdsThisMovementPhase,
+      productionCompletedTeamIdsThisTurn: this.state.productionCompletedTeamIdsThisTurn,
       teams: this.state.teams,
       units: this.state.units,
       bases: this.state.bases,
+      unitTurnFlags: this.state.unitTurnFlags,
+      siegeStates: this.state.siegeStates,
+      kingCampaignStates: this.state.kingCampaignStates,
       constructions: this.state.constructions,
+      strategistActionIntents: this.state.strategistActionIntents.filter((intent) => intent.teamId === teamId),
+      strategistSubmittedTeamIds: this.state.strategistSubmittedTeamIds,
+      strategistCooldowns: this.state.strategistCooldowns,
+      teleportIntents: this.state.teleportIntents.filter((intent) => intent.teamId === teamId),
+      teleportCooldowns: this.state.teleportCooldowns,
+      rewardPlacementRequests: this.state.rewardPlacementRequests,
       pendingRewardRequestIds: this.state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired).map((request) => request.id),
+      phaseAfterRewards: this.state.phaseAfterRewards,
     });
   }
 
