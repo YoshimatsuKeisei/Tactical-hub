@@ -8,7 +8,8 @@
     "sim:headless": "vite-node src/game/cpu/headlessCli.ts",
     "rl:smoke": "vite-node src/game/cpu/rlSmokeCli.ts",
     "rl:collect": "vite-node src/game/cpu/rlImitationCli.ts",
-    "rl:replay": "vite-node src/game/cpu/rlImitationReplayCli.ts"
+    "rl:replay": "vite-node src/game/cpu/rlImitationReplayCli.ts",
+    "rl:bc": "vite-node src/game/cpu/rlBehavioralCloningCli.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

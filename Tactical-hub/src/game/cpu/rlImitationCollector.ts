@@ -3,6 +3,7 @@ import { encodeRlLegalActions, type EncodedLegalActions } from "./rlActionEncode
 import { RlEnvironment, type RlResult } from "./rlEnvironment";
 import { encodeRlObservation, type EncodedObservation } from "./rlObservationEncoder";
 import { createHeuristicCpuPolicy } from "./heuristicCpuPolicy";
+import { createRlFeatureSpec, type RlFeatureSpec } from "./rlFeatureSpec";
 
 export const RL_IMITATION_REPLAY_SCHEMA_VERSION = 1;
 
@@ -59,6 +60,18 @@ export type RlImitationEpisodeResult = RlImitationEpisodeEnd & {
   seed: number;
   sampleCountByTeam: Record<string, number>;
 };
+
+export function getRlImitationEpisodeFeatureSpec(episode: RlImitationEpisode) {
+  const environment = new RlEnvironment();
+  const observation = environment.reset(episode.header.seed, episode.header.participantCount);
+  if (
+    observation.config.mapId !== episode.header.mapId
+    || JSON.stringify(observation.config) !== JSON.stringify(episode.header.gameConfig)
+  ) {
+    throw new Error(`Replay initial game settings do not match episode ${episode.header.episodeId}`);
+  }
+  return createRlFeatureSpec(observation);
+}
 
 function currentDecision(
   environment: RlEnvironment,
@@ -149,6 +162,7 @@ export async function runHeuristicImitationEpisode(input: {
 
 export async function replayHeuristicImitationEpisode(input: {
   episode: RlImitationEpisode;
+  onFeatureSpec?: (featureSpec: RlFeatureSpec) => void | Promise<void>;
   onEncodedDecision?: (decision: RlReplayEncodedDecision) => void | Promise<void>;
 }): Promise<RlImitationEpisodeEnd> {
   const { header, decisions, end: expectedEnd } = input.episode;
@@ -160,6 +174,7 @@ export async function replayHeuristicImitationEpisode(input: {
   if (initial.config.mapId !== header.mapId || JSON.stringify(initial.config) !== JSON.stringify(header.gameConfig)) {
     throw new Error("Replay initial game settings do not match the saved episode");
   }
+  await input.onFeatureSpec?.(createRlFeatureSpec(initial));
   const policy = createHeuristicCpuPolicy();
   policy.setDecisionDiagnosticsEnabled(true);
 
