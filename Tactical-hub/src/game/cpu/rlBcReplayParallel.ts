@@ -1,9 +1,9 @@
 import { fork, type ChildProcess } from "node:child_process";
-import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RlImitationEpisode } from "./rlImitationCollector";
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
 import type { RlBcReplayWorkerRequest, RlBcReplayWorkerResponse } from "./rlBcReplayWorkerMessages";
+import { RL_PROJECT_ROOT, RL_VITE_NODE_ENTRY } from "./rlProjectPaths";
 
 export type NumberedReplayEpisode = { episodeNumber: number; episode: RlImitationEpisode };
 
@@ -18,7 +18,7 @@ export async function runParallelBcReplay(input: {
   if (!Number.isInteger(input.workerCount) || input.workerCount <= 0) throw new Error("workerCount must be positive");
   const effectiveWorkerCount = Math.min(input.workerCount, input.episodes.length);
   const workerEntry = input.workerEntryPath ?? fileURLToPath(new URL("./rlBcReplayWorker.ts", import.meta.url));
-  const viteNodeEntry = resolve(process.cwd(), "node_modules/vite-node/vite-node.mjs");
+  const viteNodeEntry = RL_VITE_NODE_ENTRY;
   const workers: ChildProcess[] = [];
   const pending = new Map<string, { workerId: number; item: NumberedReplayEpisode; nextBatchSequence: number; sampleCount: number }>();
   const completed = new Map<number, number>();
@@ -68,7 +68,10 @@ export async function runParallelBcReplay(input: {
     };
 
     for (let workerId = 0; workerId < effectiveWorkerCount; workerId += 1) {
-      const worker = fork(viteNodeEntry, [workerEntry], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      const worker = fork(viteNodeEntry, [workerEntry], {
+        cwd: RL_PROJECT_ROOT,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
       workers.push(worker);
       worker.on("message", (raw: RlBcReplayWorkerResponse) => {
         if (settled || !raw || !["encodedBatch", "episodeCompleted", "workerError"].includes(raw.type)) {

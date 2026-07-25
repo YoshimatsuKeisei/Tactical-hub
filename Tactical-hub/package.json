@@ -1,4 +1,10 @@
 {
+  "engines": {
+    "node": ">=18"
+  },
+  "config": {
+    "recommendedNodeMajor": 20
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

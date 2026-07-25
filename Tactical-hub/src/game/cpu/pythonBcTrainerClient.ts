@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 import type { RlReplayEncodedDecision } from "./rlImitationCollector";
+import { RL_PROJECT_ROOT } from "./rlProjectPaths";
 
 type Response =
   | { type: "ready"; torchThreads: number; torchInteropThreads: number }
@@ -49,7 +50,7 @@ export class PythonBcTrainerClient {
     torchInteropThreads?: number;
   }) {
     this.child = spawn(input.command ?? "python", ["-u", "-m", "rl.bc_server"], {
-      cwd: process.cwd(),
+      cwd: RL_PROJECT_ROOT,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.on("data", (chunk) => { this.stderr += String(chunk); });

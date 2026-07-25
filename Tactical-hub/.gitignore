@@ -5,3 +5,7 @@ coverage*/
 *.err
 *.png
 *.jpg
+rl-data/bc100
+rl-checkpoints/
+__pycache__/
+*.pyc

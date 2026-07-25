@@ -25,7 +25,7 @@ function replayFiles(path: string) {
   return readdirSync(resolved)
     .map((name) => join(resolved, name))
     .filter((entry) => statSync(entry).isFile())
-    .sort((left, right) => left.localeCompare(right));
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
 }
 
 export async function* readRlImitationEpisodes(
