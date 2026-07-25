@@ -71,6 +71,18 @@ export type EncodedObservation = {
   strategicState: EncodedStrategicState;
 };
 
+export type RlObservationFeatureSpec = {
+  schemaVersion: number;
+  globalWidth: number;
+  teamWidth: number;
+  unitWidth: number;
+  mapTileWidth: number;
+  baseWidth: number;
+  constructionWidth: number;
+  strategicGlobalWidth: number;
+  strategicTableRowWidths: Record<keyof Omit<EncodedStrategicState, "global">, number>;
+};
+
 type Context = {
   observation: RlObservation;
   teams: RlObservation["teams"];
@@ -408,5 +420,63 @@ export function encodeRlObservation(observation: RlObservation): EncodedObservat
     constructions: [...encodedConstructions, ...Array.from({ length: maxConstructions - encodedConstructions.length }, () => Array(constructionWidth).fill(0))],
     constructionMask: [...encodedConstructions.map(() => 1), ...Array(maxConstructions - encodedConstructions.length).fill(0)],
     strategicState: encodeStrategicState(context),
+  };
+}
+
+/**
+ * Derives every width by running the real encoder. Synthetic rows are used only
+ * to make otherwise-empty strategic tables report their encoder-defined width.
+ */
+export function getRlObservationFeatureSpec(observation: RlObservation): RlObservationFeatureSpec {
+  const encoded = encodeRlObservation(observation);
+  const probe = structuredClone(observation);
+  const teamId = probe.teams[0]?.id ?? "";
+  const otherTeamId = probe.teams[1]?.id ?? teamId;
+  const unit = probe.units.find((entry) => entry.position.kind !== "removed");
+  const otherUnit = probe.units.find((entry) => entry.id !== unit?.id && entry.position.kind !== "removed") ?? unit;
+  const base = probe.bases[0];
+  const otherBase = probe.bases[1] ?? base;
+  const unitId = unit?.id ?? "";
+  const otherUnitId = otherUnit?.id ?? unitId;
+  const baseId = base?.id ?? "";
+  const otherBaseId = otherBase?.id ?? baseId;
+  const position = unit?.position ?? ({ kind: "tile", x: 0, y: 0 } as const);
+
+  probe.siegeStates = [{ baseId, defendingTeamId: teamId, teamRecords: [{ teamId: otherTeamId, defenderKills: 0, effectiveAttackTurns: 0 }], active: true, defenderLossOccurred: false, fallCandidateTeamIds: [] }];
+  probe.kingCampaignStates = [{ kingUnitId: unitId, kingTeamId: teamId, contributions: [{ teamId: otherTeamId, cumulativeDamage: 0, effectiveAttackTurns: 0 }] }];
+  probe.rewardPlacementRequests = [{ id: "<feature-probe-reward>", teamId, rewardType: "capture_reward", sourceBaseId: baseId, destinationKind: "fixed", fixedBaseId: baseId, eligibleBaseIds: [baseId], completed: false, expired: false }];
+  probe.strategistCooldowns = [{ strategistUnitId: unitId, kind: "bridge", availableFromTurn: probe.turnNumber }];
+  probe.teleportCooldowns = [{ strategistUnitId: unitId, availableFromTurn: probe.turnNumber }];
+  probe.actionIntents = [{
+    teamId,
+    productionChoices: [{ teamId, baseId, unitType: "infantry" }],
+    movementIntents: [{ teamId, unitId, from: position, to: position, stay: true }],
+    attackIntents: [{ teamId, attackerUnitId: unitId, target: { kind: "unit", unitId: otherUnitId }, pass: false }],
+  }];
+  probe.strategistActionIntents = [{ teamId, strategistUnitId: unitId, action: "place_obstacle", tiles: [{ x: 0, y: 0 }] }];
+  probe.teleportIntents = [{ teamId, strategistUnitId: unitId, targetUnitId: otherUnitId, to: position }];
+  const strategic = encodeRlObservation(probe).strategicState;
+  const rowWidth = (rows: number[][]) => rows[0]?.length ?? 0;
+  return {
+    schemaVersion: RL_OBSERVATION_ENCODER_VERSION,
+    globalWidth: encoded.global.length,
+    teamWidth: encoded.teams[0]?.length ?? 0,
+    unitWidth: encoded.units[0]?.length ?? 0,
+    mapTileWidth: encoded.map[0]?.[0]?.length ?? 0,
+    baseWidth: encoded.bases[0]?.length ?? 0,
+    constructionWidth: encoded.constructions[0]?.length ?? 0,
+    strategicGlobalWidth: encoded.strategicState.global.length,
+    strategicTableRowWidths: {
+      siegeStates: rowWidth(strategic.siegeStates),
+      kingCampaignStates: rowWidth(strategic.kingCampaignStates),
+      rewardPlacementRequests: rowWidth(strategic.rewardPlacementRequests),
+      strategistCooldowns: rowWidth(strategic.strategistCooldowns),
+      teleportCooldowns: rowWidth(strategic.teleportCooldowns),
+      productionIntents: rowWidth(strategic.productionIntents),
+      movementIntents: rowWidth(strategic.movementIntents),
+      attackIntents: rowWidth(strategic.attackIntents),
+      strategistActionIntents: rowWidth(strategic.strategistActionIntents),
+      teleportIntents: rowWidth(strategic.teleportIntents),
+    },
   };
 }
