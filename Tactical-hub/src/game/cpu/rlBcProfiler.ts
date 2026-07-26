@@ -21,6 +21,9 @@ type SectionName = keyof RlReplayPrefixProfile
   | "pythonOptimizerStepMs";
 
 export type RlBcProfileResult = {
+  profileEpisodeCount: number;
+  episodeNumbers: number[];
+  samplesPerEpisode: Array<{ episodeNumber: number; warmupSamples: number; measuredSamples: number }>;
   requestedWorkers: number;
   effectiveWorkers: number;
   requestedSamples: number;
@@ -46,6 +49,7 @@ export async function runRlBcShortProfile(input: {
   warmupSamples: number;
   batchSize: number;
   workerCount: number;
+  profileEpisodeCount?: number;
   learningRate?: number;
   seed?: number;
   pythonCommand?: string;
@@ -58,18 +62,19 @@ export async function runRlBcShortProfile(input: {
     ["warmupSamples", input.warmupSamples, true],
     ["batchSize", input.batchSize, false],
     ["workerCount", input.workerCount, false],
+    ["profileEpisodeCount", input.profileEpisodeCount ?? 4, false],
   ] as const) {
     if (!Number.isInteger(value) || value < (allowZero ? 0 : 1)) throw new Error(`${name} must be ${allowZero ? "non-negative" : "positive"}`);
   }
-  const totalNeeded = input.samples + input.warmupSamples;
+  const profileEpisodeCount = input.profileEpisodeCount ?? 4;
   const episodes: Array<{ episodeNumber: number; episode: RlImitationEpisode }> = [];
-  let available = 0;
   for await (const item of readRlImitationEpisodes(input.dataPath, { from: 1, to: Number.MAX_SAFE_INTEGER })) {
     episodes.push(item);
-    available += item.episode.end.decisionCount;
-    if (available >= totalNeeded && episodes.length >= input.workerCount) break;
+    if (episodes.length >= profileEpisodeCount) break;
   }
-  if (available < totalNeeded) throw new Error(`Replay contains only ${available} decisions; ${totalNeeded} required`);
+  if (episodes.length < profileEpisodeCount) {
+    throw new Error(`Replay contains only ${episodes.length} episodes; ${profileEpisodeCount} profile episodes required`);
+  }
 
   const client = new PythonBcTrainerClient();
   await client.start({
@@ -91,28 +96,44 @@ export async function runRlBcShortProfile(input: {
   let batchCount = 0;
   let measurementStartedAt: number | undefined;
   const workers: ChildProcess[] = [];
-  const pending = new Map<string, {
+  type ProfileBatchMessage = Extract<RlBcProfileWorkerResponse, { type: "profileBatch" }>;
+  type ProfileTask = {
+    taskId: string;
     workerId: number;
     episodeIndex: number;
     warmupRemaining: number;
     measuredRemaining: number;
-  }>();
-  const effectiveWorkers = Math.min(input.workerCount, episodes.length);
+    nextSequence: number;
+    batches: Map<number, { raw: ProfileBatchMessage; receivedAt: number; worker: ChildProcess }>;
+    assigned: boolean;
+  };
+  const effectiveWorkers = Math.min(input.workerCount, profileEpisodeCount);
   const workerEntry = fileURLToPath(new URL("./rlBcProfileWorker.ts", import.meta.url));
   let settled = false;
   let processing = Promise.resolve();
-  let warmupRemainingGlobally = input.warmupSamples;
-  const deferredMeasured: Array<() => Promise<void>> = [];
 
   const addReplayTimings = (profile: RlReplayPrefixProfile, ratio: number) => {
     for (const key of replayKeys) totals[key] += profile[key] * ratio;
   };
   const distribute = (total: number) => Array.from(
-    { length: effectiveWorkers },
-    (_, index) => Math.floor(total / effectiveWorkers) + (index < total % effectiveWorkers ? 1 : 0),
+    { length: profileEpisodeCount },
+    (_, index) => Math.floor(total / profileEpisodeCount) + (index < total % profileEpisodeCount ? 1 : 0),
   );
   const warmupQuotas = distribute(input.warmupSamples);
   const measuredQuotas = distribute(input.samples);
+  const tasks: ProfileTask[] = episodes.map((item, index) => ({
+    taskId: `bc-profile-${item.episodeNumber}`,
+    workerId: -1,
+    episodeIndex: index,
+    warmupRemaining: warmupQuotas[index],
+    measuredRemaining: measuredQuotas[index],
+    nextSequence: 0,
+    batches: new Map(),
+    assigned: false,
+  }));
+  const taskById = new Map(tasks.map((task) => [task.taskId, task]));
+  let nextTaskToAssign = 0;
+  let currentTaskToProcess = 0;
   const processSamples = async (samples: BcEncodedSample[], measuredPart: boolean) => {
     if (!samples.length) return;
     if (measuredPart && measurementStartedAt === undefined) measurementStartedAt = performance.now();
@@ -149,79 +170,83 @@ export async function runRlBcShortProfile(input: {
         rejectRun(error);
       };
       const assign = (worker: ChildProcess, workerId: number) => {
-        if (settled || workerId >= effectiveWorkers) return;
-        const item = episodes[workerId];
-        const taskId = `bc-profile-${item.episodeNumber}`;
-        const warmupRemaining = warmupQuotas[workerId];
-        const measuredRemaining = measuredQuotas[workerId];
-        const maxDecisions = warmupRemaining + measuredRemaining;
+        if (settled || nextTaskToAssign >= tasks.length) return;
+        const task = tasks[nextTaskToAssign++];
+        const item = episodes[task.episodeIndex];
+        task.workerId = workerId;
+        task.assigned = true;
+        const maxDecisions = task.warmupRemaining + task.measuredRemaining;
         if (item.episode.end.decisionCount < maxDecisions) {
           fail(new Error(
             `Episode ${item.episodeNumber} has ${item.episode.end.decisionCount} decisions; worker ${workerId} needs ${maxDecisions}`,
           ));
           return;
         }
-        pending.set(taskId, { workerId, episodeIndex: item.episodeNumber, warmupRemaining, measuredRemaining });
         worker.send({
           type: "runEpisode",
-          taskId,
+          taskId: task.taskId,
           episode: item.episode,
           batchSize: input.batchSize,
           maxDecisions,
           sidecarDirectory: getDefaultRlReplaySidecarDirectory(input.dataPath),
         } satisfies RlBcProfileWorkerRequest);
       };
+      const drainInDeterministicOrder = async () => {
+        while (!settled && currentTaskToProcess < tasks.length) {
+          const task = tasks[currentTaskToProcess];
+          const entry = task.batches.get(task.nextSequence);
+          if (!entry) return;
+          task.batches.delete(task.nextSequence);
+          task.nextSequence += 1;
+          const { raw, receivedAt, worker } = entry;
+          const warmup = raw.samples.slice(0, task.warmupRemaining);
+          task.warmupRemaining -= warmup.length;
+          const measuredSamples = raw.samples.slice(warmup.length, warmup.length + task.measuredRemaining);
+          task.measuredRemaining -= measuredSamples.length;
+          if (warmup.length) await processSamples(warmup, false);
+          if (measuredSamples.length) {
+            const ratio = measuredSamples.length / raw.samples.length;
+            addReplayTimings(raw.replayTimings, ratio);
+            totals.sidecarLoadMs += raw.sidecarLoadMs * ratio;
+            await processSamples(measuredSamples, true);
+          }
+          totals.workerBatchQueueAndProcessingMs += performance.now() - receivedAt;
+          worker.send({ type: "batchConsumed", taskId: raw.taskId, sequence: raw.sequence } satisfies RlBcProfileWorkerRequest);
+        }
+      };
       for (let workerId = 0; workerId < effectiveWorkers; workerId += 1) {
         const worker = fork(RL_VITE_NODE_ENTRY, [workerEntry], { cwd: RL_PROJECT_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"] });
         workers.push(worker);
         worker.on("message", (raw: RlBcProfileWorkerResponse) => {
           if (settled) return;
-          if (!raw?.taskId || !pending.has(raw.taskId)) { fail(new Error(`BC profile worker ${workerId} sent an invalid task`)); return; }
+          if (!raw?.taskId || !taskById.has(raw.taskId)) { fail(new Error(`BC profile worker ${workerId} sent an invalid task`)); return; }
           if (raw.type === "workerError") { fail(new Error(raw.error)); return; }
           if (raw.type === "episodeCompleted") {
-            const task = pending.get(raw.taskId);
+            const task = taskById.get(raw.taskId);
             if (!task || task.warmupRemaining !== 0 || task.measuredRemaining !== 0) {
               fail(new Error(`BC profile worker ${workerId} completed before satisfying its sample quota`));
               return;
             }
-            pending.delete(raw.taskId);
-            if (pending.size === 0 && measured === input.samples) finish();
+            processing = processing.then(async () => {
+              if (settled) return;
+              if (tasks[currentTaskToProcess] !== task) {
+                throw new Error(`Episode ${task.episodeIndex + 1} completed outside deterministic processing order`);
+              }
+              currentTaskToProcess += 1;
+              assign(workers[workerId], workerId);
+              await drainInDeterministicOrder();
+              if (currentTaskToProcess === tasks.length && measured === input.samples) finish();
+            }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
             return;
           }
-          const receivedAt = performance.now();
-          processing = processing.then(async () => {
-            if (settled) return;
-            const task = pending.get(raw.taskId);
-            if (!task) throw new Error(`Missing BC profile task ${raw.taskId}`);
-            const warmup = raw.samples.slice(0, task.warmupRemaining);
-            task.warmupRemaining -= warmup.length;
-            const measuredSamples = raw.samples.slice(
-              warmup.length,
-              warmup.length + task.measuredRemaining,
-            );
-            task.measuredRemaining -= measuredSamples.length;
-            if (warmup.length) {
-              await processSamples(warmup, false);
-              warmupRemainingGlobally -= warmup.length;
-            }
-            const processMeasured = async () => {
-              if (!measuredSamples.length) return;
-              const ratio = measuredSamples.length / raw.samples.length;
-              addReplayTimings(raw.replayTimings, ratio);
-              totals.sidecarLoadMs += raw.sidecarLoadMs * ratio;
-              await processSamples(measuredSamples, true);
-            };
-            if (measuredSamples.length) {
-              if (warmupRemainingGlobally === 0) {
-                while (deferredMeasured.length) await deferredMeasured.shift()!();
-                await processMeasured();
-              } else {
-                deferredMeasured.push(processMeasured);
-              }
-            }
-            totals.workerBatchQueueAndProcessingMs += performance.now() - receivedAt;
-            worker.send({ type: "batchConsumed", taskId: raw.taskId, sequence: raw.sequence } satisfies RlBcProfileWorkerRequest);
-          }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
+          const task = taskById.get(raw.taskId)!;
+          if (task.workerId !== workerId || task.batches.has(raw.sequence)) {
+            fail(new Error(`BC profile worker ${workerId} sent an invalid or duplicate batch`));
+            return;
+          }
+          task.batches.set(raw.sequence, { raw, receivedAt: performance.now(), worker });
+          processing = processing.then(drainInDeterministicOrder)
+            .catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
         });
         worker.on("error", (error) => fail(error));
         worker.on("exit", (code, signal) => { if (!settled) fail(new Error(`BC profile worker exited (code=${code}, signal=${signal})`)); });
@@ -233,6 +258,13 @@ export async function runRlBcShortProfile(input: {
   }
   const elapsedMs = performance.now() - (measurementStartedAt ?? performance.now());
   return {
+    profileEpisodeCount,
+    episodeNumbers: episodes.map((item) => item.episodeNumber),
+    samplesPerEpisode: episodes.map((item, index) => ({
+      episodeNumber: item.episodeNumber,
+      warmupSamples: warmupQuotas[index],
+      measuredSamples: measuredQuotas[index],
+    })),
     requestedWorkers: input.workerCount,
     effectiveWorkers,
     requestedSamples: input.samples,

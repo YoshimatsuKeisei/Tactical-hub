@@ -17,6 +17,7 @@ const result = await runRlBcShortProfile({
   warmupSamples: integer("warmup-samples", 256, true),
   batchSize: integer("batch-size", 64),
   workerCount: integer("workers", 1),
+  profileEpisodeCount: integer("profile-episodes", 4),
   device: parseRlTorchDevice(value("device", "auto")),
   pythonCommand: value("python", "python"),
 });
