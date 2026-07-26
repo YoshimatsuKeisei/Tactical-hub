@@ -242,9 +242,9 @@ export class RlEnvironment {
 
   getCurrentActorTeamId() { return this.decisions[0]?.action.actorTeamId === "all" ? undefined : this.decisions[0]?.action.actorTeamId; }
 
-  getObservation(teamId: string): RlObservation {
+  private buildObservation(teamId: string): RlObservation {
     if (!this.state.teams.some((team) => team.id === teamId && !team.isNeutral)) throw new Error(`Unknown observing team: ${teamId}`);
-    return structuredClone({
+    return {
       config: this.state.config,
       map: this.state.map,
       turnNumber: this.state.turnNumber,
@@ -274,7 +274,19 @@ export class RlEnvironment {
       rewardPlacementRequests: this.state.rewardPlacementRequests,
       pendingRewardRequestIds: this.state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired).map((request) => request.id),
       phaseAfterRewards: this.state.phaseAfterRewards,
-    });
+    };
+  }
+
+  getObservation(teamId: string): RlObservation {
+    return structuredClone(this.buildObservation(teamId));
+  }
+
+  /**
+   * Transient read-only view for the synchronous encoder/replay hot path.
+   * Callers must not retain or mutate it; public observations remain cloned.
+   */
+  getObservationForEncoding(teamId: string): RlObservation {
+    return this.buildObservation(teamId);
   }
 
   getLegalActions(teamId: string): RlLegalAction[] {

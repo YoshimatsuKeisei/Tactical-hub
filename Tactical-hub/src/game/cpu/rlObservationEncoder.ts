@@ -32,7 +32,6 @@ const STRATEGIST_ACTIONS = RL_STRATEGIST_ACTIONS;
 const oneHot = <T extends string>(value: string | undefined, values: readonly T[]) => values.map((entry) => Number(value === entry));
 const finite = (value: number | undefined) => Number.isFinite(value) ? value! : 0;
 const normalized = (value: number, size: number) => size <= 1 ? 0 : Math.max(0, Math.min(1, value / (size - 1)));
-const coordKey = (coord: BoardCoord) => `${coord.x},${coord.y}`;
 
 export const RL_OBSERVATION_SCHEMA = {
   global: ["turnNumber", "productionInterval", "mapWidth", "mapHeight", "actorPresent", "observerIsActor", ...PHASES.map((phase) => `phase:${phase}`)],
@@ -89,9 +88,18 @@ type Context = {
   teamIndex: Map<string, number>;
   units: Unit[];
   unitById: Map<string, Unit>;
+  unitFlagById: Map<string, RlObservation["unitTurnFlags"][number]>;
+  movedUnitIds: Set<string>;
   bases: RlObservation["bases"];
+  baseById: Map<string, RlObservation["bases"][number]>;
   baseIndex: Map<string, number>;
   constructionById: Map<string, Construction>;
+  positionCoordinateByUnitId: Map<string, BoardCoord | undefined>;
+  movementOrderIndex: Map<string, number>;
+  movementSeatOrderIndex: Map<string, number>;
+  movementCompletedTeams: Set<string>;
+  strategistSubmittedTeams: Set<string>;
+  productionCompletedTeams: Set<string>;
 };
 
 function orderedTeams(observation: RlObservation) {
@@ -122,7 +130,7 @@ function positionCoordinate(context: Context, position: UnitPosition): BoardCoor
   if (position.kind === "tile" || position.kind === "water") return position;
   if (position.kind === "bridge") return context.constructionById.get(position.bridgeId)?.tiles[position.cellIndex];
   if (position.kind === "base") {
-    const coords = context.bases.find((base) => base.id === position.baseId)?.coords ?? [];
+    const coords = context.baseById.get(position.baseId)?.coords ?? [];
     if (!coords.length) return undefined;
     return {
       x: coords.reduce((sum, coord) => sum + coord.x, 0) / coords.length,
@@ -148,7 +156,7 @@ function positionVector(context: Context, position: UnitPosition | undefined) {
 function unitSortKey(context: Context, unit: Unit) {
   const team = context.teamIndex.get(unit.ownerTeamId) ?? context.teams.length;
   const type = UNIT_TYPES.indexOf(unit.type);
-  const coord = positionCoordinate(context, unit.position);
+  const coord = context.positionCoordinateByUnitId.get(unit.id);
   return [team, type, coord?.y ?? Number.MAX_SAFE_INTEGER, coord?.x ?? Number.MAX_SAFE_INTEGER, unit.id] as const;
 }
 
@@ -162,19 +170,23 @@ function compareKeys(left: readonly (number | string)[], right: readonly (number
 }
 
 function encodeUnit(context: Context, unit: Unit) {
-  const flag = context.observation.unitTurnFlags.find((entry) => entry.unitId === unit.id);
+  const flag = context.unitFlagById.get(unit.id);
   const remainingTurns = unit.statuses.reduce((maximum, status) => Math.max(maximum, status.remainingTurns ?? 0), 0);
+  const coord = context.positionCoordinateByUnitId.get(unit.id);
   return [
     unit.hp,
     ...oneHot(unit.type, UNIT_TYPES),
     ...oneHot(unit.position.kind, POSITION_KINDS),
-    ...positionVector(context, unit.position).slice(1 + POSITION_KINDS.length),
+    Number(Boolean(coord)),
+    coord ? normalized(coord.x, context.observation.map.width) : 0,
+    coord ? normalized(coord.y, context.observation.map.height) : 0,
+    ...baseVector(context, unit.position.kind === "base" ? unit.position.baseId : undefined),
     ...oneHot(unit.role, STRATEGIST_ROLES),
     Number(unit.statuses.some((status) => status.kind === "retreating")),
     Number(unit.statuses.some((status) => status.kind === "encouraged")),
     Number(unit.statuses.some((status) => status.kind === "cannot_attack")),
     remainingTurns,
-    Number(context.observation.movedUnitIdsThisMovementPhase.includes(unit.id)),
+    Number(context.movedUnitIds.has(unit.id)),
     Number(Boolean(flag)),
     Number(flag?.survivedPreviousBattle ?? false),
     Number(flag?.attackedInPreviousBattle ?? false),
@@ -188,29 +200,48 @@ function encodeUnit(context: Context, unit: Unit) {
 }
 
 function encodeMap(context: Context) {
-  const tileByCoord = new Map(context.observation.map.tiles.map((tile) => [coordKey(tile), tile]));
-  const constructionAt = new Map<string, Construction[]>();
-  for (const construction of context.observation.constructions.filter((entry) => entry.active)) {
-    for (const tile of construction.tiles) constructionAt.set(coordKey(tile), [...(constructionAt.get(coordKey(tile)) ?? []), construction]);
+  const width = context.observation.map.width;
+  const height = context.observation.map.height;
+  const indexOf = (x: number, y: number) => y * width + x;
+  const tileByCoord = new Map<number, RlObservation["map"]["tiles"][number]>();
+  for (const tile of context.observation.map.tiles) tileByCoord.set(indexOf(tile.x, tile.y), tile);
+  const constructionAt = new Map<number, Construction[]>();
+  const tileAt = (x: number, y: number) => x < 0 || y < 0 || x >= width || y >= height
+    ? undefined
+    : tileByCoord.get(indexOf(x, y));
+  for (const construction of context.observation.constructions) {
+    if (!construction.active) continue;
+    for (const tile of construction.tiles) {
+      const key = indexOf(tile.x, tile.y);
+      const existing = constructionAt.get(key);
+      if (existing) existing.push(construction);
+      else constructionAt.set(key, [construction]);
+    }
   }
   const directions = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]] as const;
   return Array.from({ length: context.observation.map.height }, (_, y) =>
     Array.from({ length: context.observation.map.width }, (_, x) => {
-      const tile = tileByCoord.get(`${x},${y}`);
-      const constructions = constructionAt.get(`${x},${y}`) ?? [];
-      const base = tile?.baseId ? context.bases.find((entry) => entry.id === tile.baseId) : undefined;
+      const tile = tileByCoord.get(indexOf(x, y));
+      const constructions = constructionAt.get(indexOf(x, y)) ?? [];
+      const base = tile?.baseId ? context.baseById.get(tile.baseId) : undefined;
+      let bridge: Construction | undefined;
+      let obstacle: Construction | undefined;
+      for (const construction of constructions) {
+        if (construction.kind === "bridge" && !bridge) bridge = construction;
+        else if (construction.kind === "obstacle" && !obstacle) obstacle = construction;
+      }
       return [
         normalized(x, context.observation.map.width),
         normalized(y, context.observation.map.height),
         ...oneHot(tile?.terrain, TERRAIN_TYPES),
         Number(Boolean(base)),
         Number(Boolean(tile?.roadSectionId)),
-        ...directions.map(([dx, dy]) => Number(Boolean(tile?.roadSectionId) && tileByCoord.get(`${x + dx},${y + dy}`)?.roadSectionId === tile?.roadSectionId)),
-        Number(constructions.some((entry) => entry.kind === "bridge")),
-        Number(constructions.some((entry) => entry.kind === "obstacle")),
+        ...directions.map(([dx, dy]) => Number(Boolean(tile?.roadSectionId) && tileAt(x + dx, y + dy)?.roadSectionId === tile?.roadSectionId)),
+        Number(Boolean(bridge)),
+        Number(Boolean(obstacle)),
         ...teamVector(context, base?.ownerTeamId),
-        ...teamVector(context, constructions.find((entry) => entry.kind === "bridge")?.ownerTeamId),
-        ...teamVector(context, constructions.find((entry) => entry.kind === "obstacle")?.ownerTeamId),
+        ...teamVector(context, bridge?.ownerTeamId),
+        ...teamVector(context, obstacle?.ownerTeamId),
       ];
     }),
   );
@@ -315,10 +346,10 @@ function encodeStrategicState(context: Context): EncodedStrategicState {
       ...oneHot(observation.phaseAfterRewards, PHASES),
       ...teamVector(context, observation.currentMovementTeamId),
       observation.movementOrderStartIndex,
-      ...context.teams.map((team) => observation.movementOrderTeamIds.indexOf(team.id)),
-      ...context.teams.map((team) => Number(observation.movementCompletedTeamIds.includes(team.id))),
-      ...context.teams.map((team) => Number(observation.strategistSubmittedTeamIds.includes(team.id))),
-      ...context.teams.map((team) => Number(observation.productionCompletedTeamIdsThisTurn.includes(team.id))),
+      ...context.teams.map((team) => context.movementOrderIndex.get(team.id) ?? -1),
+      ...context.teams.map((team) => Number(context.movementCompletedTeams.has(team.id))),
+      ...context.teams.map((team) => Number(context.strategistSubmittedTeams.has(team.id))),
+      ...context.teams.map((team) => Number(context.productionCompletedTeams.has(team.id))),
     ],
     siegeStates: [...observation.siegeStates].sort((a, b) => (context.baseIndex.get(a.baseId) ?? 999) - (context.baseIndex.get(b.baseId) ?? 999)).map((siege) => [
       ...baseVector(context, siege.baseId), ...teamVector(context, siege.defendingTeamId),
@@ -363,10 +394,22 @@ export function encodeRlObservation(observation: RlObservation): EncodedObservat
     teamIndex: new Map(teams.map((team, index) => [team.id, index])),
     units: [],
     unitById: new Map(observation.units.map((unit) => [unit.id, unit])),
+    unitFlagById: new Map(observation.unitTurnFlags.map((flag) => [flag.unitId, flag])),
+    movedUnitIds: new Set(observation.movedUnitIdsThisMovementPhase),
     bases,
+    baseById: new Map(bases.map((base) => [base.id, base])),
     baseIndex: new Map(bases.map((base, index) => [base.id, index])),
     constructionById: new Map(observation.constructions.map((construction) => [construction.id, construction])),
+    positionCoordinateByUnitId: new Map(),
+    movementOrderIndex: new Map(observation.movementOrderTeamIds.map((teamId, index) => [teamId, index])),
+    movementSeatOrderIndex: new Map(observation.movementSeatOrderTeamIds.map((teamId, index) => [teamId, index])),
+    movementCompletedTeams: new Set(observation.movementCompletedTeamIds),
+    strategistSubmittedTeams: new Set(observation.strategistSubmittedTeamIds),
+    productionCompletedTeams: new Set(observation.productionCompletedTeamIdsThisTurn),
   };
+  for (const unit of observation.units) {
+    context.positionCoordinateByUnitId.set(unit.id, positionCoordinate(context, unit.position));
+  }
   const units = observation.units.filter((unit) => unit.position.kind !== "removed").sort((left, right) => compareKeys(unitSortKey(context, left), unitSortKey(context, right)));
   context.units = units;
   const maxUnits = observation.map.tiles.length + observation.bases.reduce((sum, base) => sum + base.slots.length, 0);
@@ -405,11 +448,11 @@ export function encodeRlObservation(observation: RlObservation): EncodedObservat
       finite(team.defeatedUnitCount),
       team.conqueredTeamIds?.length ?? 0,
       Number(Boolean(team.homeBaseId)),
-      Number(observation.movementCompletedTeamIds.includes(team.id)),
-      Number(observation.strategistSubmittedTeamIds.includes(team.id)),
-      Number(observation.productionCompletedTeamIdsThisTurn.includes(team.id)),
-      observation.movementOrderTeamIds.indexOf(team.id),
-      observation.movementSeatOrderTeamIds.indexOf(team.id),
+      Number(context.movementCompletedTeams.has(team.id)),
+      Number(context.strategistSubmittedTeams.has(team.id)),
+      Number(context.productionCompletedTeams.has(team.id)),
+      context.movementOrderIndex.get(team.id) ?? -1,
+      context.movementSeatOrderIndex.get(team.id) ?? -1,
     ]),
     teamMask: teams.map(() => 1),
     units: [...encodedUnits, ...Array.from({ length: maxUnits - encodedUnits.length }, () => Array(unitWidth).fill(0))],

@@ -94,7 +94,7 @@ function currentDecision(
   if (actorTeamId !== expected.teamId) {
     throw new Error(`Replay actor mismatch: expected ${expected.teamId}, received ${actorTeamId ?? "none"}`);
   }
-  const observation = environment.getObservation(actorTeamId);
+  const observation = environment.getObservationForEncoding(actorTeamId);
   if (observation.turnNumber !== expected.turnNumber) {
     throw new Error(`Replay turn mismatch: expected ${expected.turnNumber}, received ${observation.turnNumber}`);
   }
@@ -134,7 +134,7 @@ export async function runHeuristicImitationEpisode(input: {
   while (!environment.isTerminal()) {
     const teamId = environment.getCurrentActorTeamId();
     if (!teamId) throw new Error("Heuristic imitation collector reached a decision without an actor");
-    const observation = environment.getObservation(teamId);
+    const observation = environment.getObservationForEncoding(teamId);
     lastTurn = observation.turnNumber;
     if (observation.turnNumber > maxTurns) break;
     const legalActions = environment.getLegalActions(teamId);
@@ -336,7 +336,7 @@ export async function replayRlImitationEpisodePrefix(input: {
     const actorTeamId = environment.getCurrentActorTeamId();
     if (actorTeamId !== record.teamId) throw new Error(`Replay actor mismatch: expected ${record.teamId}, received ${actorTeamId ?? "none"}`);
     let started = performance.now();
-    const observation = environment.getObservation(actorTeamId);
+    const observation = environment.getObservationForEncoding(actorTeamId);
     profile.getObservationMs += performance.now() - started;
     if (observation.turnNumber !== record.turnNumber) throw new Error(`Replay turn mismatch: expected ${record.turnNumber}, received ${observation.turnNumber}`);
     started = performance.now();

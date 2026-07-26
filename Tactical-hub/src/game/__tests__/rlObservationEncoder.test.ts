@@ -11,6 +11,17 @@ function allNumbers(value: unknown): number[] {
 }
 
 describe("RL-1B Observation Encoder", () => {
+  it("encodes the replay read-only view exactly like the public cloned observation", () => {
+    const environment = new RlEnvironment();
+    environment.reset(99, 4);
+    const teamId = environment.getCurrentActorTeamId()!;
+    const cloned = environment.getObservation(teamId);
+    const view = environment.getObservationForEncoding(teamId);
+
+    expect(view).toEqual(cloned);
+    expect(encodeRlObservation(view)).toEqual(encodeRlObservation(cloned));
+  });
+
   it("is deterministic, finite, numeric, and does not mutate its input", () => {
     const environment = new RlEnvironment();
     const observation = environment.reset(100, 4);
