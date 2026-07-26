@@ -50,15 +50,20 @@ describe("RL BC short profiler", () => {
       expect(result.batchCount).toBeGreaterThanOrEqual(4);
       expect(result.selectedDevice).toBe("cpu");
       expect(result.samplesPerSecond).toBeGreaterThan(0);
-      expect(result.workerParentPayloadBytes).toBeGreaterThan(0);
+      expect(result.workerParentPackedPayloadBytes).toBeGreaterThan(0);
       expect(result.sections.map((section) => section.name)).toEqual(expect.arrayContaining([
         "getObservationMs", "getLegalActionsMs", "encodeObservationMs", "encodeLegalActionsMs",
-        "stepReplayActionMs", "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "workerSendMs",
-        "nodePythonRoundTripMs", "nodePackMs", "pythonRoundTripAfterPackMs",
+        "stepReplayActionMs", "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "workerPackMs", "workerSendPackedMs",
+        "nodePythonRoundTripMs", "nodePackMs", "pythonRoundTripAfterPackMs", "parentPythonRoundTripMs",
         "pythonDeserializeMs", "pythonBinaryDecodeMs", "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs",
         "pythonBackwardMs", "pythonOptimizerStepMs",
       ]));
       expect(result.sections.every((section) => [section.totalMs, section.msPerSample, section.percentOfElapsed].every(Number.isFinite))).toBe(true);
+      const section = (name: string) => result.sections.find((value) => value.name === name)!.totalMs;
+      expect(section("workerPackMs")).toBeGreaterThan(0);
+      expect(section("workerSendPackedMs")).toBeGreaterThan(0);
+      expect(section("parentPythonRoundTripMs")).toBeGreaterThan(0);
+      expect(section("nodePackMs")).toBe(0);
     }
   }, 120_000);
 });

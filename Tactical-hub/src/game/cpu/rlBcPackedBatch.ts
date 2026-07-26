@@ -43,7 +43,13 @@ function maskTensor(name: string, masks: number[][], maxRows: number, presence?:
   return { name, dtype: "uint8", shape: [masks.length, maxRows], bytes: Buffer.from(packed.buffer) };
 }
 
-export function packBcEncodedSamples(samples: BcEncodedSample[], featureSpec: RlFeatureSpec) {
+export type PackedBcBatch = {
+  payload: Buffer;
+  tensors: PackedTensorDescriptor[];
+  batchSize: number;
+};
+
+export function packBcEncodedSamples(samples: BcEncodedSample[], featureSpec: RlFeatureSpec): PackedBcBatch {
   if (!samples.length) throw new Error("Cannot pack an empty BC batch");
   const observations = samples.map((sample) => sample.observation);
   const floats: PendingTensor[] = [];

@@ -1,5 +1,6 @@
-import { generateRlReplayRngSidecar, replayHeuristicImitationEpisode } from "./rlImitationCollector";
+import { generateRlReplayRngSidecar, getRlImitationEpisodeFeatureSpec, replayHeuristicImitationEpisode } from "./rlImitationCollector";
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
+import { packBcEncodedSamples } from "./rlBcPackedBatch";
 import type { RlBcReplayWorkerRequest, RlBcReplayWorkerResponse } from "./rlBcReplayWorkerMessages";
 import { loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
 
@@ -14,6 +15,7 @@ let activeTaskId: string | undefined;
 let waitingAck: { taskId: string; sequence: number; resolve: () => void } | undefined;
 
 async function runEpisode(message: Extract<RlBcReplayWorkerRequest, { type: "runEpisode" }>) {
+  const featureSpec = getRlImitationEpisodeFeatureSpec(message.episode);
   let batch: BcEncodedSample[] = [];
   let batchSequence = 0;
   let sampleCount = 0;
@@ -22,6 +24,7 @@ async function runEpisode(message: Extract<RlBcReplayWorkerRequest, { type: "run
     const samples = batch;
     batch = [];
     const sequence = batchSequence++;
+    const packedBatch = packBcEncodedSamples(samples, featureSpec);
     const acknowledged = new Promise<void>((resolve) => {
       waitingAck = { taskId: message.taskId, sequence, resolve };
     });
@@ -30,7 +33,7 @@ async function runEpisode(message: Extract<RlBcReplayWorkerRequest, { type: "run
       taskId: message.taskId,
       episodeNumber: message.episodeNumber,
       batchSequence: sequence,
-      samples,
+      packedBatch,
     });
     await acknowledged;
     waitingAck = undefined;

@@ -1,5 +1,6 @@
-import { generateRlReplayRngSidecar, replayRlImitationEpisodePrefix, type RlReplayPrefixProfile } from "./rlImitationCollector";
+import { generateRlReplayRngSidecar, getRlImitationEpisodeFeatureSpec, replayRlImitationEpisodePrefix, type RlReplayPrefixProfile } from "./rlImitationCollector";
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
+import { packBcEncodedSamples } from "./rlBcPackedBatch";
 import type { RlBcProfileWorkerRequest, RlBcProfileWorkerResponse } from "./rlBcProfileWorkerMessages";
 import { loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
 
@@ -11,14 +12,6 @@ const subtract = (current: RlReplayPrefixProfile, previous: RlReplayPrefixProfil
 function send(message: RlBcProfileWorkerResponse) {
   if (!process.send) throw new Error("BC profile worker IPC channel is unavailable");
   process.send(message);
-}
-function estimateNumericPayloadBytes(value: unknown): number {
-  if (typeof value === "number") return 8;
-  if (Array.isArray(value)) return value.reduce((total, item) => total + estimateNumericPayloadBytes(item), 0);
-  if (value && typeof value === "object") {
-    return Object.values(value).reduce((total, item) => total + estimateNumericPayloadBytes(item), 0);
-  }
-  return 0;
 }
 function sendProfileBatch(message: Extract<RlBcProfileWorkerResponse, { type: "profileBatch" }>) {
   if (!process.send) throw new Error("BC profile worker IPC channel is unavailable");
@@ -35,6 +28,7 @@ let activeTaskId: string | undefined;
 let waitingAck: { taskId: string; sequence: number; started: number; resolve: () => void } | undefined;
 
 async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "runEpisode" }>) {
+  const featureSpec = getRlImitationEpisodeFeatureSpec(message.episode);
   const sidecarStarted = performance.now();
   const cached = await loadOrCreateRlReplayRngSidecar(
     message.episode,
@@ -46,6 +40,7 @@ async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "ru
   let sequence = 0;
   let previousProfile = zeroProfile();
   let currentProfile = zeroProfile();
+  let decisionCount = 0;
   const flush = async () => {
     if (!batch.length) return;
     const samples = batch;
@@ -53,6 +48,9 @@ async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "ru
     const currentSequence = sequence++;
     const replayTimings = subtract(currentProfile, previousProfile);
     previousProfile = { ...currentProfile };
+    const packStarted = performance.now();
+    const packedBatch = packBcEncodedSamples(samples, featureSpec);
+    const workerPackMs = performance.now() - packStarted;
     const acknowledged = new Promise<void>((resolve) => {
       waitingAck = { taskId: message.taskId, sequence: currentSequence, started: performance.now(), resolve };
     });
@@ -60,13 +58,14 @@ async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "ru
       type: "profileBatch",
       taskId: message.taskId,
       sequence: currentSequence,
-      samples,
+      packedBatch,
       replayTimings,
       sidecarLoadMs: currentSequence === 0 ? sidecarLoadMs : 0,
-      workerParentPayloadBytes: estimateNumericPayloadBytes(samples),
+      workerPackMs,
+      workerParentPackedPayloadBytes: packedBatch.payload.byteLength,
     };
-    const workerSendMs = await sendProfileBatch(profileMessage);
-    send({ type: "profileBatchSendTiming", taskId: message.taskId, sequence: currentSequence, workerSendMs });
+    const workerSendPackedMs = await sendProfileBatch(profileMessage);
+    send({ type: "profileBatchSendTiming", taskId: message.taskId, sequence: currentSequence, workerSendPackedMs });
     await acknowledged;
     waitingAck = undefined;
   };
@@ -76,10 +75,11 @@ async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "ru
     maxDecisions: message.maxDecisions,
     onEncodedDecision: (decision) => {
       batch.push({ observation: decision.encodedObservation, actions: decision.encodedLegalActions.actions, targetIndex: decision.selectedActionIndex });
+      decisionCount += 1;
     },
     onDecisionCompleted: async (profile) => {
       currentProfile = profile;
-      if (batch.length >= message.batchSize) await flush();
+      if (batch.length >= message.batchSize || decisionCount === message.warmupDecisions) await flush();
     },
   });
   await flush();

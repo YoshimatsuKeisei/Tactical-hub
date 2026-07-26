@@ -1,7 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { RlImitationEpisode } from "./rlImitationCollector";
-import type { BcEncodedSample } from "./pythonBcTrainerClient";
+import type { PackedBcBatch } from "./rlBcPackedBatch";
 import type { RlBcReplayWorkerRequest, RlBcReplayWorkerResponse } from "./rlBcReplayWorkerMessages";
 import { RL_PROJECT_ROOT, RL_VITE_NODE_ENTRY } from "./rlProjectPaths";
 
@@ -12,7 +12,7 @@ export async function runParallelBcReplay(input: {
   workerCount: number;
   batchSize: number;
   sidecarDirectory: string;
-  onBatch: (samples: BcEncodedSample[]) => void | Promise<void>;
+  onBatch: (packedBatch: PackedBcBatch) => void | Promise<void>;
   onEpisodeCompleted?: (completed: number, total: number) => void;
   workerEntryPath?: string;
 }) {
@@ -86,6 +86,7 @@ export async function runParallelBcReplay(input: {
       const worker = fork(viteNodeEntry, [workerEntry], {
         cwd: RL_PROJECT_ROOT,
         stdio: ["ignore", "ignore", "ignore", "ipc"],
+        serialization: "advanced",
       });
       workers.push(worker);
       worker.on("message", (raw: RlBcReplayWorkerResponse) => {
@@ -111,13 +112,13 @@ export async function runParallelBcReplay(input: {
           return;
         }
         if (raw.type === "encodedBatch") {
-          if (raw.batchSequence !== assignment.nextBatchSequence || !raw.samples.length) {
+          if (raw.batchSequence !== assignment.nextBatchSequence || raw.packedBatch.batchSize <= 0) {
             fail(new Error(`BC replay worker ${workerId} returned duplicate/out-of-order batch for episode ${raw.episodeNumber}`));
             return;
           }
           assignment.nextBatchSequence += 1;
-          assignment.sampleCount += raw.samples.length;
-          void Promise.resolve(input.onBatch(raw.samples)).then(() => {
+          assignment.sampleCount += raw.packedBatch.batchSize;
+          void Promise.resolve(input.onBatch(raw.packedBatch)).then(() => {
             if (!settled) worker.send({
               type: "batchConsumed",
               taskId: raw.taskId,

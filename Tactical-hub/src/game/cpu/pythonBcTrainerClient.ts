@@ -4,7 +4,7 @@ import type { RlFeatureSpec } from "./rlFeatureSpec";
 import type { RlReplayEncodedDecision } from "./rlImitationCollector";
 import { RL_PROJECT_ROOT } from "./rlProjectPaths";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
-import { packBcEncodedSamples } from "./rlBcPackedBatch";
+import { packBcEncodedSamples, type PackedBcBatch } from "./rlBcPackedBatch";
 
 type Response =
   | { type: "ready"; torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice }
@@ -46,10 +46,8 @@ export class PythonBcTrainerClient {
     if (!this.child?.stdin.writable) throw new Error("Python BC trainer is not running");
     this.child.stdin.write(`${JSON.stringify(value)}\n`);
   }
-  private sendPacked(value: Record<string, unknown>, samples: BcEncodedSample[]) {
+  private sendPreparedPacked(value: Record<string, unknown>, packed: PackedBcBatch) {
     if (!this.child?.stdin.writable) throw new Error("Python BC trainer is not running");
-    if (!this.featureSpec) throw new Error("Python BC trainer Feature Spec is not initialized");
-    const packed = packBcEncodedSamples(samples, this.featureSpec);
     this.child.stdin.write(`${JSON.stringify({
       ...value,
       encoding: "packed-v1",
@@ -121,9 +119,14 @@ export class PythonBcTrainerClient {
   }
 
   async batch(samples: BcEncodedSample[], train: boolean) {
+    if (!this.featureSpec) throw new Error("Python BC trainer Feature Spec is not initialized");
+    return this.batchPacked(packBcEncodedSamples(samples, this.featureSpec), train);
+  }
+
+  async batchPacked(packed: PackedBcBatch, train: boolean) {
     const requestId = this.requestId++;
     const responsePromise = this.wait();
-    this.sendPacked({ type: "packedBatch", requestId, train }, samples);
+    this.sendPreparedPacked({ type: "packedBatch", requestId, train }, packed);
     const response = await responsePromise;
     if (response.type === "error") throw new Error(response.message);
     if (response.type !== "batchResult" || response.requestId !== requestId) throw new Error("Unexpected BC batch response");
@@ -139,24 +142,24 @@ export class PythonBcTrainerClient {
   }
 
   async profileBatch(samples: BcEncodedSample[]) {
-    const requestId = this.requestId++;
     if (!this.featureSpec) throw new Error("Python BC trainer Feature Spec is not initialized");
     const started = performance.now();
     const packStarted = performance.now();
     const packed = packBcEncodedSamples(samples, this.featureSpec);
     const nodePackMs = performance.now() - packStarted;
+    return this.profilePreparedPacked(packed, started, nodePackMs);
+  }
+
+  async profilePackedBatch(packed: PackedBcBatch) {
+    const started = performance.now();
+    return this.profilePreparedPacked(packed, started, 0);
+  }
+
+  private async profilePreparedPacked(packed: PackedBcBatch, started: number, nodePackMs: number) {
+    const requestId = this.requestId++;
     const afterPackStarted = performance.now();
     const responsePromise = this.wait();
-    if (!this.child?.stdin.writable) throw new Error("Python BC trainer is not running");
-    this.child.stdin.write(`${JSON.stringify({
-      type: "packedProfileBatch",
-      requestId,
-      encoding: "packed-v1",
-      byteLength: packed.payload.byteLength,
-      batchSize: packed.batchSize,
-      tensors: packed.tensors,
-    })}\n`);
-    this.child.stdin.write(packed.payload);
+    this.sendPreparedPacked({ type: "packedProfileBatch", requestId }, packed);
     const response = await responsePromise;
     const pythonRoundTripAfterPackMs = performance.now() - afterPackStarted;
     const roundTripMs = performance.now() - started;

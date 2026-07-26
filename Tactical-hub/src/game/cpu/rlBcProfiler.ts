@@ -2,7 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { getRlImitationEpisodeFeatureSpec, type RlImitationEpisode, type RlReplayPrefixProfile } from "./rlImitationCollector";
 import type { RlBcProfileWorkerRequest, RlBcProfileWorkerResponse } from "./rlBcProfileWorkerMessages";
-import { PythonBcTrainerClient, type BcEncodedSample } from "./pythonBcTrainerClient";
+import { PythonBcTrainerClient } from "./pythonBcTrainerClient";
 import { RL_PROJECT_ROOT, RL_VITE_NODE_ENTRY } from "./rlProjectPaths";
 import { getDefaultRlReplaySidecarDirectory } from "./rlReplayRngSidecar";
 import { readRlImitationEpisodes } from "./rlReplayReader";
@@ -11,10 +11,12 @@ import type { RlTorchDevice } from "./rlTorchDevice";
 type SectionName = keyof RlReplayPrefixProfile
   | "sidecarLoadMs"
   | "workerBatchQueueAndProcessingMs"
-  | "workerSendMs"
+  | "workerPackMs"
+  | "workerSendPackedMs"
   | "nodePythonRoundTripMs"
   | "nodePackMs"
   | "pythonRoundTripAfterPackMs"
+  | "parentPythonRoundTripMs"
   | "pythonDeserializeMs"
   | "pythonBinaryDecodeMs"
   | "pythonTensorPreparationMs"
@@ -38,7 +40,7 @@ export type RlBcProfileResult = {
   samplesPerSecond: number;
   batchesPerSecond: number;
   selectedDevice: "cpu" | "cuda";
-  workerParentPayloadBytes: number;
+  workerParentPackedPayloadBytes: number;
   workerParentPayloadDescription: string;
   overlapWarning: string;
   sections: Array<{ name: SectionName; totalMs: number; msPerSample: number; percentOfElapsed: number }>;
@@ -94,13 +96,13 @@ export async function runRlBcShortProfile(input: {
   const selectedDevice = client.getAppliedThreads().selectedDevice;
   const totals = Object.fromEntries([
     ...replayKeys,
-    "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "workerSendMs", "nodePythonRoundTripMs",
-    "nodePackMs", "pythonRoundTripAfterPackMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
+    "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "workerPackMs", "workerSendPackedMs", "nodePythonRoundTripMs",
+    "nodePackMs", "pythonRoundTripAfterPackMs", "parentPythonRoundTripMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
     "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs", "pythonBackwardMs", "pythonOptimizerStepMs",
   ].map((name) => [name, 0])) as Record<SectionName, number>;
   let measured = 0;
   let batchCount = 0;
-  let workerParentPayloadBytes = 0;
+  let workerParentPackedPayloadBytes = 0;
   let measurementStartedAt: number | undefined;
   const workers: ChildProcess[] = [];
   type ProfileBatchMessage = Extract<RlBcProfileWorkerResponse, { type: "profileBatch" }>;
@@ -145,16 +147,17 @@ export async function runRlBcShortProfile(input: {
   const taskById = new Map(tasks.map((task) => [task.taskId, task]));
   let nextTaskToAssign = 0;
   let currentTaskToProcess = 0;
-  const processSamples = async (samples: BcEncodedSample[], measuredPart: boolean) => {
-    if (!samples.length) return;
+  const processPackedBatch = async (packedBatch: ProfileBatchMessage["packedBatch"], measuredPart: boolean) => {
+    if (!packedBatch.batchSize) return;
     if (measuredPart && measurementStartedAt === undefined) measurementStartedAt = performance.now();
-    const result = await client.profileBatch(samples);
+    const result = await client.profilePackedBatch(packedBatch);
     if (!measuredPart) return;
     batchCount += 1;
-    measured += samples.length;
+    measured += packedBatch.batchSize;
     totals.nodePythonRoundTripMs += result.roundTripMs;
     totals.nodePackMs += result.nodePackMs;
     totals.pythonRoundTripAfterPackMs += result.pythonRoundTripAfterPackMs;
+    totals.parentPythonRoundTripMs += result.pythonRoundTripAfterPackMs;
     totals.pythonDeserializeMs += result.deserializeMs;
     totals.pythonBinaryDecodeMs += result.binaryDecodeMs;
     totals.pythonTensorPreparationMs += result.timings.tensorPreparationMs;
@@ -200,6 +203,7 @@ export async function runRlBcShortProfile(input: {
           taskId: task.taskId,
           episode: item.episode,
           batchSize: input.batchSize,
+          warmupDecisions: task.warmupRemaining,
           maxDecisions,
           sidecarDirectory: getDefaultRlReplaySidecarDirectory(input.dataPath),
         } satisfies RlBcProfileWorkerRequest);
@@ -212,31 +216,37 @@ export async function runRlBcShortProfile(input: {
           task.batches.delete(task.nextSequence);
           task.nextSequence += 1;
           const { raw, receivedAt, worker } = entry;
-          const warmup = raw.samples.slice(0, task.warmupRemaining);
-          task.warmupRemaining -= warmup.length;
-          const measuredSamples = raw.samples.slice(warmup.length, warmup.length + task.measuredRemaining);
-          task.measuredRemaining -= measuredSamples.length;
-          const measuredRatio = measuredSamples.length / raw.samples.length;
+          const batchSize = raw.packedBatch.batchSize;
+          const isWarmup = task.warmupRemaining > 0;
+          if (isWarmup && batchSize > task.warmupRemaining) throw new Error(`Packed profile batch crosses warmup boundary for ${raw.taskId}`);
+          if (!isWarmup && batchSize > task.measuredRemaining) throw new Error(`Packed profile batch exceeds measured quota for ${raw.taskId}`);
+          if (isWarmup) task.warmupRemaining -= batchSize;
+          else task.measuredRemaining -= batchSize;
+          const measuredRatio = isWarmup ? 0 : 1;
           task.measuredRatios.set(raw.sequence, measuredRatio);
-          const workerSendMs = task.sendTimings.get(raw.sequence);
-          if (workerSendMs !== undefined) {
-            totals.workerSendMs += workerSendMs * measuredRatio;
+          const workerSendPackedMs = task.sendTimings.get(raw.sequence);
+          if (workerSendPackedMs !== undefined) {
+            totals.workerSendPackedMs += workerSendPackedMs * measuredRatio;
             task.sendTimings.delete(raw.sequence);
             task.measuredRatios.delete(raw.sequence);
           }
-          if (warmup.length) await processSamples(warmup, false);
-          if (measuredSamples.length) {
+          await processPackedBatch(raw.packedBatch, !isWarmup);
+          if (!isWarmup) {
             addReplayTimings(raw.replayTimings, measuredRatio);
             totals.sidecarLoadMs += raw.sidecarLoadMs * measuredRatio;
-            workerParentPayloadBytes += raw.workerParentPayloadBytes * measuredRatio;
-            await processSamples(measuredSamples, true);
+            totals.workerPackMs += raw.workerPackMs;
+            workerParentPackedPayloadBytes += raw.workerParentPackedPayloadBytes;
           }
           totals.workerBatchQueueAndProcessingMs += performance.now() - receivedAt;
           worker.send({ type: "batchConsumed", taskId: raw.taskId, sequence: raw.sequence } satisfies RlBcProfileWorkerRequest);
         }
       };
       for (let workerId = 0; workerId < effectiveWorkers; workerId += 1) {
-        const worker = fork(RL_VITE_NODE_ENTRY, [workerEntry], { cwd: RL_PROJECT_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+        const worker = fork(RL_VITE_NODE_ENTRY, [workerEntry], {
+          cwd: RL_PROJECT_ROOT,
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          serialization: "advanced",
+        });
         workers.push(worker);
         worker.on("message", (raw: RlBcProfileWorkerResponse) => {
           if (settled) return;
@@ -248,9 +258,9 @@ export async function runRlBcShortProfile(input: {
               const ratio = task.measuredRatios.get(raw.sequence);
               if (ratio === undefined) {
                 if (task.sendTimings.has(raw.sequence)) throw new Error(`Duplicate worker send timing ${raw.taskId}/${raw.sequence}`);
-                task.sendTimings.set(raw.sequence, raw.workerSendMs);
+                task.sendTimings.set(raw.sequence, raw.workerSendPackedMs);
               } else {
-                totals.workerSendMs += raw.workerSendMs * ratio;
+                totals.workerSendPackedMs += raw.workerSendPackedMs * ratio;
                 task.measuredRatios.delete(raw.sequence);
               }
             }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
@@ -311,9 +321,9 @@ export async function runRlBcShortProfile(input: {
     samplesPerSecond: measured / Math.max(elapsedMs / 1000, 0.001),
     batchesPerSecond: batchCount / Math.max(elapsedMs / 1000, 0.001),
     selectedDevice,
-    workerParentPayloadBytes,
-    workerParentPayloadDescription: "Approximate numeric feature payload only (8 bytes per JavaScript number); object keys, IPC framing and serializer overhead are excluded.",
-    overlapWarning: "Nested timings overlap and do not sum to 100%. workerSendMs ends at the child_process.send callback and includes serialization/queue acceptance, so it is not pure transport latency. nodePythonRoundTripMs spans packing through the Python response and is approximately nodePackMs + pythonRoundTripAfterPackMs. workerBatchQueueAndProcessingMs includes parent queue plus downstream processing after IPC receipt.",
+    workerParentPackedPayloadBytes,
+    workerParentPayloadDescription: "Exact packed-v1 binary payload bytes; small IPC descriptors and advanced-serialization framing are excluded.",
+    overlapWarning: "Nested timings overlap and do not sum to 100%. workerSendPackedMs ends at the child_process.send callback and includes binary serialization/copy/queue acceptance, so it is not pure transport latency. parentPythonRoundTripMs equals the packed-payload Python round trip; nodePackMs remains for compatibility and is zero on the worker-packed path.",
     sections: (Object.entries(totals) as Array<[SectionName, number]>)
       .map(([name, totalMs]) => ({ name, totalMs, msPerSample: totalMs / measured, percentOfElapsed: elapsedMs > 0 ? totalMs / elapsedMs * 100 : 0 }))
       .sort((left, right) => right.totalMs - left.totalMs),

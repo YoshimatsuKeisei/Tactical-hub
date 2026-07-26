@@ -1,5 +1,5 @@
 import type { RlImitationEpisode, RlImitationEpisodeEnd } from "./rlImitationCollector";
-import type { BcEncodedSample } from "./pythonBcTrainerClient";
+import type { PackedBcBatch } from "./rlBcPackedBatch";
 
 export type RlBcReplayWorkerRequest =
   | {
@@ -23,7 +23,7 @@ export type RlBcReplayWorkerResponse =
     taskId: string;
     episodeNumber: number;
     batchSequence: number;
-    samples: BcEncodedSample[];
+    packedBatch: PackedBcBatch;
   }
   | {
     type: "episodeCompleted";

@@ -1,12 +1,12 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { generateRlReplayRngSidecar, getRlImitationEpisodeFeatureSpec, replayHeuristicImitationEpisode } from "./rlImitationCollector";
-import { PythonBcTrainerClient, type BcEncodedSample } from "./pythonBcTrainerClient";
+import { getRlImitationEpisodeFeatureSpec } from "./rlImitationCollector";
+import { PythonBcTrainerClient } from "./pythonBcTrainerClient";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 import { readRlImitationEpisodes, type EpisodeRange } from "./rlReplayReader";
 import { runParallelBcReplay, type NumberedReplayEpisode } from "./rlBcReplayParallel";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
-import { getDefaultRlReplaySidecarDirectory, loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
+import { getDefaultRlReplaySidecarDirectory } from "./rlReplayRngSidecar";
 
 export type BcMetrics = {
   loss: number;
@@ -149,83 +149,37 @@ export async function runBehavioralCloning(input: {
     };
     const heartbeat = setInterval(() => reportProgress("heartbeat"), 10_000);
     heartbeat.unref();
-    let batch: BcEncodedSample[] = [];
-    const flush = async () => {
-      if (!batch.length) return;
-      const result = await client.batch(batch, train);
-      aggregate.lossSum += result.lossSum;
-      aggregate.correct += result.correct;
-      aggregate.count += result.count;
-      processedBatches += 1;
-      batch = [];
-    };
     let episodeCount = 0;
     try {
-      if (workerCount === 1) {
-        for await (const { episode } of readRlImitationEpisodes(input.dataPath, range)) {
-          episodeCount += 1;
-          const sidecarStarted = performance.now();
-          const cached = await loadOrCreateRlReplayRngSidecar(
-            episode,
-            sidecarDirectory,
-            () => generateRlReplayRngSidecar(episode),
-          );
-          replayCache.sidecarPreparationMs += performance.now() - sidecarStarted;
-          replayCache[cached.generated ? "generatedSidecarCount" : "reusedSidecarCount"] += 1;
-          const replayTiming = { directReplayMs: 0 };
-          await replayHeuristicImitationEpisode({
-            episode,
-            rngSidecar: cached.sidecar,
-            timing: replayTiming,
-            onFeatureSpec: ensureStarted,
-            onEncodedDecision: async (decision) => {
-              if (decision.encodedLegalActions.actionKeys[decision.selectedActionIndex] !== decision.record.selectedActionKey) {
-                throw new Error(`Replay target index mismatch for ${decision.record.selectedActionKey}`);
-              }
-              batch.push({
-                observation: decision.encodedObservation,
-                actions: decision.encodedLegalActions.actions,
-                targetIndex: decision.selectedActionIndex,
-              });
-              if (batch.length >= input.batchSize) await flush();
-            },
-          });
-          replayCache.directReplayMs += replayTiming.directReplayMs;
-          completedEpisodes += 1;
-          reportProgress("episode");
+      const episodes: NumberedReplayEpisode[] = [];
+      for await (const item of readRlImitationEpisodes(input.dataPath, range)) episodes.push(item);
+      episodeCount = episodes.length;
+      if (episodes.length) {
+        await ensureStarted(getRlImitationEpisodeFeatureSpec(episodes[0].episode));
+        const replay = await runParallelBcReplay({
+          episodes,
+          workerCount,
+          batchSize: input.batchSize,
+          sidecarDirectory,
+          onBatch: async (packedBatch) => {
+            const result = await client.batchPacked(packedBatch, train);
+            aggregate.lossSum += result.lossSum;
+            aggregate.correct += result.correct;
+            aggregate.count += result.count;
+            processedBatches += 1;
+          },
+          onEpisodeCompleted: (completed) => {
+            completedEpisodes = completed;
+            reportProgress("episode");
+          },
+        });
+        if (replay.sampleCount !== aggregate.count) {
+          throw new Error(`Parallel BC replay sample count mismatch: ${replay.sampleCount}/${aggregate.count}`);
         }
-        await flush();
-      } else {
-        const episodes: NumberedReplayEpisode[] = [];
-        for await (const item of readRlImitationEpisodes(input.dataPath, range)) episodes.push(item);
-        episodeCount = episodes.length;
-        if (episodes.length) {
-          await ensureStarted(getRlImitationEpisodeFeatureSpec(episodes[0].episode));
-          const replay = await runParallelBcReplay({
-            episodes,
-            workerCount,
-            batchSize: input.batchSize,
-            sidecarDirectory,
-            onBatch: async (samples) => {
-              const result = await client.batch(samples, train);
-              aggregate.lossSum += result.lossSum;
-              aggregate.correct += result.correct;
-              aggregate.count += result.count;
-              processedBatches += 1;
-            },
-            onEpisodeCompleted: (completed) => {
-              completedEpisodes = completed;
-              reportProgress("episode");
-            },
-          });
-          if (replay.sampleCount !== aggregate.count) {
-            throw new Error(`Parallel BC replay sample count mismatch: ${replay.sampleCount}/${aggregate.count}`);
-          }
-          replayCache.generatedSidecarCount += replay.generatedSidecarCount;
-          replayCache.reusedSidecarCount += replay.reusedSidecarCount;
-          replayCache.sidecarPreparationMs += replay.sidecarPreparationMs;
-          replayCache.directReplayMs += replay.directReplayMs;
-        }
+        replayCache.generatedSidecarCount += replay.generatedSidecarCount;
+        replayCache.reusedSidecarCount += replay.reusedSidecarCount;
+        replayCache.sidecarPreparationMs += replay.sidecarPreparationMs;
+        replayCache.directReplayMs += replay.directReplayMs;
       }
     } finally {
       clearInterval(heartbeat);
