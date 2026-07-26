@@ -2,7 +2,14 @@ import type { RlImitationEpisode, RlReplayPrefixProfile } from "./rlImitationCol
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
 
 export type RlBcProfileWorkerRequest =
-  | { type: "runEpisode"; taskId: string; episode: RlImitationEpisode; batchSize: number; sidecarDirectory: string }
+  | {
+    type: "runEpisode";
+    taskId: string;
+    episode: RlImitationEpisode;
+    batchSize: number;
+    maxDecisions: number;
+    sidecarDirectory: string;
+  }
   | { type: "batchConsumed"; taskId: string; sequence: number }
   | { type: "shutdown" };
 

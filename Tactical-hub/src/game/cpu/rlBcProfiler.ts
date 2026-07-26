@@ -10,7 +10,7 @@ import type { RlTorchDevice } from "./rlTorchDevice";
 
 type SectionName = keyof RlReplayPrefixProfile
   | "sidecarLoadMs"
-  | "workerIpcBatchWaitMs"
+  | "workerBatchQueueAndProcessingMs"
   | "nodePythonRoundTripMs"
   | "pythonDeserializeMs"
   | "pythonBinaryDecodeMs"
@@ -21,6 +21,8 @@ type SectionName = keyof RlReplayPrefixProfile
   | "pythonOptimizerStepMs";
 
 export type RlBcProfileResult = {
+  requestedWorkers: number;
+  effectiveWorkers: number;
   requestedSamples: number;
   warmupSamples: number;
   measuredSamples: number;
@@ -65,7 +67,7 @@ export async function runRlBcShortProfile(input: {
   for await (const item of readRlImitationEpisodes(input.dataPath, { from: 1, to: Number.MAX_SAFE_INTEGER })) {
     episodes.push(item);
     available += item.episode.end.decisionCount;
-    if (available >= totalNeeded) break;
+    if (available >= totalNeeded && episodes.length >= input.workerCount) break;
   }
   if (available < totalNeeded) throw new Error(`Replay contains only ${available} decisions; ${totalNeeded} required`);
 
@@ -82,24 +84,35 @@ export async function runRlBcShortProfile(input: {
   const selectedDevice = client.getAppliedThreads().selectedDevice;
   const totals = Object.fromEntries([
     ...replayKeys,
-    "sidecarLoadMs", "workerIpcBatchWaitMs", "nodePythonRoundTripMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
+    "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "nodePythonRoundTripMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
     "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs", "pythonBackwardMs", "pythonOptimizerStepMs",
   ].map((name) => [name, 0])) as Record<SectionName, number>;
-  let consumed = 0;
   let measured = 0;
   let batchCount = 0;
   let measurementStartedAt: number | undefined;
   const workers: ChildProcess[] = [];
-  const pending = new Map<string, { workerId: number; episodeIndex: number }>();
+  const pending = new Map<string, {
+    workerId: number;
+    episodeIndex: number;
+    warmupRemaining: number;
+    measuredRemaining: number;
+  }>();
   const effectiveWorkers = Math.min(input.workerCount, episodes.length);
   const workerEntry = fileURLToPath(new URL("./rlBcProfileWorker.ts", import.meta.url));
-  let nextEpisode = 0;
   let settled = false;
   let processing = Promise.resolve();
+  let warmupRemainingGlobally = input.warmupSamples;
+  const deferredMeasured: Array<() => Promise<void>> = [];
 
   const addReplayTimings = (profile: RlReplayPrefixProfile, ratio: number) => {
     for (const key of replayKeys) totals[key] += profile[key] * ratio;
   };
+  const distribute = (total: number) => Array.from(
+    { length: effectiveWorkers },
+    (_, index) => Math.floor(total / effectiveWorkers) + (index < total % effectiveWorkers ? 1 : 0),
+  );
+  const warmupQuotas = distribute(input.warmupSamples);
+  const measuredQuotas = distribute(input.samples);
   const processSamples = async (samples: BcEncodedSample[], measuredPart: boolean) => {
     if (!samples.length) return;
     if (measuredPart && measurementStartedAt === undefined) measurementStartedAt = performance.now();
@@ -136,15 +149,25 @@ export async function runRlBcShortProfile(input: {
         rejectRun(error);
       };
       const assign = (worker: ChildProcess, workerId: number) => {
-        if (settled || nextEpisode >= episodes.length) return;
-        const item = episodes[nextEpisode++];
+        if (settled || workerId >= effectiveWorkers) return;
+        const item = episodes[workerId];
         const taskId = `bc-profile-${item.episodeNumber}`;
-        pending.set(taskId, { workerId, episodeIndex: item.episodeNumber });
+        const warmupRemaining = warmupQuotas[workerId];
+        const measuredRemaining = measuredQuotas[workerId];
+        const maxDecisions = warmupRemaining + measuredRemaining;
+        if (item.episode.end.decisionCount < maxDecisions) {
+          fail(new Error(
+            `Episode ${item.episodeNumber} has ${item.episode.end.decisionCount} decisions; worker ${workerId} needs ${maxDecisions}`,
+          ));
+          return;
+        }
+        pending.set(taskId, { workerId, episodeIndex: item.episodeNumber, warmupRemaining, measuredRemaining });
         worker.send({
           type: "runEpisode",
           taskId,
           episode: item.episode,
           batchSize: input.batchSize,
+          maxDecisions,
           sidecarDirectory: getDefaultRlReplaySidecarDirectory(input.dataPath),
         } satisfies RlBcProfileWorkerRequest);
       };
@@ -156,28 +179,47 @@ export async function runRlBcShortProfile(input: {
           if (!raw?.taskId || !pending.has(raw.taskId)) { fail(new Error(`BC profile worker ${workerId} sent an invalid task`)); return; }
           if (raw.type === "workerError") { fail(new Error(raw.error)); return; }
           if (raw.type === "episodeCompleted") {
+            const task = pending.get(raw.taskId);
+            if (!task || task.warmupRemaining !== 0 || task.measuredRemaining !== 0) {
+              fail(new Error(`BC profile worker ${workerId} completed before satisfying its sample quota`));
+              return;
+            }
             pending.delete(raw.taskId);
-            assign(worker, workerId);
+            if (pending.size === 0 && measured === input.samples) finish();
             return;
           }
           const receivedAt = performance.now();
           processing = processing.then(async () => {
             if (settled) return;
-            const remainingTotal = totalNeeded - consumed;
-            const accepted = raw.samples.slice(0, remainingTotal);
-            const warmupRemaining = Math.max(0, input.warmupSamples - consumed);
-            const warmup = accepted.slice(0, warmupRemaining);
-            const measuredSamples = accepted.slice(warmup.length);
-            if (warmup.length) await processSamples(warmup, false);
-            if (measuredSamples.length) {
+            const task = pending.get(raw.taskId);
+            if (!task) throw new Error(`Missing BC profile task ${raw.taskId}`);
+            const warmup = raw.samples.slice(0, task.warmupRemaining);
+            task.warmupRemaining -= warmup.length;
+            const measuredSamples = raw.samples.slice(
+              warmup.length,
+              warmup.length + task.measuredRemaining,
+            );
+            task.measuredRemaining -= measuredSamples.length;
+            if (warmup.length) {
+              await processSamples(warmup, false);
+              warmupRemainingGlobally -= warmup.length;
+            }
+            const processMeasured = async () => {
+              if (!measuredSamples.length) return;
               const ratio = measuredSamples.length / raw.samples.length;
               addReplayTimings(raw.replayTimings, ratio);
               totals.sidecarLoadMs += raw.sidecarLoadMs * ratio;
               await processSamples(measuredSamples, true);
+            };
+            if (measuredSamples.length) {
+              if (warmupRemainingGlobally === 0) {
+                while (deferredMeasured.length) await deferredMeasured.shift()!();
+                await processMeasured();
+              } else {
+                deferredMeasured.push(processMeasured);
+              }
             }
-            consumed += accepted.length;
-            totals.workerIpcBatchWaitMs += performance.now() - receivedAt;
-            if (consumed >= totalNeeded) { finish(); return; }
+            totals.workerBatchQueueAndProcessingMs += performance.now() - receivedAt;
             worker.send({ type: "batchConsumed", taskId: raw.taskId, sequence: raw.sequence } satisfies RlBcProfileWorkerRequest);
           }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
         });
@@ -191,6 +233,8 @@ export async function runRlBcShortProfile(input: {
   }
   const elapsedMs = performance.now() - (measurementStartedAt ?? performance.now());
   return {
+    requestedWorkers: input.workerCount,
+    effectiveWorkers,
     requestedSamples: input.samples,
     warmupSamples: input.warmupSamples,
     measuredSamples: measured,
@@ -200,7 +244,7 @@ export async function runRlBcShortProfile(input: {
     samplesPerSecond: measured / Math.max(elapsedMs / 1000, 0.001),
     batchesPerSecond: batchCount / Math.max(elapsedMs / 1000, 0.001),
     selectedDevice,
-    overlapWarning: "Nested and wait timings overlap; section percentages are diagnostic and do not sum to 100%.",
+    overlapWarning: "Nested timings overlap and do not sum to 100%. workerBatchQueueAndProcessingMs measures parent queue plus downstream batch processing after IPC receipt; it is not pure IPC transport time.",
     sections: (Object.entries(totals) as Array<[SectionName, number]>)
       .map(([name, totalMs]) => ({ name, totalMs, msPerSample: totalMs / measured, percentOfElapsed: elapsedMs > 0 ? totalMs / elapsedMs * 100 : 0 }))
       .sort((left, right) => right.totalMs - left.totalMs),

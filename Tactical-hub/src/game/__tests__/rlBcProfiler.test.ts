@@ -13,7 +13,7 @@ describe("RL BC short profiler", () => {
     const dataPath = join(directory, "replay.jsonl");
     const collection = await runParallelRlImitationCollection({
       seedStart: 7701,
-      episodeCount: 3,
+      episodeCount: 4,
       maxTurns: 1,
       outputPath: dataPath,
       workerCount: 1,
@@ -31,12 +31,14 @@ describe("RL BC short profiler", () => {
         torchInteropThreads: 1,
       });
       expect(result.measuredSamples).toBe(16);
-      expect(result.batchCount).toBe(4);
+      expect(result.requestedWorkers).toBe(workerCount);
+      expect(result.effectiveWorkers).toBe(workerCount);
+      expect(result.batchCount).toBeGreaterThanOrEqual(4);
       expect(result.selectedDevice).toBe("cpu");
       expect(result.samplesPerSecond).toBeGreaterThan(0);
       expect(result.sections.map((section) => section.name)).toEqual(expect.arrayContaining([
         "getObservationMs", "getLegalActionsMs", "encodeObservationMs", "encodeLegalActionsMs",
-        "stepReplayActionMs", "sidecarLoadMs", "workerIpcBatchWaitMs", "nodePythonRoundTripMs",
+        "stepReplayActionMs", "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "nodePythonRoundTripMs",
         "pythonDeserializeMs", "pythonBinaryDecodeMs", "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs",
         "pythonBackwardMs", "pythonOptimizerStepMs",
       ]));

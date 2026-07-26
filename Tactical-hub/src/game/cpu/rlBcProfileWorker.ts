@@ -45,6 +45,7 @@ async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "ru
   await replayRlImitationEpisodePrefix({
     episode: message.episode,
     rngSidecar: cached.sidecar,
+    maxDecisions: message.maxDecisions,
     onEncodedDecision: (decision) => {
       batch.push({ observation: decision.encodedObservation, actions: decision.encodedLegalActions.actions, targetIndex: decision.selectedActionIndex });
     },
