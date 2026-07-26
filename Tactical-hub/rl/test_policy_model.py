@@ -64,6 +64,34 @@ class PolicyModelTest(unittest.TestCase):
         self.assertTrue(torch.equal(masked_mean_pool(encoded, [1, 0]), torch.tensor([2.0, 4.0])))
         self.assertTrue(torch.equal(masked_mean_pool(encoded, [0, 0]), torch.tensor([0.0, 0.0])))
 
+    def test_batched_forward_matches_single_sample_and_masks_padded_actions(self):
+        spec = self.feature_spec()
+        model = TacticalPolicyValueNetwork(spec)
+        first_observation = self.observation()
+        second_observation = self.observation()
+        second_observation["units"] = second_observation["units"][:1]
+        second_observation["unitMask"] = [1]
+        first_actions = [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]
+        second_actions = [[0, 0, 1, 0, 0, 0]]
+
+        first_logits, first_value, _, _ = model(first_observation, first_actions)
+        second_logits, second_value, _, _ = model(second_observation, second_actions)
+        logits, values, states, actions, action_mask = model.forward_batch(
+            [first_observation, second_observation],
+            [first_actions, second_actions],
+        )
+
+        self.assertEqual(tuple(logits.shape), (2, 2))
+        self.assertEqual(tuple(values.shape), (2,))
+        self.assertEqual(tuple(states.shape), (2, 256))
+        self.assertEqual(tuple(actions.shape), (2, 2, 128))
+        self.assertTrue(torch.allclose(logits[0], first_logits, atol=1e-6, rtol=1e-5))
+        self.assertTrue(torch.allclose(logits[1, :1], second_logits, atol=1e-6, rtol=1e-5))
+        self.assertTrue(torch.allclose(values, torch.stack((first_value, second_value)), atol=1e-6, rtol=1e-5))
+        self.assertTrue(torch.equal(action_mask, torch.tensor([[True, True], [True, False]])))
+        self.assertTrue(torch.isneginf(logits[1, 1]))
+        self.assertEqual(int(torch.argmax(logits[1]).item()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
