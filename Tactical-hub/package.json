@@ -15,6 +15,7 @@
     "rl:smoke": "vite-node src/game/cpu/rlSmokeCli.ts",
     "rl:collect": "vite-node src/game/cpu/rlImitationCli.ts",
     "rl:replay": "vite-node src/game/cpu/rlImitationReplayCli.ts",
+    "rl:prepare-sidecars": "vite-node src/game/cpu/rlPrepareSidecarsCli.ts",
     "rl:bc": "vite-node src/game/cpu/rlBehavioralCloningCli.ts"
   },
   "dependencies": {
