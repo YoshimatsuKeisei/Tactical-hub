@@ -3,9 +3,10 @@ import { createInterface, type Interface } from "node:readline";
 import type { EncodedLegalActions } from "./rlActionEncoder";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 import type { EncodedObservation } from "./rlObservationEncoder";
+import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
 
 type PythonResponse =
-  | { type: "ready" }
+  | { type: "ready"; selectedDevice: RlSelectedTorchDevice }
   | { type: "action"; requestId: number; actionIndex: number; value: number }
   | { type: "closed" }
   | { type: "error"; message: string };
@@ -14,6 +15,7 @@ export type PythonPolicyClientOptions = {
   command?: string;
   args?: string[];
   cwd?: string;
+  device?: RlTorchDevice;
 };
 
 export class PythonPolicyClient {
@@ -21,6 +23,7 @@ export class PythonPolicyClient {
   private lines?: Interface;
   private stderr = "";
   private nextRequestId = 1;
+  private selectedDevice?: RlSelectedTorchDevice;
   private readonly waiting: Array<{ resolve: (response: PythonResponse) => void; reject: (error: Error) => void }> = [];
 
   constructor(private readonly options: PythonPolicyClientOptions = {}) {}
@@ -39,7 +42,10 @@ export class PythonPolicyClient {
     const command = this.options.command ?? "python";
     const args = this.options.args ?? ["-u", "-m", "rl.policy_server"];
     this.process = spawn(command, args, { cwd: this.options.cwd ?? process.cwd(), stdio: ["pipe", "pipe", "pipe"] });
-    this.process.stderr.on("data", (chunk) => { this.stderr += String(chunk); });
+    this.process.stderr.on("data", (chunk) => {
+      this.stderr += String(chunk);
+      process.stderr.write(chunk);
+    });
     this.lines = createInterface({ input: this.process.stdout });
     this.lines.on("line", (line) => {
       const pending = this.waiting.shift();
@@ -55,10 +61,12 @@ export class PythonPolicyClient {
       while (this.waiting.length) this.waiting.shift()!.reject(error);
     });
     const responsePromise = this.waitForResponse();
-    this.send({ type: "init", seed, featureSpec });
+    this.send({ type: "init", seed, featureSpec, device: this.options.device ?? "auto" });
     const response = await responsePromise;
     if (response.type === "error") throw new Error(response.message);
     if (response.type !== "ready") throw new Error(`Unexpected Python initialization response: ${response.type}`);
+    if (!["cpu", "cuda"].includes(response.selectedDevice)) throw new Error("Python policy returned an invalid selectedDevice");
+    this.selectedDevice = response.selectedDevice;
   }
 
   async act(observation: EncodedObservation, legalActions: EncodedLegalActions) {
@@ -89,4 +97,8 @@ export class PythonPolicyClient {
   }
 
   getStderr() { return this.stderr; }
+  getSelectedDevice() {
+    if (!this.selectedDevice) throw new Error("Python policy has not reported a selected device");
+    return this.selectedDevice;
+  }
 }

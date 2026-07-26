@@ -9,7 +9,7 @@ const lines = readline.createInterface({
 lines.on("line", (line) => {
   const request = JSON.parse(line);
   if (request.type === "init") {
-    process.stdout.write(`${JSON.stringify({ type: "ready", schemaVersion: request.featureSpec.schemaVersion })}\n`);
+    process.stdout.write(`${JSON.stringify({ type: "ready", schemaVersion: request.featureSpec.schemaVersion, selectedDevice: "cpu" })}\n`);
     return;
   }
   if (request.type === "act") {

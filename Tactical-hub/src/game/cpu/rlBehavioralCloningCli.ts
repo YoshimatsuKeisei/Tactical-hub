@@ -1,5 +1,7 @@
 import { runBehavioralCloning } from "./rlBehavioralCloning";
 import { parseEpisodeRange } from "./rlReplayReader";
+import { formatRlElapsed, formatRlRate } from "./rlProgress";
+import { parseRlTorchDevice } from "./rlTorchDevice";
 
 function stringArg(name: string, fallback: string) {
   const index = process.argv.indexOf(`--${name}`);
@@ -32,5 +34,16 @@ const result = await runBehavioralCloning({
   workerCount: numberArg("workers", 1),
   torchThreads: optionalPositiveIntegerArg("torch-threads"),
   torchInteropThreads: optionalPositiveIntegerArg("torch-interop-threads"),
+  device: parseRlTorchDevice(stringArg("device", "auto")),
+  onProgress: (progress) => {
+    console.error(
+      `[BC] phase=${progress.phase} epoch=${progress.epoch}/${progress.totalEpochs}`
+      + ` | episode=${progress.episode}/${progress.totalEpisodes}`
+      + ` | samples=${progress.processedSamples} batches=${progress.processedBatches}`
+      + ` | recent=${formatRlRate(progress.recentSamplesPerSecond)} samples/s`
+      + ` | elapsed=${formatRlElapsed(progress.elapsedMs)}`
+      + (progress.kind === "heartbeat" ? " | heartbeat" : ""),
+    );
+  },
 });
 console.log(JSON.stringify(result, null, 2));

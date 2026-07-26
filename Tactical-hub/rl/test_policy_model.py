@@ -2,6 +2,7 @@ import unittest
 
 try:
     import torch
+    from rl.device import resolve_torch_device
     from rl.policy_model import TacticalPolicyValueNetwork, masked_mean_pool
 except ModuleNotFoundError:
     torch = None
@@ -91,6 +92,25 @@ class PolicyModelTest(unittest.TestCase):
         self.assertTrue(torch.equal(action_mask, torch.tensor([[True, True], [True, False]])))
         self.assertTrue(torch.isneginf(logits[1, 1]))
         self.assertEqual(int(torch.argmax(logits[1]).item()), 0)
+
+    def test_device_selection_and_all_model_outputs_share_the_model_device(self):
+        expected_auto = "cuda" if torch.cuda.is_available() else "cpu"
+        self.assertEqual(resolve_torch_device("auto").type, expected_auto)
+        self.assertEqual(resolve_torch_device("cpu").type, "cpu")
+        if torch.cuda.is_available():
+            self.assertEqual(resolve_torch_device("cuda").type, "cuda")
+        else:
+            with self.assertRaisesRegex(RuntimeError, "CUDA was requested"):
+                resolve_torch_device("cuda")
+
+        device = resolve_torch_device("auto")
+        model = TacticalPolicyValueNetwork(self.feature_spec()).to(device)
+        logits, value, state, actions, action_mask = model.forward_batch(
+            [self.observation()],
+            [[[1, 0, 0, 0, 0, 0]]],
+        )
+        for tensor in (logits, value, state, actions, action_mask):
+            self.assertEqual(tensor.device.type, device.type)
 
 
 if __name__ == "__main__":

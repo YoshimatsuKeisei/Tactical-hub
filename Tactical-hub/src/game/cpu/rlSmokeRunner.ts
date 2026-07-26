@@ -3,6 +3,7 @@ import { RlEnvironment, type RlObservation } from "./rlEnvironment";
 import { createRlFeatureSpec } from "./rlFeatureSpec";
 import { encodeRlObservation } from "./rlObservationEncoder";
 import { PythonPolicyClient, type PythonPolicyClientOptions } from "./pythonPolicyClient";
+import type { RlSelectedTorchDevice } from "./rlTorchDevice";
 
 export type RlSmokeResult = {
   seed: number;
@@ -19,6 +20,7 @@ export type RlSmokeResult = {
   loserTeamIds: string[];
   endReason: "ongoing" | "victory" | "stopped" | "decision_limit" | "python_error";
   pythonAbnormalExit: boolean;
+  selectedDevice?: RlSelectedTorchDevice;
   error?: string;
 };
 
@@ -53,6 +55,7 @@ export async function runRlSmokeMatch(input: {
   );
   try {
     await client.start(input.seed, createRlFeatureSpec(firstObservation));
+    const selectedDevice = client.getSelectedDevice();
     while (!environment.isTerminal()) {
       if (decisionCount >= (input.maxDecisions ?? 100_000)) {
         const result = environment.getResult();
@@ -64,6 +67,7 @@ export async function runRlSmokeMatch(input: {
           loserTeamIds: result.loserTeamIds,
           endReason: "decision_limit",
           pythonAbnormalExit: false,
+          selectedDevice,
         };
       }
       const actor = environment.getCurrentActorTeamId();
@@ -87,6 +91,7 @@ export async function runRlSmokeMatch(input: {
       loserTeamIds: result.loserTeamIds,
       endReason: result.endReason,
       pythonAbnormalExit: false,
+      selectedDevice,
     };
   } catch (error) {
     const result = environment.getResult();

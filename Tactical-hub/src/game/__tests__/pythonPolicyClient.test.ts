@@ -52,6 +52,7 @@ describe("PythonPolicyClient JSONL bridge", () => {
     });
 
     await client.start(202, input.spec);
+    expect(client.getSelectedDevice()).toBe("cpu");
     const result = await client.act(input.encodedObservation, input.encodedActions);
 
     expect(result.actionIndex).toBe(input.encodedActions.actionKeys.length - 1);
@@ -89,6 +90,7 @@ describe("PythonPolicyClient JSONL bridge", () => {
     expect(result.terminal).toBe(false);
     expect(result.endReason).toBe("decision_limit");
     expect(result.pythonAbnormalExit).toBe(false);
+    expect(result.selectedDevice).toBe("cpu");
     expect(result.turnNumber).toBeGreaterThanOrEqual(1);
     expect(result.teams).toHaveLength(4);
   });

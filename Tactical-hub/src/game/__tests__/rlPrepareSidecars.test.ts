@@ -20,7 +20,12 @@ describe("RL Replay RNG sidecar preparation", () => {
     });
     expect(collection.failedEpisodeCount).toBe(0);
 
-    const parallel = await prepareRlReplaySidecars({ dataPath, workerCount: 4 });
+    const parallelProgress: number[] = [];
+    const parallel = await prepareRlReplaySidecars({
+      dataPath,
+      workerCount: 4,
+      onProgress: (progress) => parallelProgress.push(progress.completed),
+    });
     expect(parallel).toMatchObject({
       requestedWorkerCount: 4,
       effectiveWorkerCount: 4,
@@ -44,5 +49,7 @@ describe("RL Replay RNG sidecar preparation", () => {
     expect(serial.sidecarDirectory).toBe(parallel.sidecarDirectory);
     expect(Number.isFinite(parallel.elapsedMs)).toBe(true);
     expect(Number.isFinite(serial.elapsedMs)).toBe(true);
+    expect(parallelProgress).toHaveLength(4);
+    expect(parallelProgress.at(-1)).toBe(4);
   }, 120_000);
 });

@@ -19,11 +19,20 @@ export type RlPrepareSidecarsResult = {
   sidecarDirectory: string;
   failures: RlPrepareSidecarsFailure[];
 };
+export type RlPrepareSidecarsProgress = {
+  completed: number;
+  total: number;
+  generated: number;
+  reused: number;
+  failed: number;
+  elapsedMs: number;
+};
 
 export async function prepareRlReplaySidecars(input: {
   dataPath: string;
   workerCount?: number;
   workerEntryPath?: string;
+  onProgress?: (progress: RlPrepareSidecarsProgress) => void;
 }): Promise<RlPrepareSidecarsResult> {
   const requestedWorkerCount = input.workerCount ?? 1;
   if (!Number.isInteger(requestedWorkerCount) || requestedWorkerCount <= 0) throw new Error("workerCount must be a positive integer");
@@ -37,6 +46,14 @@ export async function prepareRlReplaySidecars(input: {
   const started = performance.now();
   const completed = new Map<number, boolean>();
   const failures: RlPrepareSidecarsFailure[] = [];
+  const reportProgress = () => input.onProgress?.({
+    completed: completed.size + failures.length,
+    total: tasks.length,
+    generated: [...completed.values()].filter(Boolean).length,
+    reused: [...completed.values()].filter((generated) => !generated).length,
+    failed: failures.length,
+    elapsedMs: performance.now() - started,
+  });
 
   if (effectiveWorkerCount === 1) {
     for (const task of tasks) {
@@ -54,6 +71,7 @@ export async function prepareRlReplaySidecars(input: {
           error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
         });
       }
+      reportProgress();
     }
   } else {
     const workerEntry = input.workerEntryPath ?? fileURLToPath(new URL("./rlPrepareSidecarsWorker.ts", import.meta.url));
@@ -127,6 +145,7 @@ export async function prepareRlReplaySidecars(input: {
             }
             completed.set(raw.episodeNumber, raw.generated);
           }
+          reportProgress();
           assign(worker, workerId);
         });
         worker.on("error", (error) => failRun(new Error(`RNG sidecar worker ${workerId} process error: ${error.message}`)));

@@ -1,4 +1,5 @@
 import { prepareRlReplaySidecars } from "./rlPrepareSidecars";
+import { formatRlElapsed } from "./rlProgress";
 
 function stringArg(name: string, fallback: string) {
   const index = process.argv.indexOf(`--${name}`);
@@ -14,6 +15,13 @@ try {
   const result = await prepareRlReplaySidecars({
     dataPath: stringArg("data", "rl-data/bc100"),
     workerCount: positiveIntegerArg("workers", 1),
+    onProgress: (progress) => {
+      console.error(
+        `[Sidecar] ${progress.completed}/${progress.total}`
+        + ` | generated=${progress.generated} reused=${progress.reused} failed=${progress.failed}`
+        + ` | elapsed=${formatRlElapsed(progress.elapsedMs)}`,
+      );
+    },
   });
   console.log(JSON.stringify(result, null, 2));
   if (result.failedCount > 0) process.exitCode = 1;

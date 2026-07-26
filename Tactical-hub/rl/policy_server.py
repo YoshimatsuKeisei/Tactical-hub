@@ -6,6 +6,7 @@ from typing import Any
 
 try:
     import torch
+    from rl.device import report_torch_device, resolve_torch_device
     from rl.policy_model import TacticalPolicyValueNetwork
 except ModuleNotFoundError as error:
     print(
@@ -28,10 +29,13 @@ def main() -> None:
             message = json.loads(raw_line)
             message_type = message.get("type")
             if message_type == "init":
+                requested_device = message.get("device", "auto")
+                selected_device = resolve_torch_device(requested_device)
+                report_torch_device(requested_device, selected_device)
                 torch.manual_seed(int(message["seed"]))
-                model = TacticalPolicyValueNetwork(message["featureSpec"])
+                model = TacticalPolicyValueNetwork(message["featureSpec"]).to(selected_device)
                 model.eval()
-                send({"type": "ready"})
+                send({"type": "ready", "selectedDevice": selected_device.type})
             elif message_type == "act":
                 if model is None:
                     raise RuntimeError("Policy server has not been initialized")

@@ -10,10 +10,11 @@ from rl.policy_model import TacticalPolicyValueNetwork
 
 
 class BehavioralCloningTrainer:
-    def __init__(self, feature_spec: dict[str, Any], learning_rate: float, seed: int):
+    def __init__(self, feature_spec: dict[str, Any], learning_rate: float, seed: int, device: torch.device | str = "cpu"):
         torch.manual_seed(seed)
         self.feature_spec = feature_spec
-        self.model = TacticalPolicyValueNetwork(feature_spec)
+        self.device = torch.device(device)
+        self.model = TacticalPolicyValueNetwork(feature_spec).to(self.device)
         self.optimizer = torch.optim.Adam(
             [parameter for name, parameter in self.model.named_parameters() if not name.startswith("value_head.")],
             lr=learning_rate,
@@ -32,7 +33,7 @@ class BehavioralCloningTrainer:
                 target = int(sample["targetIndex"])
                 if target < 0 or target >= len(actions):
                     raise ValueError(f"targetIndex {target} is outside {len(actions)} legal actions")
-            targets = torch.tensor([int(sample["targetIndex"]) for sample in samples], dtype=torch.long)
+            targets = torch.tensor([int(sample["targetIndex"]) for sample in samples], dtype=torch.long, device=self.device)
             logits, _, _, _, action_mask = self.model.forward_batch(
                 [sample["observation"] for sample in samples],
                 [sample["actions"] for sample in samples],
@@ -64,7 +65,7 @@ class BehavioralCloningTrainer:
         }, path)
 
     def load(self, path: str) -> None:
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         if checkpoint["featureSpec"] != self.feature_spec:
             raise ValueError("Checkpoint feature spec does not match")
         self.model.load_state_dict(checkpoint["modelStateDict"])

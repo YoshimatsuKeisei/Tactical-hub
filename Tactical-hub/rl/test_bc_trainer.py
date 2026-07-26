@@ -33,6 +33,16 @@ class BehavioralCloningTrainerTest(unittest.TestCase):
             restored.load(checkpoint)
             self.assertEqual(restored.parameter_hash(), after)
 
+            if torch.cuda.is_available():
+                gpu = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=99, device="cuda")
+                gpu.load(checkpoint)
+                self.assertEqual(gpu.parameter_hash(), after)
+                gpu_checkpoint = str(Path(directory) / "model-gpu.pt")
+                gpu.save(gpu_checkpoint, {"test": True})
+                cpu = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=99, device="cpu")
+                cpu.load(gpu_checkpoint)
+                self.assertEqual(cpu.parameter_hash(), after)
+
     def test_vectorized_batch_matches_single_sample_loss_and_ignores_padding(self):
         helper = PolicyModelTest()
         spec = helper.feature_spec()

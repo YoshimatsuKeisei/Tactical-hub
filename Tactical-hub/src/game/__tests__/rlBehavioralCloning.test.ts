@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { runBehavioralCloning } from "../cpu/rlBehavioralCloning";
+import type { BehavioralCloningProgress } from "../cpu/rlBehavioralCloning";
 import { runParallelRlImitationCollection } from "../cpu/rlImitationParallel";
 
 const directory = mkdtempSync(join(tmpdir(), "tactical-hub-bc-smoke-"));
@@ -42,13 +43,21 @@ describe("RL-4B Behavioral Cloning smoke", () => {
       checkpointPath: join(directory, "invalid-interop.pt"),
       torchInteropThreads: 1.5,
     })).rejects.toThrow(/torchInteropThreads must be a positive integer/);
-    const serial = await runBehavioralCloning({ ...common, checkpointPath: serialCheckpoint, workerCount: 1 });
+    const progress: BehavioralCloningProgress[] = [];
+    const serial = await runBehavioralCloning({
+      ...common,
+      checkpointPath: serialCheckpoint,
+      workerCount: 1,
+      device: "auto" as const,
+      onProgress: (event) => progress.push(event),
+    });
     const parallel = await runBehavioralCloning({
       ...common,
       checkpointPath: parallelCheckpoint,
       workerCount: 4,
       torchThreads: 2,
       torchInteropThreads: 1,
+      device: "cpu",
     });
 
     expect(parallel.epochs[0].train.sampleCount).toBe(serial.epochs[0].train.sampleCount);
@@ -56,12 +65,18 @@ describe("RL-4B Behavioral Cloning smoke", () => {
     expect(parallel.test.sampleCount).toBe(serial.test.sampleCount);
     expect(parallel.torchThreads).toBe(2);
     expect(parallel.torchInteropThreads).toBe(1);
+    expect(parallel.selectedDevice).toBe("cpu");
+    expect(["cpu", "cuda"]).toContain(serial.selectedDevice);
     expect(serial.replayCache.generatedSidecarCount).toBe(6);
     expect(serial.replayCache.reusedSidecarCount).toBe(0);
     expect(parallel.replayCache.generatedSidecarCount).toBe(0);
     expect(parallel.replayCache.reusedSidecarCount).toBe(6);
     expect(serial.replayCache.sidecarPreparationMs).toBeGreaterThanOrEqual(0);
     expect(serial.replayCache.directReplayMs).toBeGreaterThanOrEqual(0);
+    expect(progress.filter((event) => event.kind === "episode" && event.phase === "train")).toHaveLength(4);
+    expect(progress.filter((event) => event.kind === "episode" && event.phase === "validation")).toHaveLength(1);
+    expect(progress.filter((event) => event.kind === "episode" && event.phase === "test")).toHaveLength(1);
+    expect(progress.every((event) => event.processedSamples >= 0 && event.processedBatches >= 0)).toBe(true);
     for (const result of [serial, parallel]) {
       expect(result.epochs).toHaveLength(1);
       expect(result.epochs[0].train.sampleCount).toBeGreaterThan(0);

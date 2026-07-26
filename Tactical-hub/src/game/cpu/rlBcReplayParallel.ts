@@ -13,6 +13,7 @@ export async function runParallelBcReplay(input: {
   batchSize: number;
   sidecarDirectory: string;
   onBatch: (samples: BcEncodedSample[]) => void | Promise<void>;
+  onEpisodeCompleted?: (completed: number, total: number) => void;
   workerEntryPath?: string;
 }) {
   if (!input.episodes.length) throw new Error("Parallel BC replay requires at least one episode");
@@ -140,6 +141,7 @@ export async function runParallelBcReplay(input: {
           sidecarPreparationMs: raw.sidecarPreparationMs,
           directReplayMs: raw.directReplayMs,
         });
+        input.onEpisodeCompleted?.(completed.size, input.episodes.length);
         assign(worker, workerId);
       });
       worker.on("error", (error) => fail(new Error(`BC replay worker ${workerId} process error: ${error.message}`)));

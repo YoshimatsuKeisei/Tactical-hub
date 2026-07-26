@@ -7,6 +7,7 @@ from typing import Any
 try:
     import torch
     from rl.bc_trainer import BehavioralCloningTrainer
+    from rl.device import report_torch_device, resolve_torch_device
 except ModuleNotFoundError as error:
     print(f"RL Python dependency is missing: {error}", file=sys.stderr)
     raise SystemExit(3)
@@ -24,6 +25,9 @@ def main() -> None:
             message = json.loads(line)
             message_type = message.get("type")
             if message_type == "init":
+                requested_device = message.get("device", "auto")
+                selected_device = resolve_torch_device(requested_device)
+                report_torch_device(requested_device, selected_device)
                 torch_threads = message.get("torchThreads")
                 torch_interop_threads = message.get("torchInteropThreads")
                 if torch_threads is not None:
@@ -38,11 +42,13 @@ def main() -> None:
                     message["featureSpec"],
                     float(message["learningRate"]),
                     int(message["seed"]),
+                    selected_device,
                 )
                 send({
                     "type": "ready",
                     "torchThreads": torch.get_num_threads(),
                     "torchInteropThreads": torch.get_num_interop_threads(),
+                    "selectedDevice": selected_device.type,
                 })
             elif message_type == "batch":
                 if trainer is None:

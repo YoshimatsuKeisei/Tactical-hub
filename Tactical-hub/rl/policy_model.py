@@ -29,10 +29,10 @@ def mlp(input_width: int, hidden_width: int, output_width: int) -> nn.Sequential
     )
 
 
-def rows(value: list[list[float]], width: int) -> torch.Tensor:
+def rows(value: list[list[float]], width: int, device: torch.device) -> torch.Tensor:
     if not value:
-        return torch.empty((0, width), dtype=torch.float32)
-    return torch.tensor(value, dtype=torch.float32)
+        return torch.empty((0, width), dtype=torch.float32, device=device)
+    return torch.tensor(value, dtype=torch.float32, device=device)
 
 
 def mean_pool(encoded: torch.Tensor) -> torch.Tensor:
@@ -52,24 +52,25 @@ def masked_mean_pool(encoded: torch.Tensor, mask_value: list[float]) -> torch.Te
 def padded_rows(
     values: list[list[list[float]]],
     width: int,
+    device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch_size = len(values)
     max_rows = max((len(value) for value in values), default=0)
-    tensor = torch.zeros((batch_size, max_rows, width), dtype=torch.float32)
-    mask = torch.zeros((batch_size, max_rows), dtype=torch.bool)
+    tensor = torch.zeros((batch_size, max_rows, width), dtype=torch.float32, device=device)
+    mask = torch.zeros((batch_size, max_rows), dtype=torch.bool, device=device)
     for batch_index, value in enumerate(values):
         if value:
-            row_tensor = torch.tensor(value, dtype=torch.float32)
+            row_tensor = torch.tensor(value, dtype=torch.float32, device=device)
             tensor[batch_index, :len(value)] = row_tensor
             mask[batch_index, :len(value)] = True
     return tensor, mask
 
 
-def padded_masks(values: list[list[float]], max_rows: int) -> torch.Tensor:
-    mask = torch.zeros((len(values), max_rows), dtype=torch.bool)
+def padded_masks(values: list[list[float]], max_rows: int, device: torch.device) -> torch.Tensor:
+    mask = torch.zeros((len(values), max_rows), dtype=torch.bool, device=device)
     for batch_index, value in enumerate(values):
         if value:
-            mask[batch_index, :len(value)] = torch.tensor(value, dtype=torch.bool)
+            mask[batch_index, :len(value)] = torch.tensor(value, dtype=torch.bool, device=device)
     return mask
 
 
@@ -126,25 +127,29 @@ class TacticalPolicyValueNetwork(nn.Module):
             nn.Linear(128, 1),
         )
 
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
+
     def encode_state(self, observation: dict[str, Any]) -> torch.Tensor:
         strategic = observation["strategicState"]
         embeddings = [
-            self.global_encoder(torch.tensor(observation["global"], dtype=torch.float32)),
-            masked_mean_pool(self.team_encoder(rows(observation["teams"], self.feature_spec["teamWidth"])), observation["teamMask"]),
-            masked_mean_pool(self.unit_encoder(rows(observation["units"], self.feature_spec["unitWidth"])), observation["unitMask"]),
-            mean_pool(self.map_encoder(rows([tile for row in observation["map"] for tile in row], self.feature_spec["mapTileWidth"]))),
-            masked_mean_pool(self.base_encoder(rows(observation["bases"], self.feature_spec["baseWidth"])), observation["baseMask"]),
-            masked_mean_pool(self.construction_encoder(rows(observation["constructions"], self.feature_spec["constructionWidth"])), observation["constructionMask"]),
-            self.strategic_global_encoder(torch.tensor(strategic["global"], dtype=torch.float32)),
+            self.global_encoder(torch.tensor(observation["global"], dtype=torch.float32, device=self.device)),
+            masked_mean_pool(self.team_encoder(rows(observation["teams"], self.feature_spec["teamWidth"], self.device)), observation["teamMask"]),
+            masked_mean_pool(self.unit_encoder(rows(observation["units"], self.feature_spec["unitWidth"], self.device)), observation["unitMask"]),
+            mean_pool(self.map_encoder(rows([tile for row in observation["map"] for tile in row], self.feature_spec["mapTileWidth"], self.device))),
+            masked_mean_pool(self.base_encoder(rows(observation["bases"], self.feature_spec["baseWidth"], self.device)), observation["baseMask"]),
+            masked_mean_pool(self.construction_encoder(rows(observation["constructions"], self.feature_spec["constructionWidth"], self.device)), observation["constructionMask"]),
+            self.strategic_global_encoder(torch.tensor(strategic["global"], dtype=torch.float32, device=self.device)),
         ]
         embeddings.extend(
-            mean_pool(self.strategic_encoders[name](rows(strategic[name], self.feature_spec["strategicTableRowWidths"][name])))
+            mean_pool(self.strategic_encoders[name](rows(strategic[name], self.feature_spec["strategicTableRowWidths"][name], self.device)))
             for name in STRATEGIC_TABLES
         )
         return self.state_encoder(torch.cat(embeddings, dim=0))
 
     def encode_actions(self, action_rows: list[list[float]]) -> torch.Tensor:
-        return self.action_encoder(rows(action_rows, self.feature_spec["actionFeatureWidth"]))
+        return self.action_encoder(rows(action_rows, self.feature_spec["actionFeatureWidth"], self.device))
 
     def encode_state_batch(self, observations: list[dict[str, Any]]) -> torch.Tensor:
         if not observations:
@@ -156,8 +161,8 @@ class TacticalPolicyValueNetwork(nn.Module):
             width: int,
             encoder: nn.Module,
         ) -> torch.Tensor:
-            table, presence_mask = padded_rows([observation[key] for observation in observations], width)
-            explicit_mask = padded_masks([observation[mask_key] for observation in observations], table.shape[1])
+            table, presence_mask = padded_rows([observation[key] for observation in observations], width, self.device)
+            explicit_mask = padded_masks([observation[mask_key] for observation in observations], table.shape[1], self.device)
             return batched_masked_mean_pool(encoder(table), presence_mask & explicit_mask)
 
         team_embedding = encode_masked_table("teams", "teamMask", self.feature_spec["teamWidth"], self.team_encoder)
@@ -170,9 +175,9 @@ class TacticalPolicyValueNetwork(nn.Module):
             self.construction_encoder,
         )
         map_rows = [[tile for row in observation["map"] for tile in row] for observation in observations]
-        map_table, map_mask = padded_rows(map_rows, self.feature_spec["mapTileWidth"])
+        map_table, map_mask = padded_rows(map_rows, self.feature_spec["mapTileWidth"], self.device)
         embeddings = [
-            self.global_encoder(torch.tensor([observation["global"] for observation in observations], dtype=torch.float32)),
+            self.global_encoder(torch.tensor([observation["global"] for observation in observations], dtype=torch.float32, device=self.device)),
             team_embedding,
             unit_embedding,
             batched_masked_mean_pool(self.map_encoder(map_table), map_mask),
@@ -181,12 +186,14 @@ class TacticalPolicyValueNetwork(nn.Module):
             self.strategic_global_encoder(torch.tensor(
                 [observation["strategicState"]["global"] for observation in observations],
                 dtype=torch.float32,
+                device=self.device,
             )),
         ]
         for name in STRATEGIC_TABLES:
             table, mask = padded_rows(
                 [observation["strategicState"][name] for observation in observations],
                 self.feature_spec["strategicTableRowWidths"][name],
+                self.device,
             )
             embeddings.append(batched_masked_mean_pool(self.strategic_encoders[name](table), mask))
         return self.state_encoder(torch.cat(embeddings, dim=1))
@@ -195,7 +202,7 @@ class TacticalPolicyValueNetwork(nn.Module):
         self,
         action_rows_batch: list[list[list[float]]],
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        action_rows, action_mask = padded_rows(action_rows_batch, self.feature_spec["actionFeatureWidth"])
+        action_rows, action_mask = padded_rows(action_rows_batch, self.feature_spec["actionFeatureWidth"], self.device)
         return self.action_encoder(action_rows), action_mask
 
     def forward_batch(

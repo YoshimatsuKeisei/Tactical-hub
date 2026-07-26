@@ -3,9 +3,10 @@ import { createInterface, type Interface } from "node:readline";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 import type { RlReplayEncodedDecision } from "./rlImitationCollector";
 import { RL_PROJECT_ROOT } from "./rlProjectPaths";
+import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
 
 type Response =
-  | { type: "ready"; torchThreads: number; torchInteropThreads: number }
+  | { type: "ready"; torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice }
   | { type: "closed"; requestId?: number }
   | { type: "batchResult"; requestId: number; lossSum: number; correct: number; count: number }
   | { type: "saved" | "loaded"; requestId: number }
@@ -23,7 +24,7 @@ export class PythonBcTrainerClient {
   private lines?: Interface;
   private stderr = "";
   private requestId = 1;
-  private appliedThreads?: { torchThreads: number; torchInteropThreads: number };
+  private appliedSettings?: { torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice };
   private readonly waiting: Array<{ resolve: (value: Response) => void; reject: (error: Error) => void }> = [];
 
   private wait() {
@@ -48,12 +49,16 @@ export class PythonBcTrainerClient {
     command?: string;
     torchThreads?: number;
     torchInteropThreads?: number;
+    device?: RlTorchDevice;
   }) {
     this.child = spawn(input.command ?? "python", ["-u", "-m", "rl.bc_server"], {
       cwd: RL_PROJECT_ROOT,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    this.child.stderr.on("data", (chunk) => { this.stderr += String(chunk); });
+    this.child.stderr.on("data", (chunk) => {
+      this.stderr += String(chunk);
+      process.stderr.write(chunk);
+    });
     this.lines = createInterface({ input: this.child.stdout });
     this.lines.on("line", (line) => {
       const pending = this.waiting.shift();
@@ -75,14 +80,17 @@ export class PythonBcTrainerClient {
       seed: input.seed,
       torchThreads: input.torchThreads,
       torchInteropThreads: input.torchInteropThreads,
+      device: input.device ?? "auto",
     });
     if (response.type !== "ready") throw new Error(`Unexpected BC init response: ${response.type}`);
-    if (!Number.isInteger(response.torchThreads) || !Number.isInteger(response.torchInteropThreads)) {
+    if (!Number.isInteger(response.torchThreads) || !Number.isInteger(response.torchInteropThreads)
+      || !["cpu", "cuda"].includes(response.selectedDevice)) {
       throw new Error("Python BC trainer returned invalid thread settings");
     }
-    this.appliedThreads = {
+    this.appliedSettings = {
       torchThreads: response.torchThreads,
       torchInteropThreads: response.torchInteropThreads,
+      selectedDevice: response.selectedDevice,
     };
   }
 
@@ -119,7 +127,7 @@ export class PythonBcTrainerClient {
   }
 
   getAppliedThreads() {
-    if (!this.appliedThreads) throw new Error("Python BC trainer has not reported thread settings");
-    return { ...this.appliedThreads };
+    if (!this.appliedSettings) throw new Error("Python BC trainer has not reported settings");
+    return { ...this.appliedSettings };
   }
 }

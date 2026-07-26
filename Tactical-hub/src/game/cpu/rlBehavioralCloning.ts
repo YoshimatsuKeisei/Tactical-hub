@@ -5,6 +5,7 @@ import { PythonBcTrainerClient, type BcEncodedSample } from "./pythonBcTrainerCl
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 import { readRlImitationEpisodes, type EpisodeRange } from "./rlReplayReader";
 import { runParallelBcReplay, type NumberedReplayEpisode } from "./rlBcReplayParallel";
+import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
 import { getDefaultRlReplaySidecarDirectory, loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
 
 export type BcMetrics = {
@@ -19,6 +20,18 @@ export type BcEpochResult = {
   train: BcMetrics;
   validation: BcMetrics;
 };
+export type BehavioralCloningProgress = {
+  kind: "episode" | "heartbeat";
+  phase: "train" | "validation" | "test";
+  epoch: number;
+  totalEpochs: number;
+  episode: number;
+  totalEpisodes: number;
+  processedSamples: number;
+  processedBatches: number;
+  elapsedMs: number;
+  recentSamplesPerSecond: number;
+};
 
 export type BehavioralCloningResult = {
   epochs: BcEpochResult[];
@@ -31,6 +44,7 @@ export type BehavioralCloningResult = {
   reloadedParameterHash: string;
   torchThreads: number;
   torchInteropThreads: number;
+  selectedDevice: RlSelectedTorchDevice;
   replayCache: {
     generatedSidecarCount: number;
     reusedSidecarCount: number;
@@ -59,10 +73,13 @@ export async function runBehavioralCloning(input: {
   workerCount?: number;
   torchThreads?: number;
   torchInteropThreads?: number;
+  device?: RlTorchDevice;
+  onProgress?: (progress: BehavioralCloningProgress) => void;
 }): Promise<BehavioralCloningResult> {
   if (!Number.isInteger(input.epochs) || input.epochs <= 0) throw new Error("epochs must be positive");
   if (!Number.isInteger(input.batchSize) || input.batchSize <= 0) throw new Error("batchSize must be positive");
   if (!(input.learningRate > 0) || !Number.isFinite(input.learningRate)) throw new Error("learningRate must be finite and positive");
+  if (input.device !== undefined && !["auto", "cpu", "cuda"].includes(input.device)) throw new Error("device must be auto, cpu, or cuda");
   const workerCount = input.workerCount ?? 1;
   if (!Number.isInteger(workerCount) || workerCount <= 0) throw new Error("workerCount must be positive");
   for (const [name, value] of [["torchThreads", input.torchThreads], ["torchInteropThreads", input.torchInteropThreads]] as const) {
@@ -91,6 +108,7 @@ export async function runBehavioralCloning(input: {
         command: input.pythonCommand,
         torchThreads: input.torchThreads,
         torchInteropThreads: input.torchInteropThreads,
+        device: input.device ?? "auto",
       });
       initialParameterHash = await client.parameterHash();
     } else if (JSON.stringify(featureSpec) !== JSON.stringify(candidate)) {
@@ -98,9 +116,39 @@ export async function runBehavioralCloning(input: {
     }
   };
 
-  const runSplit = async (range: EpisodeRange, train: boolean): Promise<BcMetrics> => {
+  const runSplit = async (
+    range: EpisodeRange,
+    train: boolean,
+    phase: BehavioralCloningProgress["phase"],
+    epoch: number,
+  ): Promise<BcMetrics> => {
     const started = performance.now();
     const aggregate: SplitAccumulator = { lossSum: 0, correct: 0, count: 0 };
+    const totalEpisodes = range.to - range.from + 1;
+    let completedEpisodes = 0;
+    let processedBatches = 0;
+    let previousProgressMs = started;
+    let previousProgressSamples = 0;
+    const reportProgress = (kind: BehavioralCloningProgress["kind"]) => {
+      const now = performance.now();
+      const seconds = Math.max((now - previousProgressMs) / 1000, 0.001);
+      input.onProgress?.({
+        kind,
+        phase,
+        epoch,
+        totalEpochs: input.epochs,
+        episode: Math.min(totalEpisodes, kind === "episode" ? completedEpisodes : completedEpisodes + 1),
+        totalEpisodes,
+        processedSamples: aggregate.count,
+        processedBatches,
+        elapsedMs: now - started,
+        recentSamplesPerSecond: (aggregate.count - previousProgressSamples) / seconds,
+      });
+      previousProgressMs = now;
+      previousProgressSamples = aggregate.count;
+    };
+    const heartbeat = setInterval(() => reportProgress("heartbeat"), 10_000);
+    heartbeat.unref();
     let batch: BcEncodedSample[] = [];
     const flush = async () => {
       if (!batch.length) return;
@@ -108,67 +156,79 @@ export async function runBehavioralCloning(input: {
       aggregate.lossSum += result.lossSum;
       aggregate.correct += result.correct;
       aggregate.count += result.count;
+      processedBatches += 1;
       batch = [];
     };
     let episodeCount = 0;
-    if (workerCount === 1) {
-      for await (const { episode } of readRlImitationEpisodes(input.dataPath, range)) {
-        episodeCount += 1;
-        const sidecarStarted = performance.now();
-        const cached = await loadOrCreateRlReplayRngSidecar(
-          episode,
-          sidecarDirectory,
-          () => generateRlReplayRngSidecar(episode),
-        );
-        replayCache.sidecarPreparationMs += performance.now() - sidecarStarted;
-        replayCache[cached.generated ? "generatedSidecarCount" : "reusedSidecarCount"] += 1;
-        const replayTiming = { directReplayMs: 0 };
-        await replayHeuristicImitationEpisode({
-          episode,
-          rngSidecar: cached.sidecar,
-          timing: replayTiming,
-          onFeatureSpec: ensureStarted,
-          onEncodedDecision: async (decision) => {
-            if (decision.encodedLegalActions.actionKeys[decision.selectedActionIndex] !== decision.record.selectedActionKey) {
-              throw new Error(`Replay target index mismatch for ${decision.record.selectedActionKey}`);
-            }
-            batch.push({
-              observation: decision.encodedObservation,
-              actions: decision.encodedLegalActions.actions,
-              targetIndex: decision.selectedActionIndex,
-            });
-            if (batch.length >= input.batchSize) await flush();
-          },
-        });
-        replayCache.directReplayMs += replayTiming.directReplayMs;
-      }
-      await flush();
-    } else {
-      const episodes: NumberedReplayEpisode[] = [];
-      for await (const item of readRlImitationEpisodes(input.dataPath, range)) episodes.push(item);
-      episodeCount = episodes.length;
-      if (episodes.length) {
-        await ensureStarted(getRlImitationEpisodeFeatureSpec(episodes[0].episode));
-        const replay = await runParallelBcReplay({
-          episodes,
-          workerCount,
-          batchSize: input.batchSize,
-          sidecarDirectory,
-          onBatch: async (samples) => {
-            const result = await client.batch(samples, train);
-            aggregate.lossSum += result.lossSum;
-            aggregate.correct += result.correct;
-            aggregate.count += result.count;
-          },
-        });
-        if (replay.sampleCount !== aggregate.count) {
-          throw new Error(`Parallel BC replay sample count mismatch: ${replay.sampleCount}/${aggregate.count}`);
+    try {
+      if (workerCount === 1) {
+        for await (const { episode } of readRlImitationEpisodes(input.dataPath, range)) {
+          episodeCount += 1;
+          const sidecarStarted = performance.now();
+          const cached = await loadOrCreateRlReplayRngSidecar(
+            episode,
+            sidecarDirectory,
+            () => generateRlReplayRngSidecar(episode),
+          );
+          replayCache.sidecarPreparationMs += performance.now() - sidecarStarted;
+          replayCache[cached.generated ? "generatedSidecarCount" : "reusedSidecarCount"] += 1;
+          const replayTiming = { directReplayMs: 0 };
+          await replayHeuristicImitationEpisode({
+            episode,
+            rngSidecar: cached.sidecar,
+            timing: replayTiming,
+            onFeatureSpec: ensureStarted,
+            onEncodedDecision: async (decision) => {
+              if (decision.encodedLegalActions.actionKeys[decision.selectedActionIndex] !== decision.record.selectedActionKey) {
+                throw new Error(`Replay target index mismatch for ${decision.record.selectedActionKey}`);
+              }
+              batch.push({
+                observation: decision.encodedObservation,
+                actions: decision.encodedLegalActions.actions,
+                targetIndex: decision.selectedActionIndex,
+              });
+              if (batch.length >= input.batchSize) await flush();
+            },
+          });
+          replayCache.directReplayMs += replayTiming.directReplayMs;
+          completedEpisodes += 1;
+          reportProgress("episode");
         }
-        replayCache.generatedSidecarCount += replay.generatedSidecarCount;
-        replayCache.reusedSidecarCount += replay.reusedSidecarCount;
-        replayCache.sidecarPreparationMs += replay.sidecarPreparationMs;
-        replayCache.directReplayMs += replay.directReplayMs;
+        await flush();
+      } else {
+        const episodes: NumberedReplayEpisode[] = [];
+        for await (const item of readRlImitationEpisodes(input.dataPath, range)) episodes.push(item);
+        episodeCount = episodes.length;
+        if (episodes.length) {
+          await ensureStarted(getRlImitationEpisodeFeatureSpec(episodes[0].episode));
+          const replay = await runParallelBcReplay({
+            episodes,
+            workerCount,
+            batchSize: input.batchSize,
+            sidecarDirectory,
+            onBatch: async (samples) => {
+              const result = await client.batch(samples, train);
+              aggregate.lossSum += result.lossSum;
+              aggregate.correct += result.correct;
+              aggregate.count += result.count;
+              processedBatches += 1;
+            },
+            onEpisodeCompleted: (completed) => {
+              completedEpisodes = completed;
+              reportProgress("episode");
+            },
+          });
+          if (replay.sampleCount !== aggregate.count) {
+            throw new Error(`Parallel BC replay sample count mismatch: ${replay.sampleCount}/${aggregate.count}`);
+          }
+          replayCache.generatedSidecarCount += replay.generatedSidecarCount;
+          replayCache.reusedSidecarCount += replay.reusedSidecarCount;
+          replayCache.sidecarPreparationMs += replay.sidecarPreparationMs;
+          replayCache.directReplayMs += replay.directReplayMs;
+        }
       }
+    } finally {
+      clearInterval(heartbeat);
     }
     if (!episodeCount) throw new Error(`No replay episodes found in range ${range.from}-${range.to}`);
     if (!aggregate.count) throw new Error(`No decisions found in range ${range.from}-${range.to}`);
@@ -187,8 +247,8 @@ export async function runBehavioralCloning(input: {
     let bestEpoch = 0;
     let bestValidationAccuracy = Number.NEGATIVE_INFINITY;
     for (let epoch = 1; epoch <= input.epochs; epoch += 1) {
-      const train = await runSplit(input.trainRange, true);
-      const validation = await runSplit(input.validationRange, false);
+      const train = await runSplit(input.trainRange, true, "train", epoch);
+      const validation = await runSplit(input.validationRange, false, "validation", epoch);
       epochs.push({ epoch, train, validation });
       if (validation.accuracy > bestValidationAccuracy) {
         bestEpoch = epoch;
@@ -199,7 +259,7 @@ export async function runBehavioralCloning(input: {
     const trainedParameterHash = await client.parameterHash();
     await client.load(checkpointPath);
     const reloadedParameterHash = await client.parameterHash();
-    const test = await runSplit(input.testRange, false);
+    const test = await runSplit(input.testRange, false, "test", input.epochs);
     const appliedThreads = client.getAppliedThreads();
     return {
       epochs,
