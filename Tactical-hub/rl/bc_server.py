@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from typing import Any
 
 try:
@@ -22,7 +23,9 @@ def main() -> None:
     trainer: BehavioralCloningTrainer | None = None
     for line in sys.stdin:
         try:
+            deserialize_started = time.perf_counter()
             message = json.loads(line)
+            deserialize_ms = (time.perf_counter() - deserialize_started) * 1000
             message_type = message.get("type")
             if message_type == "init":
                 requested_device = message.get("device", "auto")
@@ -55,6 +58,16 @@ def main() -> None:
                     raise RuntimeError("Trainer is not initialized")
                 metrics = trainer.process_batch(message["samples"], bool(message["train"]))
                 send({"type": "batchResult", "requestId": message["requestId"], **metrics})
+            elif message_type == "profileBatch":
+                if trainer is None:
+                    raise RuntimeError("Trainer is not initialized")
+                metrics = trainer.process_profile_batch(message["samples"])
+                send({
+                    "type": "profileBatchResult",
+                    "requestId": message["requestId"],
+                    "deserializeMs": deserialize_ms,
+                    **metrics,
+                })
             elif message_type == "save":
                 if trainer is None:
                     raise RuntimeError("Trainer is not initialized")

@@ -79,6 +79,20 @@ class BehavioralCloningTrainerTest(unittest.TestCase):
         )
         self.assertEqual(metrics["count"], 2)
 
+    def test_profile_batch_reports_finite_stage_timings(self):
+        helper = PolicyModelTest()
+        trainer = BehavioralCloningTrainer(helper.feature_spec(), learning_rate=1e-3, seed=41, device="cpu")
+        result = trainer.process_profile_batch([{
+            "observation": helper.observation(),
+            "actions": [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]],
+            "targetIndex": 1,
+        }])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(set(result["timings"]), {
+            "tensorPreparationMs", "forwardMs", "lossMs", "backwardMs", "optimizerStepMs",
+        })
+        self.assertTrue(all(torch.isfinite(torch.tensor(value)) and value >= 0 for value in result["timings"].values()))
+
 
 if __name__ == "__main__":
     unittest.main()

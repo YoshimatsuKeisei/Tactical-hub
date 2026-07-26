@@ -61,6 +61,13 @@ export type RlReplayEncodedDecision = {
   encodedLegalActions: EncodedLegalActions;
   selectedActionIndex: number;
 };
+export type RlReplayPrefixProfile = {
+  getObservationMs: number;
+  getLegalActionsMs: number;
+  encodeObservationMs: number;
+  encodeLegalActionsMs: number;
+  stepReplayActionMs: number;
+};
 
 export type RlImitationEpisodeResult = RlImitationEpisodeEnd & {
   seed: number;
@@ -301,6 +308,55 @@ export async function generateRlReplayRngSidecar(episode: RlImitationEpisode): P
     decisionCount: decisions.length,
     rngStatesAfterPolicy,
   };
+}
+
+export async function replayRlImitationEpisodePrefix(input: {
+  episode: RlImitationEpisode;
+  rngSidecar: RlReplayRngSidecar;
+  maxDecisions?: number;
+  onEncodedDecision: (decision: RlReplayEncodedDecision) => void | Promise<void>;
+  onDecisionCompleted?: (profile: RlReplayPrefixProfile) => void | Promise<void>;
+}): Promise<{ decisionCount: number; profile: RlReplayPrefixProfile }> {
+  validateRlReplayRngSidecar(input.episode, input.rngSidecar);
+  const environment = new RlEnvironment();
+  const initial = environment.reset(input.episode.header.seed, input.episode.header.participantCount);
+  if (initial.config.mapId !== input.episode.header.mapId || JSON.stringify(initial.config) !== JSON.stringify(input.episode.header.gameConfig)) {
+    throw new Error("Replay initial game settings do not match the saved episode");
+  }
+  const profile: RlReplayPrefixProfile = {
+    getObservationMs: 0,
+    getLegalActionsMs: 0,
+    encodeObservationMs: 0,
+    encodeLegalActionsMs: 0,
+    stepReplayActionMs: 0,
+  };
+  const limit = Math.min(input.maxDecisions ?? input.episode.decisions.length, input.episode.decisions.length);
+  for (let index = 0; index < limit; index += 1) {
+    const record = input.episode.decisions[index];
+    const actorTeamId = environment.getCurrentActorTeamId();
+    if (actorTeamId !== record.teamId) throw new Error(`Replay actor mismatch: expected ${record.teamId}, received ${actorTeamId ?? "none"}`);
+    let started = performance.now();
+    const observation = environment.getObservation(actorTeamId);
+    profile.getObservationMs += performance.now() - started;
+    if (observation.turnNumber !== record.turnNumber) throw new Error(`Replay turn mismatch: expected ${record.turnNumber}, received ${observation.turnNumber}`);
+    started = performance.now();
+    const legalActions = environment.getLegalActions(actorTeamId);
+    profile.getLegalActionsMs += performance.now() - started;
+    const selectedActionIndex = legalActions.findIndex((action) => action.actionKey === record.selectedActionKey);
+    if (selectedActionIndex < 0) throw new Error(`Replay action is not legal at decision ${record.selectedActionKey}`);
+    started = performance.now();
+    const encodedObservation = encodeRlObservation(observation);
+    profile.encodeObservationMs += performance.now() - started;
+    started = performance.now();
+    const encodedLegalActions = encodeRlLegalActions(observation, legalActions);
+    profile.encodeLegalActionsMs += performance.now() - started;
+    await input.onEncodedDecision({ record, encodedObservation, encodedLegalActions, selectedActionIndex });
+    started = performance.now();
+    environment.stepReplayAction(record.selectedActionKey, input.rngSidecar.rngStatesAfterPolicy[index]);
+    profile.stepReplayActionMs += performance.now() - started;
+    await input.onDecisionCompleted?.({ ...profile });
+  }
+  return { decisionCount: limit, profile };
 }
 
 export function parseRlImitationReplayRecords(records: readonly RlImitationReplayRecord[]): RlImitationEpisode[] {

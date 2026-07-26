@@ -9,6 +9,15 @@ type Response =
   | { type: "ready"; torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice }
   | { type: "closed"; requestId?: number }
   | { type: "batchResult"; requestId: number; lossSum: number; correct: number; count: number }
+  | {
+    type: "profileBatchResult";
+    requestId: number;
+    lossSum: number;
+    correct: number;
+    count: number;
+    deserializeMs: number;
+    timings: Record<"tensorPreparationMs" | "forwardMs" | "lossMs" | "backwardMs" | "optimizerStepMs", number>;
+  }
   | { type: "saved" | "loaded"; requestId: number }
   | { type: "parameterHash"; requestId: number; hash: string }
   | { type: "error"; message: string };
@@ -100,6 +109,17 @@ export class PythonBcTrainerClient {
     if (response.type !== "batchResult" || response.requestId !== requestId) throw new Error("Unexpected BC batch response");
     if (![response.lossSum, response.correct, response.count].every(Number.isFinite)) throw new Error("Non-finite BC metrics");
     return response;
+  }
+
+  async profileBatch(samples: BcEncodedSample[]) {
+    const requestId = this.requestId++;
+    const started = performance.now();
+    const response = await this.request({ type: "profileBatch", requestId, samples });
+    const roundTripMs = performance.now() - started;
+    if (response.type !== "profileBatchResult" || response.requestId !== requestId) throw new Error("Unexpected BC profile batch response");
+    const numeric = [response.lossSum, response.correct, response.count, response.deserializeMs, ...Object.values(response.timings)];
+    if (!numeric.every(Number.isFinite)) throw new Error("Non-finite BC profile metrics");
+    return { ...response, roundTripMs };
   }
 
   async save(path: string, metadata: unknown) {

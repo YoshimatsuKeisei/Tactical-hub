@@ -154,47 +154,55 @@ class TacticalPolicyValueNetwork(nn.Module):
     def encode_state_batch(self, observations: list[dict[str, Any]]) -> torch.Tensor:
         if not observations:
             raise ValueError("Cannot encode an empty observation batch")
+        return self.encode_prepared_state_batch(self.prepare_observation_batch(observations))
 
-        def encode_masked_table(
-            key: str,
-            mask_key: str,
-            width: int,
-            encoder: nn.Module,
-        ) -> torch.Tensor:
-            table, presence_mask = padded_rows([observation[key] for observation in observations], width, self.device)
-            explicit_mask = padded_masks([observation[mask_key] for observation in observations], table.shape[1], self.device)
-            return batched_masked_mean_pool(encoder(table), presence_mask & explicit_mask)
-
-        team_embedding = encode_masked_table("teams", "teamMask", self.feature_spec["teamWidth"], self.team_encoder)
-        unit_embedding = encode_masked_table("units", "unitMask", self.feature_spec["unitWidth"], self.unit_encoder)
-        base_embedding = encode_masked_table("bases", "baseMask", self.feature_spec["baseWidth"], self.base_encoder)
-        construction_embedding = encode_masked_table(
-            "constructions",
-            "constructionMask",
-            self.feature_spec["constructionWidth"],
-            self.construction_encoder,
-        )
-        map_rows = [[tile for row in observation["map"] for tile in row] for observation in observations]
-        map_table, map_mask = padded_rows(map_rows, self.feature_spec["mapTileWidth"], self.device)
-        embeddings = [
-            self.global_encoder(torch.tensor([observation["global"] for observation in observations], dtype=torch.float32, device=self.device)),
-            team_embedding,
-            unit_embedding,
-            batched_masked_mean_pool(self.map_encoder(map_table), map_mask),
-            base_embedding,
-            construction_embedding,
-            self.strategic_global_encoder(torch.tensor(
+    def prepare_observation_batch(self, observations: list[dict[str, Any]]) -> dict[str, Any]:
+        prepared: dict[str, Any] = {
+            "global": torch.tensor([observation["global"] for observation in observations], dtype=torch.float32, device=self.device),
+            "strategicGlobal": torch.tensor(
                 [observation["strategicState"]["global"] for observation in observations],
                 dtype=torch.float32,
                 device=self.device,
-            )),
-        ]
+            ),
+            "masked": {},
+            "strategic": {},
+        }
+        for key, mask_key, width in (
+            ("teams", "teamMask", self.feature_spec["teamWidth"]),
+            ("units", "unitMask", self.feature_spec["unitWidth"]),
+            ("bases", "baseMask", self.feature_spec["baseWidth"]),
+            ("constructions", "constructionMask", self.feature_spec["constructionWidth"]),
+        ):
+            table, presence = padded_rows([observation[key] for observation in observations], width, self.device)
+            explicit = padded_masks([observation[mask_key] for observation in observations], table.shape[1], self.device)
+            prepared["masked"][key] = (table, presence & explicit)
+        map_rows = [[tile for row in observation["map"] for tile in row] for observation in observations]
+        prepared["map"] = padded_rows(map_rows, self.feature_spec["mapTileWidth"], self.device)
         for name in STRATEGIC_TABLES:
-            table, mask = padded_rows(
+            prepared["strategic"][name] = padded_rows(
                 [observation["strategicState"][name] for observation in observations],
                 self.feature_spec["strategicTableRowWidths"][name],
                 self.device,
             )
+        return prepared
+
+    def encode_prepared_state_batch(self, prepared: dict[str, Any]) -> torch.Tensor:
+        team_table, team_mask = prepared["masked"]["teams"]
+        unit_table, unit_mask = prepared["masked"]["units"]
+        base_table, base_mask = prepared["masked"]["bases"]
+        construction_table, construction_mask = prepared["masked"]["constructions"]
+        map_table, map_mask = prepared["map"]
+        embeddings = [
+            self.global_encoder(prepared["global"]),
+            batched_masked_mean_pool(self.team_encoder(team_table), team_mask),
+            batched_masked_mean_pool(self.unit_encoder(unit_table), unit_mask),
+            batched_masked_mean_pool(self.map_encoder(map_table), map_mask),
+            batched_masked_mean_pool(self.base_encoder(base_table), base_mask),
+            batched_masked_mean_pool(self.construction_encoder(construction_table), construction_mask),
+            self.strategic_global_encoder(prepared["strategicGlobal"]),
+        ]
+        for name in STRATEGIC_TABLES:
+            table, mask = prepared["strategic"][name]
             embeddings.append(batched_masked_mean_pool(self.strategic_encoders[name](table), mask))
         return self.state_encoder(torch.cat(embeddings, dim=1))
 
@@ -205,6 +213,20 @@ class TacticalPolicyValueNetwork(nn.Module):
         action_rows, action_mask = padded_rows(action_rows_batch, self.feature_spec["actionFeatureWidth"], self.device)
         return self.action_encoder(action_rows), action_mask
 
+    def forward_prepared_batch(
+        self,
+        prepared_observations: dict[str, Any],
+        prepared_action_rows: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        state_embeddings = self.encode_prepared_state_batch(prepared_observations)
+        action_embeddings = self.action_encoder(prepared_action_rows)
+        repeated_states = state_embeddings.unsqueeze(1).expand(-1, action_embeddings.shape[1], -1)
+        logits = self.score_head(torch.cat((repeated_states, action_embeddings), dim=2)).squeeze(-1)
+        logits = logits.masked_fill(~action_mask, float("-inf"))
+        values = self.value_head(state_embeddings).squeeze(-1)
+        return logits, values, state_embeddings, action_embeddings, action_mask
+
     def forward_batch(
         self,
         observations: list[dict[str, Any]],
@@ -214,13 +236,9 @@ class TacticalPolicyValueNetwork(nn.Module):
             raise ValueError("Observation and action batch sizes must match")
         if any(not action_rows for action_rows in action_rows_batch):
             raise ValueError("Cannot forward a sample without legal actions")
-        state_embeddings = self.encode_state_batch(observations)
-        action_embeddings, action_mask = self.encode_actions_batch(action_rows_batch)
-        repeated_states = state_embeddings.unsqueeze(1).expand(-1, action_embeddings.shape[1], -1)
-        logits = self.score_head(torch.cat((repeated_states, action_embeddings), dim=2)).squeeze(-1)
-        logits = logits.masked_fill(~action_mask, float("-inf"))
-        values = self.value_head(state_embeddings).squeeze(-1)
-        return logits, values, state_embeddings, action_embeddings, action_mask
+        prepared_observations = self.prepare_observation_batch(observations)
+        prepared_actions, action_mask = padded_rows(action_rows_batch, self.feature_spec["actionFeatureWidth"], self.device)
+        return self.forward_prepared_batch(prepared_observations, prepared_actions, action_mask)
 
     def forward(self, observation: dict[str, Any], action_rows: list[list[float]]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         state_embedding = self.encode_state(observation)

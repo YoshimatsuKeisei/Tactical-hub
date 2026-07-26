@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 import hashlib
+import time
 
 import torch
 from torch.nn import functional as F
 
-from rl.policy_model import TacticalPolicyValueNetwork
+from rl.policy_model import TacticalPolicyValueNetwork, padded_rows
 
 
 class BehavioralCloningTrainer:
@@ -53,6 +54,68 @@ class BehavioralCloningTrainer:
         return {
             "lossSum": float(mean_loss.detach().item()) * len(samples),
             "correct": correct,
+            "count": len(samples),
+        }
+
+    def process_profile_batch(self, samples: list[dict[str, Any]]) -> dict[str, Any]:
+        if not samples:
+            raise ValueError("Behavioral cloning profile batch cannot be empty")
+        self.model.train(True)
+        timings = {
+            "tensorPreparationMs": 0.0,
+            "forwardMs": 0.0,
+            "lossMs": 0.0,
+            "backwardMs": 0.0,
+            "optimizerStepMs": 0.0,
+        }
+
+        def synchronize() -> None:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+
+        for sample in samples:
+            target = int(sample["targetIndex"])
+            if target < 0 or target >= len(sample["actions"]):
+                raise ValueError(f"targetIndex {target} is outside {len(sample['actions'])} legal actions")
+        self.optimizer.zero_grad(set_to_none=True)
+        synchronize()
+        started = time.perf_counter()
+        prepared_observations = self.model.prepare_observation_batch([sample["observation"] for sample in samples])
+        prepared_actions, action_mask = padded_rows(
+            [sample["actions"] for sample in samples],
+            self.feature_spec["actionFeatureWidth"],
+            self.device,
+        )
+        targets = torch.tensor([int(sample["targetIndex"]) for sample in samples], dtype=torch.long, device=self.device)
+        synchronize()
+        timings["tensorPreparationMs"] = (time.perf_counter() - started) * 1000
+
+        started = time.perf_counter()
+        logits, _, _, _, returned_mask = self.model.forward_prepared_batch(prepared_observations, prepared_actions, action_mask)
+        synchronize()
+        timings["forwardMs"] = (time.perf_counter() - started) * 1000
+        if not torch.isfinite(logits[returned_mask]).all() or torch.isnan(logits).any():
+            raise FloatingPointError("Policy logits contain NaN or Inf")
+
+        started = time.perf_counter()
+        loss = F.cross_entropy(logits, targets)
+        synchronize()
+        timings["lossMs"] = (time.perf_counter() - started) * 1000
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Behavioral cloning loss contains NaN or Inf")
+
+        started = time.perf_counter()
+        loss.backward()
+        synchronize()
+        timings["backwardMs"] = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        self.optimizer.step()
+        synchronize()
+        timings["optimizerStepMs"] = (time.perf_counter() - started) * 1000
+        return {
+            "timings": timings,
+            "lossSum": float(loss.detach().item()) * len(samples),
+            "correct": int((torch.argmax(logits, dim=1) == targets).sum().item()),
             "count": len(samples),
         }
 
