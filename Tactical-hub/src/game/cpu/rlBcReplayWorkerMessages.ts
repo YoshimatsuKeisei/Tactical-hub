@@ -8,6 +8,7 @@ export type RlBcReplayWorkerRequest =
     episodeNumber: number;
     episode: RlImitationEpisode;
     batchSize: number;
+    sidecarDirectory: string;
   }
   | {
     type: "batchConsumed";
@@ -30,6 +31,9 @@ export type RlBcReplayWorkerResponse =
     episodeNumber: number;
     sampleCount: number;
     replayResult: RlImitationEpisodeEnd;
+    sidecarGenerated: boolean;
+    sidecarPreparationMs: number;
+    directReplayMs: number;
   }
   | {
     type: "workerError";

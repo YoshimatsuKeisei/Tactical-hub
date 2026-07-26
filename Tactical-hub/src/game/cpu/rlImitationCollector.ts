@@ -4,6 +4,12 @@ import { RlEnvironment, type RlResult } from "./rlEnvironment";
 import { encodeRlObservation, type EncodedObservation } from "./rlObservationEncoder";
 import { createHeuristicCpuPolicy } from "./heuristicCpuPolicy";
 import { createRlFeatureSpec, type RlFeatureSpec } from "./rlFeatureSpec";
+import {
+  getRlReplayIdentity,
+  RL_REPLAY_RNG_SIDECAR_SCHEMA_VERSION,
+  validateRlReplayRngSidecar,
+  type RlReplayRngSidecar,
+} from "./rlReplayRngSidecar";
 
 export const RL_IMITATION_REPLAY_SCHEMA_VERSION = 1;
 
@@ -164,6 +170,8 @@ export async function replayHeuristicImitationEpisode(input: {
   episode: RlImitationEpisode;
   onFeatureSpec?: (featureSpec: RlFeatureSpec) => void | Promise<void>;
   onEncodedDecision?: (decision: RlReplayEncodedDecision) => void | Promise<void>;
+  rngSidecar?: RlReplayRngSidecar;
+  timing?: { directReplayMs: number };
 }): Promise<RlImitationEpisodeEnd> {
   const { header, decisions, end: expectedEnd } = input.episode;
   if (header.schemaVersion !== RL_IMITATION_REPLAY_SCHEMA_VERSION) {
@@ -175,28 +183,39 @@ export async function replayHeuristicImitationEpisode(input: {
     throw new Error("Replay initial game settings do not match the saved episode");
   }
   await input.onFeatureSpec?.(createRlFeatureSpec(initial));
-  const policy = createHeuristicCpuPolicy();
-  policy.setDecisionDiagnosticsEnabled(true);
+  if (input.rngSidecar) validateRlReplayRngSidecar(input.episode, input.rngSidecar);
+  const policy = input.rngSidecar ? undefined : createHeuristicCpuPolicy();
+  policy?.setDecisionDiagnosticsEnabled(true);
 
-  for (const record of decisions) {
+  let directReplayMs = 0;
+  for (const [decisionIndex, record] of decisions.entries()) {
+    const decisionStarted = performance.now();
     const { observation, legalActions } = currentDecision(environment, record);
     const selectedActionIndex = legalActions.findIndex((action) => action.actionKey === record.selectedActionKey);
     if (selectedActionIndex < 0) {
       throw new Error(`Replay action is not legal at decision ${record.selectedActionKey}`);
     }
+    let callbackMs = 0;
     if (input.onEncodedDecision) {
+      const callbackStarted = performance.now();
       await input.onEncodedDecision({
         record,
         encodedObservation: encodeRlObservation(observation),
         encodedLegalActions: encodeRlLegalActions(observation, legalActions),
         selectedActionIndex,
       });
+      callbackMs = performance.now() - callbackStarted;
     }
-    environment.stepWithPolicy(policy);
-    const reproducedKey = policy.getLastDecisionDiagnostics()?.selectedActionKey;
-    if (reproducedKey !== record.selectedActionKey) {
-      throw new Error(`Replay Heuristic selection mismatch: expected ${record.selectedActionKey}, received ${reproducedKey ?? "none"}`);
+    if (input.rngSidecar) {
+      environment.stepReplayAction(record.selectedActionKey, input.rngSidecar.rngStatesAfterPolicy[decisionIndex]);
+    } else {
+      environment.stepWithPolicy(policy!);
+      const reproducedKey = policy!.getLastDecisionDiagnostics()?.selectedActionKey;
+      if (reproducedKey !== record.selectedActionKey) {
+        throw new Error(`Replay Heuristic selection mismatch: expected ${record.selectedActionKey}, received ${reproducedKey ?? "none"}`);
+      }
     }
+    directReplayMs += Math.max(0, performance.now() - decisionStarted - callbackMs);
   }
 
   const result = environment.getResult();
@@ -223,7 +242,65 @@ export async function replayHeuristicImitationEpisode(input: {
   ) {
     throw new Error(`Replay final result mismatch for ${header.episodeId}`);
   }
+  if (input.timing) input.timing.directReplayMs = directReplayMs;
   return actual;
+}
+
+export async function generateRlReplayRngSidecar(episode: RlImitationEpisode): Promise<RlReplayRngSidecar> {
+  const { header, decisions, end: expectedEnd } = episode;
+  if (header.schemaVersion !== RL_IMITATION_REPLAY_SCHEMA_VERSION) {
+    throw new Error(`Unsupported replay schemaVersion ${header.schemaVersion}`);
+  }
+  const environment = new RlEnvironment();
+  const initial = environment.reset(header.seed, header.participantCount);
+  if (initial.config.mapId !== header.mapId || JSON.stringify(initial.config) !== JSON.stringify(header.gameConfig)) {
+    throw new Error("Replay initial game settings do not match the saved episode");
+  }
+  const policy = createHeuristicCpuPolicy();
+  policy.setDecisionDiagnosticsEnabled(true);
+  const rngStatesAfterPolicy: number[] = [];
+  for (const record of decisions) {
+    const { legalActions } = currentDecision(environment, record);
+    if (!legalActions.some((action) => action.actionKey === record.selectedActionKey)) {
+      throw new Error(`Replay action is not legal at decision ${record.selectedActionKey}`);
+    }
+    const applied = environment.stepWithPolicyForReplay(policy);
+    if (applied.actionKey !== record.selectedActionKey) {
+      throw new Error(`Replay Heuristic selection mismatch: expected ${record.selectedActionKey}, received ${applied.actionKey}`);
+    }
+    rngStatesAfterPolicy.push(applied.rngStateAfterPolicy);
+  }
+  const result = environment.getResult();
+  const actual: RlImitationEpisodeEnd = {
+    type: "episode_end",
+    episodeId: header.episodeId,
+    terminal: result.terminal,
+    winnerTeamId: result.winnerTeamId,
+    loserTeamIds: result.loserTeamIds,
+    endReason: result.terminal ? result.endReason : "max_turns",
+    endTurn: environment.getObservation(initial.observingTeamId).turnNumber,
+    decisionCount: decisions.length,
+    finalStateHash: environment.getStateHash(),
+  };
+  if (
+    actual.finalStateHash !== expectedEnd.finalStateHash
+    || actual.terminal !== expectedEnd.terminal
+    || actual.endReason !== expectedEnd.endReason
+    || actual.winnerTeamId !== expectedEnd.winnerTeamId
+    || actual.endTurn !== expectedEnd.endTurn
+    || actual.decisionCount !== expectedEnd.decisionCount
+    || JSON.stringify(actual.loserTeamIds) !== JSON.stringify(expectedEnd.loserTeamIds)
+  ) {
+    throw new Error(`Replay final result mismatch while generating RNG sidecar for ${header.episodeId}`);
+  }
+  return {
+    schemaVersion: RL_REPLAY_RNG_SIDECAR_SCHEMA_VERSION,
+    replayIdentity: getRlReplayIdentity(episode),
+    episodeId: header.episodeId,
+    seed: header.seed,
+    decisionCount: decisions.length,
+    rngStatesAfterPolicy,
+  };
 }
 
 export function parseRlImitationReplayRecords(records: readonly RlImitationReplayRecord[]): RlImitationEpisode[] {

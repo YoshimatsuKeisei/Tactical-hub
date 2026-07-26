@@ -11,6 +11,7 @@ export async function runParallelBcReplay(input: {
   episodes: NumberedReplayEpisode[];
   workerCount: number;
   batchSize: number;
+  sidecarDirectory: string;
   onBatch: (samples: BcEncodedSample[]) => void | Promise<void>;
   workerEntryPath?: string;
 }) {
@@ -21,10 +22,18 @@ export async function runParallelBcReplay(input: {
   const viteNodeEntry = RL_VITE_NODE_ENTRY;
   const workers: ChildProcess[] = [];
   const pending = new Map<string, { workerId: number; item: NumberedReplayEpisode; nextBatchSequence: number; sampleCount: number }>();
-  const completed = new Map<number, number>();
+  const completed = new Map<number, { sampleCount: number; sidecarGenerated: boolean; sidecarPreparationMs: number; directReplayMs: number }>();
   let nextIndex = 0;
 
-  return await new Promise<{ sampleCount: number; episodeCount: number; effectiveWorkerCount: number }>((resolveRun, rejectRun) => {
+  return await new Promise<{
+    sampleCount: number;
+    episodeCount: number;
+    effectiveWorkerCount: number;
+    generatedSidecarCount: number;
+    reusedSidecarCount: number;
+    sidecarPreparationMs: number;
+    directReplayMs: number;
+  }>((resolveRun, rejectRun) => {
     let settled = false;
     const cleanup = () => {
       for (const worker of workers) if (worker.connected) worker.send({ type: "shutdown" } satisfies RlBcReplayWorkerRequest);
@@ -41,9 +50,13 @@ export async function runParallelBcReplay(input: {
         settled = true;
         cleanup();
         resolveRun({
-          sampleCount: [...completed.values()].reduce((sum, count) => sum + count, 0),
+          sampleCount: [...completed.values()].reduce((sum, value) => sum + value.sampleCount, 0),
           episodeCount: completed.size,
           effectiveWorkerCount,
+          generatedSidecarCount: [...completed.values()].filter((value) => value.sidecarGenerated).length,
+          reusedSidecarCount: [...completed.values()].filter((value) => !value.sidecarGenerated).length,
+          sidecarPreparationMs: [...completed.values()].reduce((sum, value) => sum + value.sidecarPreparationMs, 0),
+          directReplayMs: [...completed.values()].reduce((sum, value) => sum + value.directReplayMs, 0),
         });
         return true;
       }
@@ -64,6 +77,7 @@ export async function runParallelBcReplay(input: {
         episodeNumber: item.episodeNumber,
         episode: item.episode,
         batchSize: input.batchSize,
+        sidecarDirectory: input.sidecarDirectory,
       } satisfies RlBcReplayWorkerRequest);
     };
 
@@ -120,7 +134,12 @@ export async function runParallelBcReplay(input: {
           fail(new Error(`BC replay episode completed twice: ${raw.episodeNumber}`));
           return;
         }
-        completed.set(raw.episodeNumber, raw.sampleCount);
+        completed.set(raw.episodeNumber, {
+          sampleCount: raw.sampleCount,
+          sidecarGenerated: raw.sidecarGenerated,
+          sidecarPreparationMs: raw.sidecarPreparationMs,
+          directReplayMs: raw.directReplayMs,
+        });
         assign(worker, workerId);
       });
       worker.on("error", (error) => fail(new Error(`BC replay worker ${workerId} process error: ${error.message}`)));

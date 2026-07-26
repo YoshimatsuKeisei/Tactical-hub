@@ -1,10 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { getRlImitationEpisodeFeatureSpec, replayHeuristicImitationEpisode } from "./rlImitationCollector";
+import { generateRlReplayRngSidecar, getRlImitationEpisodeFeatureSpec, replayHeuristicImitationEpisode } from "./rlImitationCollector";
 import { PythonBcTrainerClient, type BcEncodedSample } from "./pythonBcTrainerClient";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 import { readRlImitationEpisodes, type EpisodeRange } from "./rlReplayReader";
 import { runParallelBcReplay, type NumberedReplayEpisode } from "./rlBcReplayParallel";
+import { getDefaultRlReplaySidecarDirectory, loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
 
 export type BcMetrics = {
   loss: number;
@@ -30,6 +31,12 @@ export type BehavioralCloningResult = {
   reloadedParameterHash: string;
   torchThreads: number;
   torchInteropThreads: number;
+  replayCache: {
+    generatedSidecarCount: number;
+    reusedSidecarCount: number;
+    sidecarPreparationMs: number;
+    directReplayMs: number;
+  };
 };
 
 type SplitAccumulator = {
@@ -62,10 +69,17 @@ export async function runBehavioralCloning(input: {
     if (value !== undefined && (!Number.isInteger(value) || value <= 0)) throw new Error(`${name} must be a positive integer`);
   }
   const checkpointPath = resolve(input.checkpointPath);
+  const sidecarDirectory = getDefaultRlReplaySidecarDirectory(input.dataPath);
   await mkdir(dirname(checkpointPath), { recursive: true });
   const client = new PythonBcTrainerClient();
   let featureSpec: RlFeatureSpec | undefined;
   let initialParameterHash = "";
+  const replayCache = {
+    generatedSidecarCount: 0,
+    reusedSidecarCount: 0,
+    sidecarPreparationMs: 0,
+    directReplayMs: 0,
+  };
 
   const ensureStarted = async (candidate: RlFeatureSpec) => {
     if (!featureSpec) {
@@ -100,8 +114,19 @@ export async function runBehavioralCloning(input: {
     if (workerCount === 1) {
       for await (const { episode } of readRlImitationEpisodes(input.dataPath, range)) {
         episodeCount += 1;
+        const sidecarStarted = performance.now();
+        const cached = await loadOrCreateRlReplayRngSidecar(
+          episode,
+          sidecarDirectory,
+          () => generateRlReplayRngSidecar(episode),
+        );
+        replayCache.sidecarPreparationMs += performance.now() - sidecarStarted;
+        replayCache[cached.generated ? "generatedSidecarCount" : "reusedSidecarCount"] += 1;
+        const replayTiming = { directReplayMs: 0 };
         await replayHeuristicImitationEpisode({
           episode,
+          rngSidecar: cached.sidecar,
+          timing: replayTiming,
           onFeatureSpec: ensureStarted,
           onEncodedDecision: async (decision) => {
             if (decision.encodedLegalActions.actionKeys[decision.selectedActionIndex] !== decision.record.selectedActionKey) {
@@ -115,6 +140,7 @@ export async function runBehavioralCloning(input: {
             if (batch.length >= input.batchSize) await flush();
           },
         });
+        replayCache.directReplayMs += replayTiming.directReplayMs;
       }
       await flush();
     } else {
@@ -127,6 +153,7 @@ export async function runBehavioralCloning(input: {
           episodes,
           workerCount,
           batchSize: input.batchSize,
+          sidecarDirectory,
           onBatch: async (samples) => {
             const result = await client.batch(samples, train);
             aggregate.lossSum += result.lossSum;
@@ -137,6 +164,10 @@ export async function runBehavioralCloning(input: {
         if (replay.sampleCount !== aggregate.count) {
           throw new Error(`Parallel BC replay sample count mismatch: ${replay.sampleCount}/${aggregate.count}`);
         }
+        replayCache.generatedSidecarCount += replay.generatedSidecarCount;
+        replayCache.reusedSidecarCount += replay.reusedSidecarCount;
+        replayCache.sidecarPreparationMs += replay.sidecarPreparationMs;
+        replayCache.directReplayMs += replay.directReplayMs;
       }
     }
     if (!episodeCount) throw new Error(`No replay episodes found in range ${range.from}-${range.to}`);
@@ -180,6 +211,7 @@ export async function runBehavioralCloning(input: {
       trainedParameterHash,
       reloadedParameterHash,
       ...appliedThreads,
+      replayCache,
     };
   } finally {
     await client.close();

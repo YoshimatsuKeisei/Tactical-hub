@@ -1,6 +1,7 @@
-import { replayHeuristicImitationEpisode } from "./rlImitationCollector";
+import { generateRlReplayRngSidecar, replayHeuristicImitationEpisode } from "./rlImitationCollector";
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
 import type { RlBcReplayWorkerRequest, RlBcReplayWorkerResponse } from "./rlBcReplayWorkerMessages";
+import { loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
 
 declare const process: NodeJS.Process & { send?: (message: RlBcReplayWorkerResponse) => boolean };
 
@@ -34,8 +35,18 @@ async function runEpisode(message: Extract<RlBcReplayWorkerRequest, { type: "run
     await acknowledged;
     waitingAck = undefined;
   };
+  const sidecarStarted = performance.now();
+  const cached = await loadOrCreateRlReplayRngSidecar(
+    message.episode,
+    message.sidecarDirectory,
+    () => generateRlReplayRngSidecar(message.episode),
+  );
+  const sidecarPreparationMs = performance.now() - sidecarStarted;
+  const replayTiming = { directReplayMs: 0 };
   const replayResult = await replayHeuristicImitationEpisode({
     episode: message.episode,
+    rngSidecar: cached.sidecar,
+    timing: replayTiming,
     onEncodedDecision: async (decision) => {
       if (decision.encodedLegalActions.actionKeys[decision.selectedActionIndex] !== decision.record.selectedActionKey) {
         throw new Error(`Replay target index mismatch for ${decision.record.selectedActionKey}`);
@@ -49,6 +60,7 @@ async function runEpisode(message: Extract<RlBcReplayWorkerRequest, { type: "run
       if (batch.length >= message.batchSize) await flush();
     },
   });
+  const directReplayMs = replayTiming.directReplayMs;
   await flush();
   send({
     type: "episodeCompleted",
@@ -56,6 +68,9 @@ async function runEpisode(message: Extract<RlBcReplayWorkerRequest, { type: "run
     episodeNumber: message.episodeNumber,
     sampleCount,
     replayResult,
+    sidecarGenerated: cached.generated,
+    sidecarPreparationMs,
+    directReplayMs,
   });
 }
 

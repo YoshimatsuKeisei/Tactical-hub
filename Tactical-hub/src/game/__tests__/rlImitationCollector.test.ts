@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  generateRlReplayRngSidecar,
   parseRlImitationReplayRecords,
   replayHeuristicImitationEpisode,
   runHeuristicImitationEpisode,
@@ -50,5 +51,31 @@ describe("RL-4A lightweight Heuristic replay", () => {
     expect(replayed.finalStateHash).toBe(collected.finalStateHash);
     expect(replayed.terminal).toBe(collected.terminal);
     expect(replayed.endReason).toBe(collected.endReason);
+
+    const sidecar = await generateRlReplayRngSidecar(episode);
+    const direct = await replayHeuristicImitationEpisode({ episode, rngSidecar: sidecar });
+    expect(direct).toEqual(replayed);
+
+    await expect(replayHeuristicImitationEpisode({
+      episode,
+      rngSidecar: { ...sidecar, replayIdentity: "wrong-replay" },
+    })).rejects.toThrow(/does not match replay/);
+    await expect(replayHeuristicImitationEpisode({
+      episode,
+      rngSidecar: {
+        ...sidecar,
+        decisionCount: sidecar.decisionCount - 1,
+        rngStatesAfterPolicy: sidecar.rngStatesAfterPolicy.slice(1),
+      },
+    })).rejects.toThrow(/decision count mismatch/);
+    await expect(replayHeuristicImitationEpisode({
+      episode: {
+        ...episode,
+        decisions: episode.decisions.map((record, index) => index === 0
+          ? { ...record, selectedActionKey: "illegal-replay-action" }
+          : record),
+      },
+      rngSidecar: sidecar,
+    })).rejects.toThrow(/does not match replay|not legal/);
   });
 });

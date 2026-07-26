@@ -9,3 +9,4 @@ rl-data/bc100
 rl-checkpoints/
 __pycache__/
 *.pyc
+*.rng-sidecars/

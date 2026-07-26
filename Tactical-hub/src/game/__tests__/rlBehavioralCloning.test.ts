@@ -56,6 +56,12 @@ describe("RL-4B Behavioral Cloning smoke", () => {
     expect(parallel.test.sampleCount).toBe(serial.test.sampleCount);
     expect(parallel.torchThreads).toBe(2);
     expect(parallel.torchInteropThreads).toBe(1);
+    expect(serial.replayCache.generatedSidecarCount).toBe(6);
+    expect(serial.replayCache.reusedSidecarCount).toBe(0);
+    expect(parallel.replayCache.generatedSidecarCount).toBe(0);
+    expect(parallel.replayCache.reusedSidecarCount).toBe(6);
+    expect(serial.replayCache.sidecarPreparationMs).toBeGreaterThanOrEqual(0);
+    expect(serial.replayCache.directReplayMs).toBeGreaterThanOrEqual(0);
     for (const result of [serial, parallel]) {
       expect(result.epochs).toHaveLength(1);
       expect(result.epochs[0].train.sampleCount).toBeGreaterThan(0);

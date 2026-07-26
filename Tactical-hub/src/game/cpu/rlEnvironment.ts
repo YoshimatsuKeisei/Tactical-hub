@@ -290,7 +290,22 @@ export class RlEnvironment {
     return { observation: this.getCurrentActorTeamId() ? this.getObservation(this.getCurrentActorTeamId()!) : undefined, result: this.getResult() };
   }
 
+  stepReplayAction(actionKeyValue: string, rngStateAfterPolicy: number) {
+    if (!Number.isInteger(rngStateAfterPolicy) || rngStateAfterPolicy < 0 || rngStateAfterPolicy > 0xffff_ffff) {
+      throw new Error(`Invalid replay rngState: ${rngStateAfterPolicy}`);
+    }
+    const selected = this.decisions.find((entry) => entry.action.actionKey === actionKeyValue);
+    if (!selected) throw new Error(`Illegal or stale RL actionKey: ${actionKeyValue}`);
+    this.runtime.rngState = rngStateAfterPolicy;
+    this.apply(selected.decision);
+    this.advanceAutomatic();
+  }
+
   stepWithPolicy(policy: CpuPolicy = getRandomCpuDecision) {
+    return this.stepWithPolicyForReplay(policy).stepResult;
+  }
+
+  stepWithPolicyForReplay(policy: CpuPolicy = getRandomCpuDecision) {
     const policyRuntime = structuredClone(this.runtime) as CpuRuntime;
     const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, "random_cpu"]));
     const decision = policy(this.state, policyRuntime, settings);
@@ -298,7 +313,12 @@ export class RlEnvironment {
     const selected = this.decisions.find((entry) => entry.action.actionKey === getCpuDecisionActionKey(decision));
     if (!selected) throw new Error(`RL policy selected an action outside the legal list: ${getCpuDecisionActionKey(decision)}`);
     this.runtime = policyRuntime;
-    return this.step(selected.action.actionKey);
+    const rngStateAfterPolicy = policyRuntime.rngState;
+    return {
+      actionKey: selected.action.actionKey,
+      rngStateAfterPolicy,
+      stepResult: this.step(selected.action.actionKey),
+    };
   }
 
   isTerminal() { return activeTeamIds(this.state).length <= 1 || Boolean(this.runtime.stoppedReason); }
