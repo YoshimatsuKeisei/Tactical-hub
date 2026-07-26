@@ -57,6 +57,102 @@ class BehavioralCloningTrainer:
             "count": len(samples),
         }
 
+    def process_packed_batch(
+        self,
+        prepared_observations: dict[str, Any],
+        prepared_actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        targets: torch.Tensor,
+        train: bool,
+    ) -> dict[str, float | int]:
+        batch_size = int(targets.shape[0])
+        if batch_size == 0:
+            raise ValueError("Behavioral cloning batch cannot be empty")
+        if torch.any(targets < 0) or torch.any(targets >= action_mask.shape[1]):
+            raise ValueError("targetIndex is outside legal action tensor")
+        if not torch.all(action_mask.gather(1, targets.unsqueeze(1))):
+            raise ValueError("targetIndex points to a padded action")
+        self.model.train(train)
+        if train:
+            self.optimizer.zero_grad(set_to_none=True)
+        context = torch.enable_grad() if train else torch.no_grad()
+        with context:
+            logits, _, _, _, returned_mask = self.model.forward_prepared_batch(
+                prepared_observations, prepared_actions, action_mask
+            )
+            if not torch.isfinite(logits[returned_mask]).all() or torch.isnan(logits).any():
+                raise FloatingPointError("Policy logits contain NaN or Inf")
+            mean_loss = F.cross_entropy(logits, targets)
+            if not torch.isfinite(mean_loss):
+                raise FloatingPointError("Behavioral cloning loss contains NaN or Inf")
+            correct = int((torch.argmax(logits, dim=1) == targets).sum().item())
+            if train:
+                mean_loss.backward()
+                for parameter in self.model.parameters():
+                    if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
+                        raise FloatingPointError("Policy gradient contains NaN or Inf")
+                self.optimizer.step()
+        return {"lossSum": float(mean_loss.detach().item()) * batch_size, "correct": correct, "count": batch_size}
+
+    def process_profile_packed_batch(
+        self,
+        prepared_observations: dict[str, Any],
+        prepared_actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        targets: torch.Tensor,
+        tensor_preparation_ms: float,
+    ) -> dict[str, Any]:
+        if int(targets.shape[0]) == 0:
+            raise ValueError("Behavioral cloning profile batch cannot be empty")
+        self.model.train(True)
+        timings = {
+            "tensorPreparationMs": tensor_preparation_ms,
+            "forwardMs": 0.0,
+            "lossMs": 0.0,
+            "backwardMs": 0.0,
+            "optimizerStepMs": 0.0,
+        }
+
+        def synchronize() -> None:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+
+        if torch.any(targets < 0) or torch.any(targets >= action_mask.shape[1]):
+            raise ValueError("targetIndex is outside legal action tensor")
+        if not torch.all(action_mask.gather(1, targets.unsqueeze(1))):
+            raise ValueError("targetIndex points to a padded action")
+        self.optimizer.zero_grad(set_to_none=True)
+        synchronize()
+        started = time.perf_counter()
+        logits, _, _, _, returned_mask = self.model.forward_prepared_batch(
+            prepared_observations, prepared_actions, action_mask
+        )
+        synchronize()
+        timings["forwardMs"] = (time.perf_counter() - started) * 1000
+        if not torch.isfinite(logits[returned_mask]).all() or torch.isnan(logits).any():
+            raise FloatingPointError("Policy logits contain NaN or Inf")
+        started = time.perf_counter()
+        loss = F.cross_entropy(logits, targets)
+        synchronize()
+        timings["lossMs"] = (time.perf_counter() - started) * 1000
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Behavioral cloning loss contains NaN or Inf")
+        started = time.perf_counter()
+        loss.backward()
+        synchronize()
+        timings["backwardMs"] = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        self.optimizer.step()
+        synchronize()
+        timings["optimizerStepMs"] = (time.perf_counter() - started) * 1000
+        batch_size = int(targets.shape[0])
+        return {
+            "timings": timings,
+            "lossSum": float(loss.detach().item()) * batch_size,
+            "correct": int((torch.argmax(logits, dim=1) == targets).sum().item()),
+            "count": batch_size,
+        }
+
     def process_profile_batch(self, samples: list[dict[str, Any]]) -> dict[str, Any]:
         if not samples:
             raise ValueError("Behavioral cloning profile batch cannot be empty")

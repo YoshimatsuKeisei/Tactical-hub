@@ -7,6 +7,7 @@ from typing import Any
 
 try:
     import torch
+    from rl.bc_packed import decode_packed_views, prepare_packed_tensors
     from rl.bc_trainer import BehavioralCloningTrainer
     from rl.device import report_torch_device, resolve_torch_device
 except ModuleNotFoundError as error:
@@ -21,7 +22,11 @@ def send(payload: dict[str, Any]) -> None:
 
 def main() -> None:
     trainer: BehavioralCloningTrainer | None = None
-    for line in sys.stdin:
+    stream = sys.stdin.buffer
+    while True:
+        line = stream.readline()
+        if not line:
+            return
         try:
             deserialize_started = time.perf_counter()
             message = json.loads(line)
@@ -58,6 +63,44 @@ def main() -> None:
                     raise RuntimeError("Trainer is not initialized")
                 metrics = trainer.process_batch(message["samples"], bool(message["train"]))
                 send({"type": "batchResult", "requestId": message["requestId"], **metrics})
+            elif message_type in ("packedBatch", "packedProfileBatch"):
+                if trainer is None:
+                    raise RuntimeError("Trainer is not initialized")
+                byte_length = int(message["byteLength"])
+                payload = bytearray()
+                while len(payload) < byte_length:
+                    chunk = stream.read(byte_length - len(payload))
+                    if not chunk:
+                        raise EOFError("Packed BC payload ended early")
+                    payload.extend(chunk)
+                if message_type == "packedBatch":
+                    views = decode_packed_views(message, payload)
+                    prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                    metrics = trainer.process_packed_batch(
+                        prepared, actions, action_mask, targets, bool(message["train"])
+                    )
+                    send({"type": "batchResult", "requestId": message["requestId"], **metrics})
+                else:
+                    decode_started = time.perf_counter()
+                    views = decode_packed_views(message, payload)
+                    binary_decode_ms = (time.perf_counter() - decode_started) * 1000
+                    if trainer.device.type == "cuda":
+                        torch.cuda.synchronize(trainer.device)
+                    preparation_started = time.perf_counter()
+                    prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                    if trainer.device.type == "cuda":
+                        torch.cuda.synchronize(trainer.device)
+                    preparation_ms = (time.perf_counter() - preparation_started) * 1000
+                    metrics = trainer.process_profile_packed_batch(
+                        prepared, actions, action_mask, targets, preparation_ms
+                    )
+                    send({
+                        "type": "profileBatchResult",
+                        "requestId": message["requestId"],
+                        "deserializeMs": deserialize_ms,
+                        "binaryDecodeMs": binary_decode_ms,
+                        **metrics,
+                    })
             elif message_type == "profileBatch":
                 if trainer is None:
                     raise RuntimeError("Trainer is not initialized")
@@ -66,6 +109,7 @@ def main() -> None:
                     "type": "profileBatchResult",
                     "requestId": message["requestId"],
                     "deserializeMs": deserialize_ms,
+                    "binaryDecodeMs": 0.0,
                     **metrics,
                 })
             elif message_type == "save":

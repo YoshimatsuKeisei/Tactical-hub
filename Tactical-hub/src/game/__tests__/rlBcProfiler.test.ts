@@ -37,7 +37,7 @@ describe("RL BC short profiler", () => {
       expect(result.sections.map((section) => section.name)).toEqual(expect.arrayContaining([
         "getObservationMs", "getLegalActionsMs", "encodeObservationMs", "encodeLegalActionsMs",
         "stepReplayActionMs", "sidecarLoadMs", "workerIpcBatchWaitMs", "nodePythonRoundTripMs",
-        "pythonDeserializeMs", "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs",
+        "pythonDeserializeMs", "pythonBinaryDecodeMs", "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs",
         "pythonBackwardMs", "pythonOptimizerStepMs",
       ]));
       expect(result.sections.every((section) => [section.totalMs, section.msPerSample, section.percentOfElapsed].every(Number.isFinite))).toBe(true);

@@ -3,12 +3,80 @@ import unittest
 from pathlib import Path
 
 import torch
+import numpy as np
 
+from rl.bc_packed import decode_packed_views, prepare_packed_tensors
 from rl.bc_trainer import BehavioralCloningTrainer
+from rl.policy_model import padded_rows
 from rl.test_policy_model import PolicyModelTest
 
 
 class BehavioralCloningTrainerTest(unittest.TestCase):
+    def test_packed_views_match_json_tensor_path_logits_targets_loss_and_correct(self):
+        helper = PolicyModelTest()
+        spec = helper.feature_spec()
+        samples = [{
+            "observation": helper.observation(),
+            "actions": [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]],
+            "targetIndex": 1,
+        }]
+        trainer = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=53)
+        old_observation = trainer.model.prepare_observation_batch([samples[0]["observation"]])
+        old_actions, old_action_mask = padded_rows([samples[0]["actions"]], spec["actionFeatureWidth"], trainer.device)
+        old_targets = torch.tensor([1], dtype=torch.long)
+
+        arrays = {
+            "global": old_observation["global"],
+            "strategicGlobal": old_observation["strategicGlobal"],
+            "map": old_observation["map"][0],
+            "mapMask": old_observation["map"][1],
+            "actions": old_actions,
+            "actionMask": old_action_mask,
+            "targets": old_targets.to(torch.int32),
+        }
+        for name, (values, mask) in old_observation["masked"].items():
+            arrays[name] = values
+            arrays[{"teams": "teamMask", "units": "unitMask", "bases": "baseMask", "constructions": "constructionMask"}[name]] = mask
+        for name, (values, mask) in old_observation["strategic"].items():
+            arrays[f"strategic.{name}"] = values
+            arrays[f"strategicMask.{name}"] = mask
+
+        payload = bytearray()
+        descriptors = []
+        for name, tensor in arrays.items():
+            array = tensor.detach().cpu().contiguous().numpy()
+            if array.dtype == np.bool_:
+                array = array.astype(np.uint8)
+            elif array.dtype == np.int32:
+                pass
+            else:
+                array = array.astype(np.float32)
+            raw = array.tobytes()
+            descriptors.append({
+                "name": name,
+                "dtype": "uint8" if array.dtype == np.uint8 else "int32" if array.dtype == np.int32 else "float32",
+                "shape": list(array.shape),
+                "byteOffset": len(payload),
+                "byteLength": len(raw),
+            })
+            payload.extend(raw)
+        views = decode_packed_views({"tensors": descriptors}, payload)
+        new_observation, new_actions, new_action_mask, new_targets = prepare_packed_tensors(views, trainer.device)
+        trainer.model.eval()
+        with torch.no_grad():
+            old_logits = trainer.model.forward_prepared_batch(old_observation, old_actions, old_action_mask)[0]
+            new_logits = trainer.model.forward_prepared_batch(new_observation, new_actions, new_action_mask)[0]
+        self.assertEqual(tuple(new_logits.shape), (1, 2))
+        self.assertTrue(torch.equal(new_targets, old_targets))
+        self.assertTrue(torch.allclose(new_logits, old_logits, atol=1e-7, rtol=1e-7))
+        old_loss = torch.nn.functional.cross_entropy(old_logits, old_targets)
+        new_loss = torch.nn.functional.cross_entropy(new_logits, new_targets)
+        self.assertTrue(torch.allclose(new_loss, old_loss, atol=1e-7, rtol=1e-7))
+        self.assertEqual(
+            int((torch.argmax(new_logits, dim=1) == new_targets).sum()),
+            int((torch.argmax(old_logits, dim=1) == old_targets).sum()),
+        )
+
     def test_backward_changes_weights_and_checkpoint_reloads(self):
         helper = PolicyModelTest()
         spec = helper.feature_spec()

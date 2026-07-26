@@ -4,6 +4,7 @@ import type { RlFeatureSpec } from "./rlFeatureSpec";
 import type { RlReplayEncodedDecision } from "./rlImitationCollector";
 import { RL_PROJECT_ROOT } from "./rlProjectPaths";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
+import { packBcEncodedSamples } from "./rlBcPackedBatch";
 
 type Response =
   | { type: "ready"; torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice }
@@ -16,6 +17,7 @@ type Response =
     correct: number;
     count: number;
     deserializeMs: number;
+    binaryDecodeMs: number;
     timings: Record<"tensorPreparationMs" | "forwardMs" | "lossMs" | "backwardMs" | "optimizerStepMs", number>;
   }
   | { type: "saved" | "loaded"; requestId: number }
@@ -33,6 +35,7 @@ export class PythonBcTrainerClient {
   private lines?: Interface;
   private stderr = "";
   private requestId = 1;
+  private featureSpec?: RlFeatureSpec;
   private appliedSettings?: { torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice };
   private readonly waiting: Array<{ resolve: (value: Response) => void; reject: (error: Error) => void }> = [];
 
@@ -42,6 +45,19 @@ export class PythonBcTrainerClient {
   private send(value: unknown) {
     if (!this.child?.stdin.writable) throw new Error("Python BC trainer is not running");
     this.child.stdin.write(`${JSON.stringify(value)}\n`);
+  }
+  private sendPacked(value: Record<string, unknown>, samples: BcEncodedSample[]) {
+    if (!this.child?.stdin.writable) throw new Error("Python BC trainer is not running");
+    if (!this.featureSpec) throw new Error("Python BC trainer Feature Spec is not initialized");
+    const packed = packBcEncodedSamples(samples, this.featureSpec);
+    this.child.stdin.write(`${JSON.stringify({
+      ...value,
+      encoding: "packed-v1",
+      byteLength: packed.payload.byteLength,
+      batchSize: packed.batchSize,
+      tensors: packed.tensors,
+    })}\n`);
+    this.child.stdin.write(packed.payload);
   }
   private async request(value: Record<string, unknown>) {
     const responsePromise = this.wait();
@@ -101,23 +117,37 @@ export class PythonBcTrainerClient {
       torchInteropThreads: response.torchInteropThreads,
       selectedDevice: response.selectedDevice,
     };
+    this.featureSpec = input.featureSpec;
   }
 
   async batch(samples: BcEncodedSample[], train: boolean) {
     const requestId = this.requestId++;
-    const response = await this.request({ type: "batch", requestId, train, samples });
+    const responsePromise = this.wait();
+    this.sendPacked({ type: "packedBatch", requestId, train }, samples);
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
     if (response.type !== "batchResult" || response.requestId !== requestId) throw new Error("Unexpected BC batch response");
     if (![response.lossSum, response.correct, response.count].every(Number.isFinite)) throw new Error("Non-finite BC metrics");
+    return response;
+  }
+
+  async batchJson(samples: BcEncodedSample[], train: boolean) {
+    const requestId = this.requestId++;
+    const response = await this.request({ type: "batch", requestId, train, samples });
+    if (response.type !== "batchResult" || response.requestId !== requestId) throw new Error("Unexpected BC JSON batch response");
     return response;
   }
 
   async profileBatch(samples: BcEncodedSample[]) {
     const requestId = this.requestId++;
     const started = performance.now();
-    const response = await this.request({ type: "profileBatch", requestId, samples });
+    const responsePromise = this.wait();
+    this.sendPacked({ type: "packedProfileBatch", requestId }, samples);
+    const response = await responsePromise;
     const roundTripMs = performance.now() - started;
+    if (response.type === "error") throw new Error(response.message);
     if (response.type !== "profileBatchResult" || response.requestId !== requestId) throw new Error("Unexpected BC profile batch response");
-    const numeric = [response.lossSum, response.correct, response.count, response.deserializeMs, ...Object.values(response.timings)];
+    const numeric = [response.lossSum, response.correct, response.count, response.deserializeMs, response.binaryDecodeMs, ...Object.values(response.timings)];
     if (!numeric.every(Number.isFinite)) throw new Error("Non-finite BC profile metrics");
     return { ...response, roundTripMs };
   }
@@ -144,6 +174,7 @@ export class PythonBcTrainerClient {
     this.lines?.close();
     this.child.kill();
     this.child = undefined;
+    this.featureSpec = undefined;
   }
 
   getAppliedThreads() {

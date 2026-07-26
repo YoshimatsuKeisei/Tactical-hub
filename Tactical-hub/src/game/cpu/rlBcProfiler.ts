@@ -13,6 +13,7 @@ type SectionName = keyof RlReplayPrefixProfile
   | "workerIpcBatchWaitMs"
   | "nodePythonRoundTripMs"
   | "pythonDeserializeMs"
+  | "pythonBinaryDecodeMs"
   | "pythonTensorPreparationMs"
   | "pythonForwardMs"
   | "pythonLossMs"
@@ -81,7 +82,7 @@ export async function runRlBcShortProfile(input: {
   const selectedDevice = client.getAppliedThreads().selectedDevice;
   const totals = Object.fromEntries([
     ...replayKeys,
-    "sidecarLoadMs", "workerIpcBatchWaitMs", "nodePythonRoundTripMs", "pythonDeserializeMs",
+    "sidecarLoadMs", "workerIpcBatchWaitMs", "nodePythonRoundTripMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
     "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs", "pythonBackwardMs", "pythonOptimizerStepMs",
   ].map((name) => [name, 0])) as Record<SectionName, number>;
   let consumed = 0;
@@ -108,6 +109,7 @@ export async function runRlBcShortProfile(input: {
     measured += samples.length;
     totals.nodePythonRoundTripMs += result.roundTripMs;
     totals.pythonDeserializeMs += result.deserializeMs;
+    totals.pythonBinaryDecodeMs += result.binaryDecodeMs;
     totals.pythonTensorPreparationMs += result.timings.tensorPreparationMs;
     totals.pythonForwardMs += result.timings.forwardMs;
     totals.pythonLossMs += result.timings.lossMs;
