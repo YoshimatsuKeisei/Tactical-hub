@@ -1,7 +1,11 @@
 import type { GameConfig } from "../types";
 import { encodeRlLegalActions, type EncodedLegalActions } from "./rlActionEncoder";
 import { RlEnvironment, type RlResult } from "./rlEnvironment";
-import { encodeRlObservation, type EncodedObservation } from "./rlObservationEncoder";
+import {
+  createRlObservationEncoderCache,
+  encodeRlObservation,
+  type EncodedObservation,
+} from "./rlObservationEncoder";
 import { createHeuristicCpuPolicy } from "./heuristicCpuPolicy";
 import { createRlFeatureSpec, type RlFeatureSpec } from "./rlFeatureSpec";
 import {
@@ -193,6 +197,7 @@ export async function replayHeuristicImitationEpisode(input: {
   if (input.rngSidecar) validateRlReplayRngSidecar(input.episode, input.rngSidecar);
   const policy = input.rngSidecar ? undefined : createHeuristicCpuPolicy();
   policy?.setDecisionDiagnosticsEnabled(true);
+  const observationEncoderCache = createRlObservationEncoderCache();
 
   let directReplayMs = 0;
   for (const [decisionIndex, record] of decisions.entries()) {
@@ -207,7 +212,7 @@ export async function replayHeuristicImitationEpisode(input: {
       const callbackStarted = performance.now();
       await input.onEncodedDecision({
         record,
-        encodedObservation: encodeRlObservation(observation),
+        encodedObservation: encodeRlObservation(observation, observationEncoderCache),
         encodedLegalActions: encodeRlLegalActions(observation, legalActions),
         selectedActionIndex,
       });
@@ -330,6 +335,7 @@ export async function replayRlImitationEpisodePrefix(input: {
     encodeLegalActionsMs: 0,
     stepReplayActionMs: 0,
   };
+  const observationEncoderCache = createRlObservationEncoderCache();
   const limit = Math.min(input.maxDecisions ?? input.episode.decisions.length, input.episode.decisions.length);
   for (let index = 0; index < limit; index += 1) {
     const record = input.episode.decisions[index];
@@ -345,7 +351,7 @@ export async function replayRlImitationEpisodePrefix(input: {
     const selectedActionIndex = legalActions.findIndex((action) => action.actionKey === record.selectedActionKey);
     if (selectedActionIndex < 0) throw new Error(`Replay action is not legal at decision ${record.selectedActionKey}`);
     started = performance.now();
-    const encodedObservation = encodeRlObservation(observation);
+    const encodedObservation = encodeRlObservation(observation, observationEncoderCache);
     profile.encodeObservationMs += performance.now() - started;
     started = performance.now();
     const encodedLegalActions = encodeRlLegalActions(observation, legalActions);

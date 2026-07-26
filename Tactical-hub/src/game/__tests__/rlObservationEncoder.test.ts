@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { RlEnvironment } from "../cpu/rlEnvironment";
-import { encodeRlObservation, RL_OBSERVATION_ENCODER_VERSION } from "../cpu/rlObservationEncoder";
+import {
+  createRlObservationEncoderCache,
+  encodeRlObservation,
+  RL_OBSERVATION_ENCODER_VERSION,
+} from "../cpu/rlObservationEncoder";
 import { createHeadlessInitialState } from "../cpu/headlessSimulation";
 
 function allNumbers(value: unknown): number[] {
@@ -33,6 +37,22 @@ describe("RL-1B Observation Encoder", () => {
     expect(first.schemaVersion).toBe(RL_OBSERVATION_ENCODER_VERSION);
     expect(allNumbers(first).every(Number.isFinite)).toBe(true);
     expect(observation).toEqual(before);
+  });
+
+  it("keeps episode-cached static geometry, padding, masks, and row order byte-for-byte equivalent", () => {
+    const environment = new RlEnvironment();
+    environment.reset(105, 4);
+    const cache = createRlObservationEncoderCache();
+
+    for (let decision = 0; decision < 12 && !environment.isTerminal(); decision += 1) {
+      const teamId = environment.getCurrentActorTeamId();
+      expect(teamId).toBeTruthy();
+      const observation = environment.getObservationForEncoding(teamId!);
+      expect(encodeRlObservation(observation, cache)).toEqual(encodeRlObservation(observation));
+      const legalActions = environment.getLegalActions(teamId!);
+      expect(legalActions.length).toBeGreaterThan(0);
+      environment.step(legalActions[0].actionKey);
+    }
   });
 
   it("omits removed units and aligns zero padding with unitMask", () => {

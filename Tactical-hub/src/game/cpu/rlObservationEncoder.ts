@@ -82,6 +82,33 @@ export type RlObservationFeatureSpec = {
   strategicTableRowWidths: Record<keyof Omit<EncodedStrategicState, "global">, number>;
 };
 
+type StaticMapCell = {
+  baseId?: string;
+  features: number[];
+};
+
+type StaticBaseGeometry = {
+  normalizedCentroidX: number;
+  normalizedCentroidY: number;
+  hasCentroid: number;
+  sortedSlotIds: string[];
+};
+
+/**
+ * Episode-scoped reuse for encoder data that game rules never mutate: map
+ * geometry, base geometry/slot order, and zero-row templates. Dynamic ownership,
+ * units, constructions and intents are deliberately never cached.
+ */
+export type RlObservationEncoderCache = {
+  staticMap?: StaticMapCell[][];
+  baseGeometry?: Map<string, StaticBaseGeometry>;
+  zeroRows?: Map<number, number[]>;
+};
+
+export function createRlObservationEncoderCache(): RlObservationEncoderCache {
+  return {};
+}
+
 type Context = {
   observation: RlObservation;
   teams: RlObservation["teams"];
@@ -100,6 +127,7 @@ type Context = {
   movementCompletedTeams: Set<string>;
   strategistSubmittedTeams: Set<string>;
   productionCompletedTeams: Set<string>;
+  encoderCache?: RlObservationEncoderCache;
 };
 
 function orderedTeams(observation: RlObservation) {
@@ -112,6 +140,11 @@ function teamVector(context: Context, teamId: string | undefined) {
   const index = teamId === undefined ? undefined : context.teamIndex.get(teamId);
   vector[index === undefined ? context.teams.length : index] = 1;
   return vector;
+}
+
+function writeTeamVector(context: Context, target: number[], offset: number, teamId: string | undefined) {
+  const index = teamId === undefined ? undefined : context.teamIndex.get(teamId);
+  target[offset + (index === undefined ? context.teams.length : index)] = 1;
 }
 
 function baseVector(context: Context, baseId: string | undefined) {
@@ -199,72 +232,109 @@ function encodeUnit(context: Context, unit: Unit) {
   ];
 }
 
-function encodeMap(context: Context) {
+function buildStaticMap(context: Context): StaticMapCell[][] {
   const width = context.observation.map.width;
   const height = context.observation.map.height;
   const indexOf = (x: number, y: number) => y * width + x;
   const tileByCoord = new Map<number, RlObservation["map"]["tiles"][number]>();
   for (const tile of context.observation.map.tiles) tileByCoord.set(indexOf(tile.x, tile.y), tile);
-  const constructionAt = new Map<number, Construction[]>();
   const tileAt = (x: number, y: number) => x < 0 || y < 0 || x >= width || y >= height
     ? undefined
     : tileByCoord.get(indexOf(x, y));
-  for (const construction of context.observation.constructions) {
-    if (!construction.active) continue;
-    for (const tile of construction.tiles) {
-      const key = indexOf(tile.x, tile.y);
-      const existing = constructionAt.get(key);
-      if (existing) existing.push(construction);
-      else constructionAt.set(key, [construction]);
-    }
-  }
   const directions = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]] as const;
-  return Array.from({ length: context.observation.map.height }, (_, y) =>
-    Array.from({ length: context.observation.map.width }, (_, x) => {
+  return Array.from({ length: height }, (_, y) =>
+    Array.from({ length: width }, (_, x) => {
       const tile = tileByCoord.get(indexOf(x, y));
-      const constructions = constructionAt.get(indexOf(x, y)) ?? [];
-      const base = tile?.baseId ? context.baseById.get(tile.baseId) : undefined;
-      let bridge: Construction | undefined;
-      let obstacle: Construction | undefined;
-      for (const construction of constructions) {
-        if (construction.kind === "bridge" && !bridge) bridge = construction;
-        else if (construction.kind === "obstacle" && !obstacle) obstacle = construction;
-      }
-      return [
-        normalized(x, context.observation.map.width),
-        normalized(y, context.observation.map.height),
+      return {
+        baseId: tile?.baseId,
+        features: [
+        normalized(x, width),
+        normalized(y, height),
         ...oneHot(tile?.terrain, TERRAIN_TYPES),
-        Number(Boolean(base)),
+        Number(Boolean(tile?.baseId)),
         Number(Boolean(tile?.roadSectionId)),
         ...directions.map(([dx, dy]) => Number(Boolean(tile?.roadSectionId) && tileAt(x + dx, y + dy)?.roadSectionId === tile?.roadSectionId)),
-        Number(Boolean(bridge)),
-        Number(Boolean(obstacle)),
-        ...teamVector(context, base?.ownerTeamId),
-        ...teamVector(context, bridge?.ownerTeamId),
-        ...teamVector(context, obstacle?.ownerTeamId),
-      ];
+        ],
+      };
     }),
   );
 }
 
-function encodeBase(context: Context, base: RlObservation["bases"][number], maxSlots: number) {
+function encodeMap(context: Context) {
+  const width = context.observation.map.width;
+  const staticMap = context.encoderCache?.staticMap ?? buildStaticMap(context);
+  if (context.encoderCache && !context.encoderCache.staticMap) context.encoderCache.staticMap = staticMap;
+  const constructionAt = new Map<number, { bridge?: Construction; obstacle?: Construction }>();
+  for (const construction of context.observation.constructions) {
+    if (!construction.active) continue;
+    for (const tile of construction.tiles) {
+      const key = tile.y * width + tile.x;
+      let entry = constructionAt.get(key);
+      if (!entry) {
+        entry = {};
+        constructionAt.set(key, entry);
+      }
+      if (construction.kind === "bridge" && !entry.bridge) entry.bridge = construction;
+      else if (construction.kind === "obstacle" && !entry.obstacle) entry.obstacle = construction;
+    }
+  }
+  const teamWidth = context.teams.length + 1;
+  const rowWidth = RL_OBSERVATION_SCHEMA.mapBase.length + teamWidth * 3;
+  return staticMap.map((row, y) => row.map((cell, x) => {
+    const dynamic = constructionAt.get(y * width + x);
+    const base = cell.baseId ? context.baseById.get(cell.baseId) : undefined;
+    const result = Array(rowWidth).fill(0);
+    for (let index = 0; index < cell.features.length; index += 1) result[index] = cell.features[index];
+    let offset = cell.features.length;
+    result[offset++] = Number(Boolean(dynamic?.bridge));
+    result[offset++] = Number(Boolean(dynamic?.obstacle));
+    writeTeamVector(context, result, offset, base?.ownerTeamId);
+    offset += teamWidth;
+    writeTeamVector(context, result, offset, dynamic?.bridge?.ownerTeamId);
+    offset += teamWidth;
+    writeTeamVector(context, result, offset, dynamic?.obstacle?.ownerTeamId);
+    return result;
+  }));
+}
+
+function getBaseGeometry(context: Context, base: RlObservation["bases"][number]): StaticBaseGeometry {
+  const cached = context.encoderCache?.baseGeometry?.get(base.id);
+  if (cached) return cached;
   const centroid = base.coords.length ? {
     x: base.coords.reduce((sum, coord) => sum + coord.x, 0) / base.coords.length,
     y: base.coords.reduce((sum, coord) => sum + coord.y, 0) / base.coords.length,
   } : undefined;
-  const slots = [...base.slots].sort((left, right) => left.localRow - right.localRow || left.localCol - right.localCol);
+  const geometry = {
+    hasCentroid: Number(Boolean(centroid)),
+    normalizedCentroidX: centroid ? normalized(centroid.x, context.observation.map.width) : 0,
+    normalizedCentroidY: centroid ? normalized(centroid.y, context.observation.map.height) : 0,
+    sortedSlotIds: [...base.slots]
+      .sort((left, right) => left.localRow - right.localRow || left.localCol - right.localCol)
+      .map((slot) => slot.id),
+  };
+  if (context.encoderCache) {
+    context.encoderCache.baseGeometry ??= new Map();
+    context.encoderCache.baseGeometry.set(base.id, geometry);
+  }
+  return geometry;
+}
+
+function encodeBase(context: Context, base: RlObservation["bases"][number], maxSlots: number) {
+  const geometry = getBaseGeometry(context, base);
+  const slotById = new Map(base.slots.map((slot) => [slot.id, slot]));
   const slotWidth = 3 + context.teams.length + 1 + UNIT_TYPES.length;
-  const slotFeatures = slots.flatMap((slot) => {
+  const slotFeatures = geometry.sortedSlotIds.flatMap((slotId) => {
+    const slot = slotById.get(slotId)!;
     const occupant = slot.unitId ? context.unitById.get(slot.unitId) : undefined;
     return [Number(slot.kind === "front"), Number(slot.kind === "protected"), Number(Boolean(occupant)), ...teamVector(context, occupant?.ownerTeamId), ...oneHot(occupant?.type, UNIT_TYPES)];
   });
-  slotFeatures.push(...Array((maxSlots - slots.length) * slotWidth).fill(0));
+  slotFeatures.push(...Array((maxSlots - geometry.sortedSlotIds.length) * slotWidth).fill(0));
   return [
     Number(base.type === "home"), Number(base.type === "neutral"),
     ...teamVector(context, base.ownerTeamId),
-    Number(Boolean(centroid)),
-    centroid ? normalized(centroid.x, context.observation.map.width) : 0,
-    centroid ? normalized(centroid.y, context.observation.map.height) : 0,
+    geometry.hasCentroid,
+    geometry.normalizedCentroidX,
+    geometry.normalizedCentroidY,
     base.coords.length,
     base.slots.length,
     ...teamVector(context, base.occupationPriorityTeamId),
@@ -382,7 +452,22 @@ function encodeStrategicState(context: Context): EncodedStrategicState {
   };
 }
 
-export function encodeRlObservation(observation: RlObservation): EncodedObservation {
+function paddedRows(rows: number[][], length: number, width: number, cache?: RlObservationEncoderCache) {
+  if (rows.length >= length) return rows;
+  let zero = cache?.zeroRows?.get(width);
+  if (!zero) {
+    zero = Array(width).fill(0);
+    if (cache) {
+      cache.zeroRows ??= new Map();
+      cache.zeroRows.set(width, zero);
+    }
+  }
+  const result = rows.slice();
+  while (result.length < length) result.push(zero.slice());
+  return result;
+}
+
+export function encodeRlObservation(observation: RlObservation, encoderCache?: RlObservationEncoderCache): EncodedObservation {
   const teams = orderedTeams(observation);
   const bases = [...observation.bases].sort((left, right) => {
     const leftCoord = left.coords[0], rightCoord = right.coords[0];
@@ -406,6 +491,7 @@ export function encodeRlObservation(observation: RlObservation): EncodedObservat
     movementCompletedTeams: new Set(observation.movementCompletedTeamIds),
     strategistSubmittedTeams: new Set(observation.strategistSubmittedTeamIds),
     productionCompletedTeams: new Set(observation.productionCompletedTeamIdsThisTurn),
+    encoderCache,
   };
   for (const unit of observation.units) {
     context.positionCoordinateByUnitId.set(unit.id, positionCoordinate(context, unit.position));
@@ -455,12 +541,12 @@ export function encodeRlObservation(observation: RlObservation): EncodedObservat
       context.movementSeatOrderIndex.get(team.id) ?? -1,
     ]),
     teamMask: teams.map(() => 1),
-    units: [...encodedUnits, ...Array.from({ length: maxUnits - encodedUnits.length }, () => Array(unitWidth).fill(0))],
+    units: paddedRows(encodedUnits, maxUnits, unitWidth, encoderCache),
     unitMask: [...units.map(() => 1), ...Array(maxUnits - units.length).fill(0)],
     map: encodeMap(context),
-    bases: [...encodedBases, ...Array.from({ length: maxBases - encodedBases.length }, () => Array(baseWidth).fill(0))],
+    bases: paddedRows(encodedBases, maxBases, baseWidth, encoderCache),
     baseMask: [...bases.map(() => 1), ...Array(maxBases - bases.length).fill(0)],
-    constructions: [...encodedConstructions, ...Array.from({ length: maxConstructions - encodedConstructions.length }, () => Array(constructionWidth).fill(0))],
+    constructions: paddedRows(encodedConstructions, maxConstructions, constructionWidth, encoderCache),
     constructionMask: [...encodedConstructions.map(() => 1), ...Array(maxConstructions - encodedConstructions.length).fill(0)],
     strategicState: encodeStrategicState(context),
   };
