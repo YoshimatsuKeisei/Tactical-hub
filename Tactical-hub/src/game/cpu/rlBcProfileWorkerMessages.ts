@@ -21,6 +21,8 @@ export type RlBcProfileWorkerResponse =
     samples: BcEncodedSample[];
     replayTimings: RlReplayPrefixProfile;
     sidecarLoadMs: number;
+    workerParentPayloadBytes: number;
   }
+  | { type: "profileBatchSendTiming"; taskId: string; sequence: number; workerSendMs: number }
   | { type: "episodeCompleted"; taskId: string }
   | { type: "workerError"; taskId?: string; error: string };

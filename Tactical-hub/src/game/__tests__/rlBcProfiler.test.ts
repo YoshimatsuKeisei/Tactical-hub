@@ -50,9 +50,11 @@ describe("RL BC short profiler", () => {
       expect(result.batchCount).toBeGreaterThanOrEqual(4);
       expect(result.selectedDevice).toBe("cpu");
       expect(result.samplesPerSecond).toBeGreaterThan(0);
+      expect(result.workerParentPayloadBytes).toBeGreaterThan(0);
       expect(result.sections.map((section) => section.name)).toEqual(expect.arrayContaining([
         "getObservationMs", "getLegalActionsMs", "encodeObservationMs", "encodeLegalActionsMs",
-        "stepReplayActionMs", "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "nodePythonRoundTripMs",
+        "stepReplayActionMs", "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "workerSendMs",
+        "nodePythonRoundTripMs", "nodePackMs", "pythonRoundTripAfterPackMs",
         "pythonDeserializeMs", "pythonBinaryDecodeMs", "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs",
         "pythonBackwardMs", "pythonOptimizerStepMs",
       ]));

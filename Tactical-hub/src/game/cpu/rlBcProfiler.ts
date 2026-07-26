@@ -11,7 +11,10 @@ import type { RlTorchDevice } from "./rlTorchDevice";
 type SectionName = keyof RlReplayPrefixProfile
   | "sidecarLoadMs"
   | "workerBatchQueueAndProcessingMs"
+  | "workerSendMs"
   | "nodePythonRoundTripMs"
+  | "nodePackMs"
+  | "pythonRoundTripAfterPackMs"
   | "pythonDeserializeMs"
   | "pythonBinaryDecodeMs"
   | "pythonTensorPreparationMs"
@@ -35,6 +38,8 @@ export type RlBcProfileResult = {
   samplesPerSecond: number;
   batchesPerSecond: number;
   selectedDevice: "cpu" | "cuda";
+  workerParentPayloadBytes: number;
+  workerParentPayloadDescription: string;
   overlapWarning: string;
   sections: Array<{ name: SectionName; totalMs: number; msPerSample: number; percentOfElapsed: number }>;
 };
@@ -89,11 +94,13 @@ export async function runRlBcShortProfile(input: {
   const selectedDevice = client.getAppliedThreads().selectedDevice;
   const totals = Object.fromEntries([
     ...replayKeys,
-    "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "nodePythonRoundTripMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
+    "sidecarLoadMs", "workerBatchQueueAndProcessingMs", "workerSendMs", "nodePythonRoundTripMs",
+    "nodePackMs", "pythonRoundTripAfterPackMs", "pythonDeserializeMs", "pythonBinaryDecodeMs",
     "pythonTensorPreparationMs", "pythonForwardMs", "pythonLossMs", "pythonBackwardMs", "pythonOptimizerStepMs",
   ].map((name) => [name, 0])) as Record<SectionName, number>;
   let measured = 0;
   let batchCount = 0;
+  let workerParentPayloadBytes = 0;
   let measurementStartedAt: number | undefined;
   const workers: ChildProcess[] = [];
   type ProfileBatchMessage = Extract<RlBcProfileWorkerResponse, { type: "profileBatch" }>;
@@ -105,6 +112,8 @@ export async function runRlBcShortProfile(input: {
     measuredRemaining: number;
     nextSequence: number;
     batches: Map<number, { raw: ProfileBatchMessage; receivedAt: number; worker: ChildProcess }>;
+    measuredRatios: Map<number, number>;
+    sendTimings: Map<number, number>;
     assigned: boolean;
   };
   const effectiveWorkers = Math.min(input.workerCount, profileEpisodeCount);
@@ -129,6 +138,8 @@ export async function runRlBcShortProfile(input: {
     measuredRemaining: measuredQuotas[index],
     nextSequence: 0,
     batches: new Map(),
+    measuredRatios: new Map(),
+    sendTimings: new Map(),
     assigned: false,
   }));
   const taskById = new Map(tasks.map((task) => [task.taskId, task]));
@@ -142,6 +153,8 @@ export async function runRlBcShortProfile(input: {
     batchCount += 1;
     measured += samples.length;
     totals.nodePythonRoundTripMs += result.roundTripMs;
+    totals.nodePackMs += result.nodePackMs;
+    totals.pythonRoundTripAfterPackMs += result.pythonRoundTripAfterPackMs;
     totals.pythonDeserializeMs += result.deserializeMs;
     totals.pythonBinaryDecodeMs += result.binaryDecodeMs;
     totals.pythonTensorPreparationMs += result.timings.tensorPreparationMs;
@@ -203,11 +216,19 @@ export async function runRlBcShortProfile(input: {
           task.warmupRemaining -= warmup.length;
           const measuredSamples = raw.samples.slice(warmup.length, warmup.length + task.measuredRemaining);
           task.measuredRemaining -= measuredSamples.length;
+          const measuredRatio = measuredSamples.length / raw.samples.length;
+          task.measuredRatios.set(raw.sequence, measuredRatio);
+          const workerSendMs = task.sendTimings.get(raw.sequence);
+          if (workerSendMs !== undefined) {
+            totals.workerSendMs += workerSendMs * measuredRatio;
+            task.sendTimings.delete(raw.sequence);
+            task.measuredRatios.delete(raw.sequence);
+          }
           if (warmup.length) await processSamples(warmup, false);
           if (measuredSamples.length) {
-            const ratio = measuredSamples.length / raw.samples.length;
-            addReplayTimings(raw.replayTimings, ratio);
-            totals.sidecarLoadMs += raw.sidecarLoadMs * ratio;
+            addReplayTimings(raw.replayTimings, measuredRatio);
+            totals.sidecarLoadMs += raw.sidecarLoadMs * measuredRatio;
+            workerParentPayloadBytes += raw.workerParentPayloadBytes * measuredRatio;
             await processSamples(measuredSamples, true);
           }
           totals.workerBatchQueueAndProcessingMs += performance.now() - receivedAt;
@@ -221,6 +242,20 @@ export async function runRlBcShortProfile(input: {
           if (settled) return;
           if (!raw?.taskId || !taskById.has(raw.taskId)) { fail(new Error(`BC profile worker ${workerId} sent an invalid task`)); return; }
           if (raw.type === "workerError") { fail(new Error(raw.error)); return; }
+          if (raw.type === "profileBatchSendTiming") {
+            const task = taskById.get(raw.taskId)!;
+            processing = processing.then(() => {
+              const ratio = task.measuredRatios.get(raw.sequence);
+              if (ratio === undefined) {
+                if (task.sendTimings.has(raw.sequence)) throw new Error(`Duplicate worker send timing ${raw.taskId}/${raw.sequence}`);
+                task.sendTimings.set(raw.sequence, raw.workerSendMs);
+              } else {
+                totals.workerSendMs += raw.workerSendMs * ratio;
+                task.measuredRatios.delete(raw.sequence);
+              }
+            }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
+            return;
+          }
           if (raw.type === "episodeCompleted") {
             const task = taskById.get(raw.taskId);
             if (!task || task.warmupRemaining !== 0 || task.measuredRemaining !== 0) {
@@ -276,7 +311,9 @@ export async function runRlBcShortProfile(input: {
     samplesPerSecond: measured / Math.max(elapsedMs / 1000, 0.001),
     batchesPerSecond: batchCount / Math.max(elapsedMs / 1000, 0.001),
     selectedDevice,
-    overlapWarning: "Nested timings overlap and do not sum to 100%. workerBatchQueueAndProcessingMs measures parent queue plus downstream batch processing after IPC receipt; it is not pure IPC transport time.",
+    workerParentPayloadBytes,
+    workerParentPayloadDescription: "Approximate numeric feature payload only (8 bytes per JavaScript number); object keys, IPC framing and serializer overhead are excluded.",
+    overlapWarning: "Nested timings overlap and do not sum to 100%. workerSendMs ends at the child_process.send callback and includes serialization/queue acceptance, so it is not pure transport latency. nodePythonRoundTripMs spans packing through the Python response and is approximately nodePackMs + pythonRoundTripAfterPackMs. workerBatchQueueAndProcessingMs includes parent queue plus downstream processing after IPC receipt.",
     sections: (Object.entries(totals) as Array<[SectionName, number]>)
       .map(([name, totalMs]) => ({ name, totalMs, msPerSample: totalMs / measured, percentOfElapsed: elapsedMs > 0 ? totalMs / elapsedMs * 100 : 0 }))
       .sort((left, right) => right.totalMs - left.totalMs),

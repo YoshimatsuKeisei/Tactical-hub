@@ -12,6 +12,24 @@ function send(message: RlBcProfileWorkerResponse) {
   if (!process.send) throw new Error("BC profile worker IPC channel is unavailable");
   process.send(message);
 }
+function estimateNumericPayloadBytes(value: unknown): number {
+  if (typeof value === "number") return 8;
+  if (Array.isArray(value)) return value.reduce((total, item) => total + estimateNumericPayloadBytes(item), 0);
+  if (value && typeof value === "object") {
+    return Object.values(value).reduce((total, item) => total + estimateNumericPayloadBytes(item), 0);
+  }
+  return 0;
+}
+function sendProfileBatch(message: Extract<RlBcProfileWorkerResponse, { type: "profileBatch" }>) {
+  if (!process.send) throw new Error("BC profile worker IPC channel is unavailable");
+  return new Promise<number>((resolve, reject) => {
+    const started = performance.now();
+    process.send!(message, (error) => {
+      if (error) reject(error);
+      else resolve(performance.now() - started);
+    });
+  });
+}
 
 let activeTaskId: string | undefined;
 let waitingAck: { taskId: string; sequence: number; started: number; resolve: () => void } | undefined;
@@ -38,7 +56,17 @@ async function runEpisode(message: Extract<RlBcProfileWorkerRequest, { type: "ru
     const acknowledged = new Promise<void>((resolve) => {
       waitingAck = { taskId: message.taskId, sequence: currentSequence, started: performance.now(), resolve };
     });
-    send({ type: "profileBatch", taskId: message.taskId, sequence: currentSequence, samples, replayTimings, sidecarLoadMs: currentSequence === 0 ? sidecarLoadMs : 0 });
+    const profileMessage: Extract<RlBcProfileWorkerResponse, { type: "profileBatch" }> = {
+      type: "profileBatch",
+      taskId: message.taskId,
+      sequence: currentSequence,
+      samples,
+      replayTimings,
+      sidecarLoadMs: currentSequence === 0 ? sidecarLoadMs : 0,
+      workerParentPayloadBytes: estimateNumericPayloadBytes(samples),
+    };
+    const workerSendMs = await sendProfileBatch(profileMessage);
+    send({ type: "profileBatchSendTiming", taskId: message.taskId, sequence: currentSequence, workerSendMs });
     await acknowledged;
     waitingAck = undefined;
   };

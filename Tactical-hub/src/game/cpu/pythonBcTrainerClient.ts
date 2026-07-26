@@ -140,16 +140,31 @@ export class PythonBcTrainerClient {
 
   async profileBatch(samples: BcEncodedSample[]) {
     const requestId = this.requestId++;
+    if (!this.featureSpec) throw new Error("Python BC trainer Feature Spec is not initialized");
     const started = performance.now();
+    const packStarted = performance.now();
+    const packed = packBcEncodedSamples(samples, this.featureSpec);
+    const nodePackMs = performance.now() - packStarted;
+    const afterPackStarted = performance.now();
     const responsePromise = this.wait();
-    this.sendPacked({ type: "packedProfileBatch", requestId }, samples);
+    if (!this.child?.stdin.writable) throw new Error("Python BC trainer is not running");
+    this.child.stdin.write(`${JSON.stringify({
+      type: "packedProfileBatch",
+      requestId,
+      encoding: "packed-v1",
+      byteLength: packed.payload.byteLength,
+      batchSize: packed.batchSize,
+      tensors: packed.tensors,
+    })}\n`);
+    this.child.stdin.write(packed.payload);
     const response = await responsePromise;
+    const pythonRoundTripAfterPackMs = performance.now() - afterPackStarted;
     const roundTripMs = performance.now() - started;
     if (response.type === "error") throw new Error(response.message);
     if (response.type !== "profileBatchResult" || response.requestId !== requestId) throw new Error("Unexpected BC profile batch response");
     const numeric = [response.lossSum, response.correct, response.count, response.deserializeMs, response.binaryDecodeMs, ...Object.values(response.timings)];
     if (!numeric.every(Number.isFinite)) throw new Error("Non-finite BC profile metrics");
-    return { ...response, roundTripMs };
+    return { ...response, roundTripMs, nodePackMs, pythonRoundTripAfterPackMs };
   }
 
   async save(path: string, metadata: unknown) {
