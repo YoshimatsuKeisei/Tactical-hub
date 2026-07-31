@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 import hashlib
+import math
+import os
+import tempfile
 import time
 
 import torch
@@ -215,11 +218,60 @@ class BehavioralCloningTrainer:
             "count": len(samples),
         }
 
+    @staticmethod
+    def _atomic_torch_save(checkpoint: dict[str, Any], path: str) -> None:
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        file_descriptor, temporary_path = tempfile.mkstemp(prefix=".bc-checkpoint-", suffix=".tmp", dir=directory)
+        os.close(file_descriptor)
+        try:
+            torch.save(checkpoint, temporary_path)
+            os.replace(temporary_path, path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
     def save(self, path: str, metadata: dict[str, Any]) -> None:
-        torch.save({
+        self._atomic_torch_save({
             "schemaVersion": 1,
             "featureSpec": self.feature_spec,
             "modelStateDict": self.model.state_dict(),
+            "metadata": metadata,
+        }, path)
+
+    def save_training_checkpoint(
+        self,
+        path: str,
+        completed_epoch: int,
+        best_epoch: int,
+        best_validation_accuracy: float,
+        seed: int,
+        learning_rate: float,
+        metadata: dict[str, Any],
+    ) -> None:
+        if not isinstance(completed_epoch, int) or isinstance(completed_epoch, bool) or completed_epoch < 0:
+            raise ValueError("completedEpoch must be a non-negative integer")
+        if not isinstance(best_epoch, int) or isinstance(best_epoch, bool) or best_epoch < 0 or best_epoch > completed_epoch:
+            raise ValueError("bestEpoch must be an integer between 0 and completedEpoch")
+        if not math.isfinite(best_validation_accuracy):
+            raise ValueError("bestValidationAccuracy must be finite")
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            raise ValueError("seed must be an integer")
+        if not math.isfinite(learning_rate) or learning_rate <= 0:
+            raise ValueError("learningRate must be finite and positive")
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata must be an object")
+        self._atomic_torch_save({
+            "schemaVersion": 2,
+            "checkpointKind": "behavioral_cloning_training",
+            "featureSpec": self.feature_spec,
+            "modelStateDict": self.model.state_dict(),
+            "optimizerStateDict": self.optimizer.state_dict(),
+            "completedEpoch": completed_epoch,
+            "bestEpoch": best_epoch,
+            "bestValidationAccuracy": best_validation_accuracy,
+            "seed": seed,
+            "learningRate": learning_rate,
             "metadata": metadata,
         }, path)
 
@@ -228,6 +280,55 @@ class BehavioralCloningTrainer:
         if checkpoint["featureSpec"] != self.feature_spec:
             raise ValueError("Checkpoint feature spec does not match")
         self.model.load_state_dict(checkpoint["modelStateDict"])
+
+    def resume_training_checkpoint(self, path: str, expected_seed: int, expected_learning_rate: float) -> dict[str, Any]:
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("Resume checkpoint is not an object")
+        if checkpoint.get("schemaVersion") != 2 or checkpoint.get("checkpointKind") != "behavioral_cloning_training":
+            if "optimizerStateDict" not in checkpoint:
+                raise ValueError("Checkpoint does not contain optimizer state and cannot be used for complete resume")
+            raise ValueError(f"Unsupported resume checkpoint schemaVersion: {checkpoint.get('schemaVersion')}")
+        if checkpoint.get("featureSpec") != self.feature_spec:
+            raise ValueError("Resume checkpoint featureSpec does not match current replay data")
+        if "modelStateDict" not in checkpoint:
+            raise ValueError("Resume checkpoint is missing modelStateDict")
+        if "optimizerStateDict" not in checkpoint:
+            raise ValueError("Resume checkpoint is missing optimizerStateDict")
+        completed_epoch = checkpoint.get("completedEpoch")
+        best_epoch = checkpoint.get("bestEpoch")
+        best_accuracy = checkpoint.get("bestValidationAccuracy")
+        seed = checkpoint.get("seed")
+        learning_rate = checkpoint.get("learningRate")
+        metadata = checkpoint.get("metadata")
+        if not isinstance(completed_epoch, int) or isinstance(completed_epoch, bool) or completed_epoch < 0:
+            raise ValueError("Resume checkpoint completedEpoch must be a non-negative integer")
+        if not isinstance(best_epoch, int) or isinstance(best_epoch, bool) or best_epoch < 0 or best_epoch > completed_epoch:
+            raise ValueError("Resume checkpoint bestEpoch is invalid")
+        if not isinstance(best_accuracy, (int, float)) or isinstance(best_accuracy, bool) or not math.isfinite(best_accuracy):
+            raise ValueError("Resume checkpoint bestValidationAccuracy must be finite")
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            raise ValueError("Resume checkpoint seed must be an integer")
+        if seed != expected_seed:
+            raise ValueError(f"Resume checkpoint seed mismatch: checkpoint={seed}, requested={expected_seed}")
+        if not isinstance(learning_rate, (int, float)) or isinstance(learning_rate, bool) or not math.isfinite(learning_rate) or learning_rate <= 0:
+            raise ValueError("Resume checkpoint learningRate must be finite and positive")
+        if not math.isclose(float(learning_rate), expected_learning_rate, rel_tol=0.0, abs_tol=0.0):
+            raise ValueError(
+                f"Resume checkpoint learningRate mismatch: checkpoint={learning_rate}, requested={expected_learning_rate}"
+            )
+        if not isinstance(metadata, dict):
+            raise ValueError("Resume checkpoint metadata must be an object")
+        self.model.load_state_dict(checkpoint["modelStateDict"])
+        self.optimizer.load_state_dict(checkpoint["optimizerStateDict"])
+        return {
+            "completedEpoch": completed_epoch,
+            "bestEpoch": best_epoch,
+            "bestValidationAccuracy": float(best_accuracy),
+            "seed": seed,
+            "learningRate": float(learning_rate),
+            "metadata": metadata,
+        }
 
     def parameter_hash(self) -> str:
         digest = hashlib.sha256()

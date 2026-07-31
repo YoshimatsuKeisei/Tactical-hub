@@ -14,6 +14,9 @@ describe("RL-4B Behavioral Cloning smoke", () => {
     const dataPath = join(directory, "smoke-replay.jsonl");
     const serialCheckpoint = join(directory, "serial-best.pt");
     const parallelCheckpoint = join(directory, "parallel-best.pt");
+    const resumeBestCheckpoint = join(directory, "resume-best.pt");
+    const latestCheckpoint = join(directory, "resume-latest.pt");
+    const continuousCheckpoint = join(directory, "continuous-best.pt");
     const collection = await runParallelRlImitationCollection({
       seedStart: 701,
       episodeCount: 6,
@@ -88,5 +91,65 @@ describe("RL-4B Behavioral Cloning smoke", () => {
       expect(existsSync(result.checkpointPath)).toBe(true);
       expect(statSync(result.checkpointPath).size).toBeGreaterThan(0);
     }
+
+    const firstStageStatus: string[] = [];
+    const firstStageEvents: string[] = [];
+    const firstStage = await runBehavioralCloning({
+      ...common,
+      checkpointPath: resumeBestCheckpoint,
+      latestCheckpointPath: latestCheckpoint,
+      workerCount: 1,
+      device: "cpu",
+      onProgress: (progress) => {
+        if (progress.kind === "episode" && progress.phase === "validation") firstStageEvents.push("validation-completed");
+      },
+      onStatus: (message) => {
+        firstStageStatus.push(message);
+        firstStageEvents.push(message);
+      },
+    });
+    expect(firstStage.completedEpoch).toBe(1);
+    expect(existsSync(latestCheckpoint)).toBe(true);
+    expect(firstStageStatus.some((message) => message.includes("latest checkpoint saved epoch=1"))).toBe(true);
+    expect(firstStageEvents.indexOf("validation-completed")).toBeLessThan(
+      firstStageEvents.findIndex((event) => event.includes("latest checkpoint saved epoch=1")),
+    );
+
+    const resumeStatus: string[] = [];
+    const resumed = await runBehavioralCloning({
+      ...common,
+      epochs: 2,
+      checkpointPath: resumeBestCheckpoint,
+      latestCheckpointPath: latestCheckpoint,
+      resumePath: latestCheckpoint,
+      workerCount: 1,
+      device: "cpu",
+      onStatus: (message) => resumeStatus.push(message),
+    });
+    expect(resumed.epochs.map((epoch) => epoch.epoch)).toEqual([2]);
+    expect(resumed.completedEpoch).toBe(2);
+    expect(resumed.resumedFrom).toBe(latestCheckpoint);
+    expect(resumeStatus).toEqual(expect.arrayContaining([
+      `[BC] resumed checkpoint=${latestCheckpoint}`,
+      "[BC] completedEpoch=1",
+      "[BC] nextEpoch=2",
+    ]));
+    expect(resumeStatus.some((message) => message.includes("latest checkpoint saved epoch=2"))).toBe(true);
+
+    const continuous = await runBehavioralCloning({
+      ...common,
+      epochs: 2,
+      checkpointPath: continuousCheckpoint,
+      workerCount: 1,
+      device: "cpu",
+    });
+    expect(continuous.epochs.map((epoch) => epoch.epoch)).toEqual([1, 2]);
+    expect(continuous.trainedParameterHash).toBe(resumed.trainedParameterHash);
+
+    await expect(runBehavioralCloning({
+      ...common,
+      checkpointPath: join(directory, "missing-best.pt"),
+      resumePath: join(directory, "does-not-exist.pt"),
+    })).rejects.toThrow(/Resume checkpoint does not exist/);
   }, 180_000);
 });

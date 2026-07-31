@@ -12,6 +12,13 @@ function numberArg(name: string, fallback: number) {
   if (!Number.isFinite(value)) throw new Error(`Invalid --${name}`);
   return value;
 }
+function optionalStringArg(name: string) {
+  const index = process.argv.indexOf(`--${name}`);
+  if (index < 0) return undefined;
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`--${name} requires a path`);
+  return value;
+}
 function optionalPositiveIntegerArg(name: string) {
   const index = process.argv.indexOf(`--${name}`);
   if (index < 0) return undefined;
@@ -26,6 +33,8 @@ const result = await runBehavioralCloning({
   batchSize: numberArg("batch-size", 16),
   learningRate: numberArg("learning-rate", 1e-4),
   checkpointPath: stringArg("checkpoint", "rl-checkpoints/bc-best.pt"),
+  latestCheckpointPath: optionalStringArg("latest-checkpoint"),
+  resumePath: optionalStringArg("resume"),
   trainRange: parseEpisodeRange(stringArg("train-range", "1-80")),
   validationRange: parseEpisodeRange(stringArg("validation-range", "81-90")),
   testRange: parseEpisodeRange(stringArg("test-range", "91-100")),
@@ -45,5 +54,6 @@ const result = await runBehavioralCloning({
       + (progress.kind === "heartbeat" ? " | heartbeat" : ""),
     );
   },
+  onStatus: (message) => console.error(message),
 });
 console.log(JSON.stringify(result, null, 2));

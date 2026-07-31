@@ -117,11 +117,31 @@ def main() -> None:
                     raise RuntimeError("Trainer is not initialized")
                 trainer.save(message["path"], message.get("metadata", {}))
                 send({"type": "saved", "requestId": message["requestId"]})
+            elif message_type == "saveTrainingCheckpoint":
+                if trainer is None:
+                    raise RuntimeError("Trainer is not initialized")
+                trainer.save_training_checkpoint(
+                    message["path"],
+                    message["completedEpoch"],
+                    message["bestEpoch"],
+                    message["bestValidationAccuracy"],
+                    message["seed"],
+                    message["learningRate"],
+                    message.get("metadata", {}),
+                )
+                send({"type": "trainingCheckpointSaved", "requestId": message["requestId"]})
             elif message_type == "load":
                 if trainer is None:
                     raise RuntimeError("Trainer is not initialized")
                 trainer.load(message["path"])
                 send({"type": "loaded", "requestId": message["requestId"]})
+            elif message_type == "resumeTrainingCheckpoint":
+                if trainer is None:
+                    raise RuntimeError("Trainer is not initialized")
+                state = trainer.resume_training_checkpoint(
+                    message["path"], int(message["seed"]), float(message["learningRate"])
+                )
+                send({"type": "trainingCheckpointResumed", "requestId": message["requestId"], **state})
             elif message_type == "parameterHash":
                 if trainer is None:
                     raise RuntimeError("Trainer is not initialized")

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import copy
 from pathlib import Path
 
 import torch
@@ -110,6 +111,49 @@ class BehavioralCloningTrainerTest(unittest.TestCase):
                 cpu = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=99, device="cpu")
                 cpu.load(gpu_checkpoint)
                 self.assertEqual(cpu.parameter_hash(), after)
+
+    def test_complete_training_checkpoint_restores_optimizer_and_matches_continuous_training(self):
+        helper = PolicyModelTest()
+        spec = helper.feature_spec()
+        samples = [{
+            "observation": helper.observation(),
+            "actions": [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]],
+            "targetIndex": 1,
+        }]
+        continuous = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=71)
+        continuous.process_batch(samples, train=True)
+        continuous.process_batch(samples, train=True)
+
+        interrupted = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=71)
+        interrupted.process_batch(samples, train=True)
+        with tempfile.TemporaryDirectory() as directory:
+            latest = str(Path(directory) / "latest.pt")
+            interrupted.save_training_checkpoint(latest, 1, 1, 0.5, 71, 1e-3, {"phase": "validated"})
+            resumed = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=999)
+            state = resumed.resume_training_checkpoint(latest, 71, 1e-3)
+            self.assertEqual(state["completedEpoch"], 1)
+            self.assertEqual(state["bestEpoch"], 1)
+            resumed.process_batch(samples, train=True)
+            self.assertEqual(resumed.parameter_hash(), continuous.parameter_hash())
+            self.assertFalse(any(path.name.startswith(".bc-checkpoint-") for path in Path(directory).iterdir()))
+
+    def test_resume_rejects_model_only_and_feature_mismatched_checkpoints(self):
+        helper = PolicyModelTest()
+        spec = helper.feature_spec()
+        trainer = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=73)
+        with tempfile.TemporaryDirectory() as directory:
+            old_checkpoint = str(Path(directory) / "old.pt")
+            trainer.save(old_checkpoint, {"epoch": 1})
+            with self.assertRaisesRegex(ValueError, "does not contain optimizer state"):
+                trainer.resume_training_checkpoint(old_checkpoint, 73, 1e-3)
+
+            latest = str(Path(directory) / "latest.pt")
+            trainer.save_training_checkpoint(latest, 1, 1, 0.5, 73, 1e-3, {})
+            incompatible_spec = copy.deepcopy(spec)
+            incompatible_spec["globalWidth"] += 1
+            incompatible = BehavioralCloningTrainer(incompatible_spec, learning_rate=1e-3, seed=73)
+            with self.assertRaisesRegex(ValueError, "featureSpec does not match"):
+                incompatible.resume_training_checkpoint(latest, 73, 1e-3)
 
     def test_vectorized_batch_matches_single_sample_loss_and_ignores_padding(self):
         helper = PolicyModelTest()

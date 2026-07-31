@@ -21,6 +21,17 @@ type Response =
     timings: Record<"tensorPreparationMs" | "forwardMs" | "lossMs" | "backwardMs" | "optimizerStepMs", number>;
   }
   | { type: "saved" | "loaded"; requestId: number }
+  | { type: "trainingCheckpointSaved"; requestId: number }
+  | {
+    type: "trainingCheckpointResumed";
+    requestId: number;
+    completedEpoch: number;
+    bestEpoch: number;
+    bestValidationAccuracy: number;
+    seed: number;
+    learningRate: number;
+    metadata: Record<string, unknown>;
+  }
   | { type: "parameterHash"; requestId: number; hash: string }
   | { type: "error"; message: string };
 
@@ -179,6 +190,31 @@ export class PythonBcTrainerClient {
     const requestId = this.requestId++;
     const response = await this.request({ type: "load", requestId, path });
     if (response.type !== "loaded" || response.requestId !== requestId) throw new Error("Unexpected BC load response");
+  }
+  async saveTrainingCheckpoint(input: {
+    path: string;
+    completedEpoch: number;
+    bestEpoch: number;
+    bestValidationAccuracy: number;
+    seed: number;
+    learningRate: number;
+    metadata: Record<string, unknown>;
+  }) {
+    const requestId = this.requestId++;
+    const response = await this.request({ type: "saveTrainingCheckpoint", requestId, ...input });
+    if (response.type !== "trainingCheckpointSaved" || response.requestId !== requestId) {
+      throw new Error("Unexpected BC training checkpoint save response");
+    }
+  }
+  async resumeTrainingCheckpoint(path: string, seed: number, learningRate: number) {
+    const requestId = this.requestId++;
+    const response = await this.request({ type: "resumeTrainingCheckpoint", requestId, path, seed, learningRate });
+    if (response.type !== "trainingCheckpointResumed" || response.requestId !== requestId) {
+      throw new Error("Unexpected BC training checkpoint resume response");
+    }
+    const numeric = [response.completedEpoch, response.bestEpoch, response.bestValidationAccuracy, response.seed, response.learningRate];
+    if (!numeric.every(Number.isFinite)) throw new Error("BC resume state contains non-finite values");
+    return response;
   }
   async parameterHash() {
     const requestId = this.requestId++;

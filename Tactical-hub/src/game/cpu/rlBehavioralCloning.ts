@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { getRlImitationEpisodeFeatureSpec } from "./rlImitationCollector";
 import { PythonBcTrainerClient } from "./pythonBcTrainerClient";
@@ -45,6 +45,9 @@ export type BehavioralCloningResult = {
   torchThreads: number;
   torchInteropThreads: number;
   selectedDevice: RlSelectedTorchDevice;
+  completedEpoch: number;
+  resumedFrom?: string;
+  latestCheckpointPath?: string;
   replayCache: {
     generatedSidecarCount: number;
     reusedSidecarCount: number;
@@ -65,6 +68,8 @@ export async function runBehavioralCloning(input: {
   batchSize: number;
   learningRate: number;
   checkpointPath: string;
+  latestCheckpointPath?: string;
+  resumePath?: string;
   trainRange: EpisodeRange;
   validationRange: EpisodeRange;
   testRange: EpisodeRange;
@@ -75,6 +80,7 @@ export async function runBehavioralCloning(input: {
   torchInteropThreads?: number;
   device?: RlTorchDevice;
   onProgress?: (progress: BehavioralCloningProgress) => void;
+  onStatus?: (message: string) => void;
 }): Promise<BehavioralCloningResult> {
   if (!Number.isInteger(input.epochs) || input.epochs <= 0) throw new Error("epochs must be positive");
   if (!Number.isInteger(input.batchSize) || input.batchSize <= 0) throw new Error("batchSize must be positive");
@@ -86,8 +92,15 @@ export async function runBehavioralCloning(input: {
     if (value !== undefined && (!Number.isInteger(value) || value <= 0)) throw new Error(`${name} must be a positive integer`);
   }
   const checkpointPath = resolve(input.checkpointPath);
+  const latestCheckpointPath = input.latestCheckpointPath ? resolve(input.latestCheckpointPath) : undefined;
+  const resumePath = input.resumePath ? resolve(input.resumePath) : undefined;
   const sidecarDirectory = getDefaultRlReplaySidecarDirectory(input.dataPath);
   await mkdir(dirname(checkpointPath), { recursive: true });
+  if (latestCheckpointPath) await mkdir(dirname(latestCheckpointPath), { recursive: true });
+  if (resumePath) {
+    try { await access(resumePath); }
+    catch { throw new Error(`Resume checkpoint does not exist: ${resumePath}`); }
+  }
   const client = new PythonBcTrainerClient();
   let featureSpec: RlFeatureSpec | undefined;
   let initialParameterHash = "";
@@ -96,6 +109,12 @@ export async function runBehavioralCloning(input: {
     reusedSidecarCount: 0,
     sidecarPreparationMs: 0,
     directReplayMs: 0,
+  };
+  const trainingMetadata = {
+    batchSize: input.batchSize,
+    trainRange: input.trainRange,
+    validationRange: input.validationRange,
+    testRange: input.testRange,
   };
 
   const ensureStarted = async (candidate: RlFeatureSpec) => {
@@ -110,7 +129,6 @@ export async function runBehavioralCloning(input: {
         torchInteropThreads: input.torchInteropThreads,
         device: input.device ?? "auto",
       });
-      initialParameterHash = await client.parameterHash();
     } else if (JSON.stringify(featureSpec) !== JSON.stringify(candidate)) {
       throw new Error("Replay episodes use incompatible feature specs");
     }
@@ -197,10 +215,39 @@ export async function runBehavioralCloning(input: {
   };
 
   try {
+    let firstTrainingEpisode: NumberedReplayEpisode | undefined;
+    for await (const item of readRlImitationEpisodes(input.dataPath, input.trainRange)) {
+      firstTrainingEpisode = item;
+      break;
+    }
+    if (!firstTrainingEpisode) {
+      throw new Error(`No replay episodes found in range ${input.trainRange.from}-${input.trainRange.to}`);
+    }
+    await ensureStarted(getRlImitationEpisodeFeatureSpec(firstTrainingEpisode.episode));
+
     const epochs: BcEpochResult[] = [];
     let bestEpoch = 0;
     let bestValidationAccuracy = Number.NEGATIVE_INFINITY;
-    for (let epoch = 1; epoch <= input.epochs; epoch += 1) {
+    let completedEpoch = 0;
+    if (resumePath) {
+      const resumed = await client.resumeTrainingCheckpoint(resumePath, input.seed, input.learningRate);
+      if (JSON.stringify(resumed.metadata) !== JSON.stringify(trainingMetadata)) {
+        throw new Error("Resume checkpoint training metadata does not match batch size or replay episode ranges");
+      }
+      completedEpoch = resumed.completedEpoch;
+      bestEpoch = resumed.bestEpoch;
+      bestValidationAccuracy = resumed.bestValidationAccuracy;
+      input.onStatus?.(`[BC] resumed checkpoint=${resumePath}`);
+      input.onStatus?.(`[BC] completedEpoch=${completedEpoch}`);
+      input.onStatus?.(`[BC] nextEpoch=${completedEpoch + 1}`);
+      input.onStatus?.(`[BC] bestEpoch=${bestEpoch}`);
+      input.onStatus?.(`[BC] bestValidationAccuracy=${bestValidationAccuracy}`);
+    }
+    initialParameterHash = await client.parameterHash();
+    if (completedEpoch >= input.epochs) {
+      input.onStatus?.(`[BC] no training required: completedEpoch=${completedEpoch} targetEpochs=${input.epochs}`);
+    }
+    for (let epoch = completedEpoch + 1; epoch <= input.epochs; epoch += 1) {
       const train = await runSplit(input.trainRange, true, "train", epoch);
       const validation = await runSplit(input.validationRange, false, "validation", epoch);
       epochs.push({ epoch, train, validation });
@@ -209,8 +256,23 @@ export async function runBehavioralCloning(input: {
         bestValidationAccuracy = validation.accuracy;
         await client.save(checkpointPath, { epoch, validationAccuracy: validation.accuracy, seed: input.seed });
       }
+      completedEpoch = epoch;
+      if (latestCheckpointPath) {
+        await client.saveTrainingCheckpoint({
+          path: latestCheckpointPath,
+          completedEpoch,
+          bestEpoch,
+          bestValidationAccuracy,
+          seed: input.seed,
+          learningRate: input.learningRate,
+          metadata: trainingMetadata,
+        });
+        input.onStatus?.(`[BC] latest checkpoint saved epoch=${completedEpoch} path=${latestCheckpointPath}`);
+      }
     }
     const trainedParameterHash = await client.parameterHash();
+    try { await access(checkpointPath); }
+    catch { throw new Error(`Best checkpoint does not exist and cannot be evaluated: ${checkpointPath}`); }
     await client.load(checkpointPath);
     const reloadedParameterHash = await client.parameterHash();
     const test = await runSplit(input.testRange, false, "test", input.epochs);
@@ -225,6 +287,9 @@ export async function runBehavioralCloning(input: {
       trainedParameterHash,
       reloadedParameterHash,
       ...appliedThreads,
+      completedEpoch,
+      resumedFrom: resumePath,
+      latestCheckpointPath,
       replayCache,
     };
   } finally {
