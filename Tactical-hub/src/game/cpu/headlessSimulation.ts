@@ -284,7 +284,8 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
     timings.add("invariantChecks", options.profile ? performance.now() - start : 0);
     return violations;
   };
-  const settings: CpuTeamSettings = Object.fromEntries(state.teams.filter((team) => !team.isNeutral && team.status === "active").map((team) => [team.id, "random_cpu"]));
+  const controller = options.policy?.controller ?? "random_cpu";
+  const settings: CpuTeamSettings = Object.fromEntries(state.teams.filter((team) => !team.isNeutral && team.status === "active").map((team) => [team.id, controller]));
   const recordPolicyProfile = (enumerationMs: number, policyTotalMs: number, details: { category: string; phase: GameState["phase"]; milliseconds: number }[]) => {
     timings.addSection("policyTotal", policyTotalMs);
     timings.add("legalEnumeration", enumerationMs);

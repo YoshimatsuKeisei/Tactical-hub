@@ -100,7 +100,7 @@ export function createHeuristicCpuPolicy(): HeuristicCpuPolicy {
   const policy = ((state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings): CpuDecision | undefined => {
     const profileLegal = isLegalProfilingEnabled();
     const legalStarted = profileLegal ? performance.now() : 0;
-    const legal = enumerateRlDecisions(state, runtime);
+    const legal = enumerateRlDecisions(state, runtime, (teamId) => settings[teamId] === "heuristic_cpu");
     const legalMilliseconds = profileLegal ? performance.now() - legalStarted : 0;
     if (!legal.length) {
       if (diagnosticsEnabled) lastDiagnostics = { legalActionKeys: [], distanceCache: { requests: 0, searches: 0, hits: 0, misses: 0 } };
@@ -108,7 +108,7 @@ export function createHeuristicCpuPolicy(): HeuristicCpuPolicy {
     }
     const distanceEvaluator = createHeuristicDistanceEvaluator(state);
     const teamId = legal[0].decision.teamId;
-    if (teamId !== "all" && settings[teamId] !== "random_cpu") {
+    if (teamId !== "all" && settings[teamId] !== "heuristic_cpu") {
       if (diagnosticsEnabled) lastDiagnostics = { legalActionKeys: legal.map((entry) => entry.action.actionKey), distanceCache: distanceEvaluator.stats };
       return undefined;
     }
@@ -192,5 +192,6 @@ export function createHeuristicCpuPolicy(): HeuristicCpuPolicy {
     diagnosticsEnabled = enabled;
     if (!enabled) lastDiagnostics = undefined;
   };
+  policy.controller = "heuristic_cpu";
   return policy;
 }

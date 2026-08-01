@@ -48,6 +48,7 @@ export function CpuControlPanel(props: Props) {
         <select value={props.settings[team.id] ?? "human"} onChange={(event) => props.onControllerChange(team.id, event.target.value as TeamController)}>
           <option value="human">人間</option>
           <option value="random_cpu">ランダムCPU</option>
+          <option value="heuristic_cpu">Heuristic CPU</option>
         </select>
         {Object.entries(props.initialStrategistRoles ?? {}).filter(([unitId]) => unitId.startsWith(`${team.homeBaseId}-strategist`)).map(([unitId, role]) =>
           (props.settings[team.id] ?? "human") === "human" ? <label key={unitId}>Initial strategist

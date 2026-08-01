@@ -123,11 +123,12 @@ function wrap(decisions: CpuDecision[]): EnumeratedDecision[] {
   return decisions.map((decision) => ({ decision, action: describeRlDecision(decision) }));
 }
 
-export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime): EnumeratedDecision[] {
+export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, teamEligible: (teamId: string) => boolean = () => true): EnumeratedDecision[] {
   syncCpuContext(runtime, state);
   const active = activeTeamIds(state);
+  const eligible = active.filter(teamEligible);
   if (state.phase === "production") {
-    const teamId = active.find((id) => !runtime.completedProductionTeamIds.includes(id));
+    const teamId = eligible.find((id) => !runtime.completedProductionTeamIds.includes(id));
     if (teamId) {
       for (const baseId of state.bases.filter((base) => base.ownerTeamId === teamId).map((base) => base.id).sort()) {
         const actorKey = `production:${teamId}:${baseId}`;
@@ -136,13 +137,13 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime): Enu
         if (candidates.length) return wrap(candidates.map((choice) => ({ kind: "production", teamId, actorKey, choice })));
       }
       runtime.completedProductionTeamIds.push(teamId);
-      return enumerateRlDecisions(state, runtime);
+      return enumerateRlDecisions(state, runtime, teamEligible);
     }
-    return wrap([{ kind: "resolve_production", teamId: "all" }]);
+    return eligible.length === active.length ? wrap([{ kind: "resolve_production", teamId: "all" }]) : [];
   }
   if (state.phase === "movement_input") {
     const teamId = state.currentMovementTeamId;
-    if (!teamId || !active.includes(teamId)) return [];
+    if (!teamId || !eligible.includes(teamId)) return [];
     if (isTeamProductionPending(state, teamId)) {
       for (const baseId of state.bases.filter((base) => base.ownerTeamId === teamId).map((base) => base.id).sort()) {
         const actorKey = `movement-production:${teamId}:${baseId}`;
@@ -174,7 +175,7 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime): Enu
     return wrap([{ kind: "submit_movement", teamId }]);
   }
   if (state.phase === "attack_input") {
-    const teamId = active.find((id) => !runtime.completedAttackTeamIds.includes(id));
+    const teamId = eligible.find((id) => !runtime.completedAttackTeamIds.includes(id));
     if (teamId) {
       const attackerUnitId = getTeamAttackerUnitIds(state, teamId).find((id) => !runtime.processedKeys.includes(`attack:${teamId}:${id}`));
       if (!attackerUnitId) return wrap([{ kind: "complete_attack_team", teamId }]);
@@ -185,21 +186,21 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime): Enu
         ...targets.map((target): CpuDecision => ({ kind: "attack", teamId, actorKey, intent: { teamId, attackerUnitId, target, pass: false } })),
       ]);
     }
-    return wrap([{ kind: "resolve_battle", teamId: "all" }]);
+    return eligible.length === active.length ? wrap([{ kind: "resolve_battle", teamId: "all" }]) : [];
   }
   if (state.phase === "reward_placement") {
-    return wrap(active.flatMap((teamId) => getRewardPlacementCandidates(state, teamId).map((candidate): CpuDecision => ({ kind: "reward", teamId, ...candidate }))))
+    return wrap(eligible.flatMap((teamId) => getRewardPlacementCandidates(state, teamId).map((candidate): CpuDecision => ({ kind: "reward", teamId, ...candidate }))))
       .sort((left, right) => left.action.actionKey.localeCompare(right.action.actionKey));
   }
   if (state.phase === "strategist_action_input") {
-    const teamId = active.find((id) => !state.strategistSubmittedTeamIds.includes(id));
+    const teamId = eligible.find((id) => !state.strategistSubmittedTeamIds.includes(id));
     if (!teamId) return [];
     const strategistUnitId = getBuilderUnits(state, teamId).map((unit) => unit.id).sort().find((id) => !runtime.processedKeys.includes(`strategist:${teamId}:${id}`));
     if (!strategistUnitId) return wrap([{ kind: "submit_strategist", teamId }]);
     const actorKey = `strategist:${teamId}:${strategistUnitId}`;
     return wrap(getStrategistActionCandidatesForUnit(state, teamId, strategistUnitId).map((intent) => ({ kind: "strategist", teamId, actorKey, intent })));
   }
-  if (state.phase === "strategist_action_resolution") return wrap([{ kind: "resolve_strategists", teamId: "all" }]);
+  if (state.phase === "strategist_action_resolution") return eligible.length === active.length ? wrap([{ kind: "resolve_strategists", teamId: "all" }]) : [];
   return [];
 }
 
@@ -319,7 +320,8 @@ export class RlEnvironment {
 
   stepWithPolicyForReplay(policy: CpuPolicy = getRandomCpuDecision) {
     const policyRuntime = structuredClone(this.runtime) as CpuRuntime;
-    const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, "random_cpu"]));
+    const controller = policy.controller ?? "random_cpu";
+    const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, controller]));
     const decision = policy(this.state, policyRuntime, settings);
     if (!decision) throw new Error("RL policy returned no action at a decision point");
     const selected = this.decisions.find((entry) => entry.action.actionKey === getCpuDecisionActionKey(decision));

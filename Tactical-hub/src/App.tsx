@@ -11,6 +11,7 @@ import type { AttackTarget, StrategistRole, UnitPosition } from "./game/types";
 import { saveStrategistActionIntent } from "./game/engine/construction";
 import { advanceVisualCpuOneStep, resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
 import { createCpuRuntime, type CpuRuntime, type CpuTeamSettings, type TeamController } from "./game/cpu/types";
+import { createVisualCpuPolicyRouter, isCpuController } from "./game/cpu/cpuPolicyRouter";
 
 export default function App() {
   const [state, setState] = useState(createInitialGameState);
@@ -22,6 +23,7 @@ export default function App() {
   const [cpuRunning, setCpuRunning] = useState(false);
   const [cpuPaused, setCpuPaused] = useState(false);
   const [cpuSpeed, setCpuSpeed] = useState<CpuRunnerSpeed>("normal");
+  const [visualCpuPolicy] = useState(createVisualCpuPolicyRouter);
   const stateRef = useRef(state);
   const runtimeRef = useRef(cpuRuntime);
   const settingsRef = useRef(cpuSettings);
@@ -45,7 +47,7 @@ export default function App() {
   }
 
   const advanceCpu = useCallback(() => {
-    const result = advanceVisualCpuOneStep(stateRef.current, runtimeRef.current, settingsRef.current);
+    const result = advanceVisualCpuOneStep(stateRef.current, runtimeRef.current, settingsRef.current, visualCpuPolicy);
     runtimeRef.current = result.runtime;
     setCpuRuntime(result.runtime);
     if (result.state !== stateRef.current) {
@@ -54,7 +56,7 @@ export default function App() {
     }
     if (result.runtime.stoppedReason) setCpuRunning(false);
     return result.applied;
-  }, []);
+  }, [visualCpuPolicy]);
 
   useEffect(() => {
     if (!cpuRunning || cpuPaused) return;
@@ -129,7 +131,7 @@ export default function App() {
     if (state.phase !== "attack_input") return;
     const humanTeams = state.teams.filter((team) => team.status === "active" && (cpuSettings[team.id] ?? "human") === "human");
     const hasHumanChoice = humanTeams.some((team) => getTeamAttackCandidates(state, team.id).some((entry) => entry.targets.length > 1));
-    const cpuTeams = state.teams.filter((team) => team.status === "active" && cpuSettings[team.id] === "random_cpu");
+    const cpuTeams = state.teams.filter((team) => team.status === "active" && isCpuController(cpuSettings[team.id]));
     const cpuReady = cpuTeams.every((team) => cpuRuntime.completedAttackTeamIds.includes(team.id));
     if (!hasHumanChoice && cpuReady) resolveBattleAfterCompletingHumanChoices();
   }, [cpuRuntime.completedAttackTeamIds, cpuSettings, state]);
@@ -158,6 +160,7 @@ export default function App() {
             onChooseConstruction={(unitId, kind, tiles) => {
               const unit = state.units.find((candidate) => candidate.id === unitId);
               if (!unit) return;
+              if ((cpuSettings[unit.ownerTeamId] ?? "human") !== "human") return;
               setState(saveStrategistActionIntent(state, { teamId: unit.ownerTeamId, strategistUnitId: unit.id, action: kind === "bridge" ? "place_bridge" : "place_obstacle", tiles }));
             }}
           />
@@ -184,7 +187,7 @@ export default function App() {
         onResolveBattle={() => {
           resolveBattleAfterCompletingHumanChoices();
         }}
-        battleResolveDisabled={state.phase === "attack_input" && state.teams.some((team) => team.status === "active" && cpuSettings[team.id] === "random_cpu" && !cpuRuntime.completedAttackTeamIds.includes(team.id))}
+        battleResolveDisabled={state.phase === "attack_input" && state.teams.some((team) => team.status === "active" && isCpuController(cpuSettings[team.id]) && !cpuRuntime.completedAttackTeamIds.includes(team.id))}
         onStateChange={setState}
         cpuSettingsControls={<CpuControlPanel
           view="settings"
@@ -192,7 +195,7 @@ export default function App() {
           settings={cpuSettings}
           onControllerChange={(teamId: string, controller: TeamController) => {
             setCpuSettings((current) => ({ ...current, [teamId]: controller }));
-            if (controller === "random_cpu" && !initialStrategistRolesLocked) {
+            if (isCpuController(controller) && !initialStrategistRolesLocked) {
               const role = seededInitialRole(teamId);
               setState((current) => ({ ...current, units: current.units.map((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.id.startsWith("home-") ? { ...unit, role } : unit) }));
             }
@@ -214,7 +217,7 @@ export default function App() {
           onStep={advanceCpu}
           speed={cpuSpeed}
           onSpeedChange={setCpuSpeed}
-          currentCpuTeamId={state.phase === "movement_input" && state.currentMovementTeamId && cpuSettings[state.currentMovementTeamId] === "random_cpu" ? state.currentMovementTeamId : cpuRuntime.logs.at(-1)?.teamId}
+          currentCpuTeamId={state.phase === "movement_input" && state.currentMovementTeamId && isCpuController(cpuSettings[state.currentMovementTeamId]) ? state.currentMovementTeamId : cpuRuntime.logs.at(-1)?.teamId}
           seed={cpuRuntime.seed}
           onSeedChange={(seed) => {
             const reset = createCpuRuntime(seed);

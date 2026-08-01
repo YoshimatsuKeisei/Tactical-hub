@@ -7,6 +7,8 @@ import { createCpuRuntime, type CpuTeamSettings } from "../cpu/types";
 import { positionKey } from "../utils/position";
 import { submitTeamProduction } from "../engine/production";
 import { getHeadlessProgressSignature } from "../cpu/headlessSimulation";
+import { createVisualCpuPolicyRouter } from "../cpu/cpuPolicyRouter";
+import { createHeuristicCpuPolicy } from "../cpu/heuristicCpuPolicy";
 
 const allCpu = (): CpuTeamSettings => ({ "team-1": "random_cpu", "team-2": "random_cpu", "team-3": "random_cpu", "team-4": "random_cpu" });
 const allHuman = (): CpuTeamSettings => ({ "team-1": "human", "team-2": "human", "team-3": "human", "team-4": "human" });
@@ -23,6 +25,53 @@ function runSteps(count: number, seed: number, settings = allCpu()) {
 }
 
 describe("Phase 5-B Random CPU and Visual Runner", () => {
+  it("routes random, heuristic, and human teams to only their configured controller", () => {
+    const calls: string[] = [];
+    const heuristic = createHeuristicCpuPolicy();
+    const router = createVisualCpuPolicyRouter({
+      randomPolicy: (state, runtime, settings) => { calls.push("random"); return getRandomCpuDecision(state, runtime, settings); },
+      heuristicPolicy: (state, runtime, settings) => { calls.push("heuristic"); return heuristic(state, runtime, settings); },
+    });
+    const mixed: CpuTeamSettings = { "team-1": "human", "team-2": "random_cpu", "team-3": "heuristic_cpu", "team-4": "heuristic_cpu" };
+    let state = createInitialGameState();
+    let runtime = createCpuRuntime(71);
+
+    const waiting = advanceVisualCpuOneStep(state, runtime, mixed, router);
+    expect(waiting.applied).toBe(false);
+    expect(waiting.waitingForHuman).toBe(true);
+    expect(calls).toHaveLength(0);
+
+    state = { ...state, currentMovementTeamId: "team-2" };
+    const random = advanceVisualCpuOneStep(state, runtime, mixed, router);
+    expect(random.applied).toBe(true);
+    expect(calls).toEqual(["random"]);
+
+    state = { ...state, currentMovementTeamId: "team-3" };
+    const heuristicStep = advanceVisualCpuOneStep(state, runtime, mixed, router);
+    expect(heuristicStep.applied).toBe(true);
+    expect(calls).toEqual(["random", "heuristic"]);
+  });
+
+  it("advances an all-Heuristic visual match and waits at a Human movement turn", () => {
+    const router = createVisualCpuPolicyRouter();
+    const heuristicSettings: CpuTeamSettings = { "team-1": "heuristic_cpu", "team-2": "heuristic_cpu", "team-3": "heuristic_cpu", "team-4": "heuristic_cpu" };
+    let state = createInitialGameState();
+    let runtime = createCpuRuntime(72);
+    for (let index = 0; index < 200 && state.phase === "movement_input"; index += 1) {
+      const step = advanceVisualCpuOneStep(state, runtime, heuristicSettings, router);
+      state = step.state; runtime = step.runtime;
+    }
+    expect(state.phase).toBe("attack_input");
+    expect(runtime.logs.some((entry) => entry.teamId === "team-1")).toBe(true);
+    expect(runtime.logs.some((entry) => entry.teamId === "team-4")).toBe(true);
+
+    const movement = createInitialGameState();
+    const mixed = { ...heuristicSettings, [movement.currentMovementTeamId!]: "human" as const };
+    const waiting = advanceVisualCpuOneStep(movement, createCpuRuntime(73), mixed, createVisualCpuPolicyRouter());
+    expect(waiting.applied).toBe(false);
+    expect(waiting.waitingForHuman).toBe(true);
+  });
+
   it("randomly selects an available production choice, confirms it, then continues into movement", () => {
     let state = createInitialGameState();
     let runtime = createCpuRuntime(37);

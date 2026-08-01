@@ -9,7 +9,7 @@ import { UNIT_STATS } from "../constants";
 import type { GameState, Unit, UnitPosition } from "../types";
 import { getRoadAttackDistance } from "../utils/roadTopology";
 
-const allCpu: CpuTeamSettings = { "team-1": "random_cpu", "team-2": "random_cpu", "team-3": "random_cpu", "team-4": "random_cpu" };
+const allCpu: CpuTeamSettings = { "team-1": "heuristic_cpu", "team-2": "heuristic_cpu", "team-3": "heuristic_cpu", "team-4": "heuristic_cpu" };
 
 function movementState() {
   const state = createHeadlessInitialState(4);

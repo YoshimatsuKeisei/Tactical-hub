@@ -1,6 +1,6 @@
 import type { AttackIntent, GameState, ProductionChoice, StrategistActionIntent, TeleportIntent, UnitPosition } from "../types";
 
-export type TeamController = "human" | "random_cpu";
+export type TeamController = "human" | "random_cpu" | "heuristic_cpu";
 export type CpuTeamSettings = Record<string, TeamController>;
 
 export type CpuActionLog = {
@@ -42,7 +42,9 @@ export type CpuDecision =
   | { kind: "resolve_battle"; teamId: string }
   | { kind: "resolve_strategists"; teamId: string };
 
-export type CpuPolicy = (state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings) => CpuDecision | undefined;
+export type CpuPolicy = ((state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings) => CpuDecision | undefined) & {
+  controller?: Exclude<TeamController, "human">;
+};
 
 export function createCpuRuntime(seed: number, maxAppliedSteps = 10_000): CpuRuntime {
   const normalized = seed >>> 0;
