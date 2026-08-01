@@ -126,15 +126,43 @@ class BehavioralCloningTrainerTest(unittest.TestCase):
 
         interrupted = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=71)
         interrupted.process_batch(samples, train=True)
+        checkpoint_state = {
+            "schemaVersion": 3,
+            "checkpointKind": "behavioral_cloning_training",
+            "currentEpoch": 1,
+            "completedEpoch": 0,
+            "phase": "train",
+            "nextEpisodeNumber": 3,
+            "completedTrainEpisodes": [1, 2],
+            "completedValidationEpisodes": [],
+            "trainAccumulator": {"lossSum": 1.0, "correct": 1, "count": 2},
+            "validationAccumulator": {"lossSum": 0.0, "correct": 0, "count": 0},
+            "bestEpoch": None,
+            "bestValidationAccuracy": None,
+            "seed": 71,
+            "learningRate": 1e-3,
+            "batchSize": 4,
+            "trainRange": {"from": 1, "to": 4},
+            "validationRange": {"from": 5, "to": 5},
+            "testRange": {"from": 6, "to": 6},
+            "metadata": {"test": True},
+        }
+        expected = {key: checkpoint_state[key] for key in ("seed", "learningRate", "batchSize", "trainRange", "validationRange", "testRange")}
         with tempfile.TemporaryDirectory() as directory:
             latest = str(Path(directory) / "latest.pt")
-            interrupted.save_training_checkpoint(latest, 1, 1, 0.5, 71, 1e-3, {"phase": "validated"})
+            interrupted.save_training_checkpoint(latest, checkpoint_state)
             resumed = BehavioralCloningTrainer(spec, learning_rate=1e-3, seed=999)
-            state = resumed.resume_training_checkpoint(latest, 71, 1e-3)
-            self.assertEqual(state["completedEpoch"], 1)
-            self.assertEqual(state["bestEpoch"], 1)
+            state = resumed.resume_training_checkpoint(latest, expected)
+            self.assertEqual(state["nextEpisodeNumber"], 3)
+            self.assertEqual(state["completedTrainEpisodes"], [1, 2])
             resumed.process_batch(samples, train=True)
             self.assertEqual(resumed.parameter_hash(), continuous.parameter_hash())
+            for left, right in zip(resumed.optimizer.state_dict()["state"].values(), continuous.optimizer.state_dict()["state"].values()):
+                for key in left:
+                    if torch.is_tensor(left[key]):
+                        self.assertTrue(torch.equal(left[key], right[key]))
+                    else:
+                        self.assertEqual(left[key], right[key])
             self.assertFalse(any(path.name.startswith(".bc-checkpoint-") for path in Path(directory).iterdir()))
 
     def test_resume_rejects_model_only_and_feature_mismatched_checkpoints(self):
@@ -145,15 +173,25 @@ class BehavioralCloningTrainerTest(unittest.TestCase):
             old_checkpoint = str(Path(directory) / "old.pt")
             trainer.save(old_checkpoint, {"epoch": 1})
             with self.assertRaisesRegex(ValueError, "does not contain optimizer state"):
-                trainer.resume_training_checkpoint(old_checkpoint, 73, 1e-3)
+                trainer.resume_training_checkpoint(old_checkpoint, {"seed": 73, "learningRate": 1e-3})
 
             latest = str(Path(directory) / "latest.pt")
-            trainer.save_training_checkpoint(latest, 1, 1, 0.5, 73, 1e-3, {})
+            state = {
+                "schemaVersion": 3, "checkpointKind": "behavioral_cloning_training", "currentEpoch": 1, "completedEpoch": 0,
+                "phase": "validation", "nextEpisodeNumber": 5, "completedTrainEpisodes": [1, 2, 3, 4],
+                "completedValidationEpisodes": [],
+                "trainAccumulator": {"lossSum": 1.0, "correct": 1, "count": 2},
+                "validationAccumulator": {"lossSum": 0.0, "correct": 0, "count": 0},
+                "bestEpoch": None, "bestValidationAccuracy": None, "seed": 73, "learningRate": 1e-3, "batchSize": 4,
+                "trainRange": {"from": 1, "to": 4}, "validationRange": {"from": 5, "to": 5}, "testRange": {"from": 6, "to": 6},
+                "metadata": {},
+            }
+            trainer.save_training_checkpoint(latest, state)
             incompatible_spec = copy.deepcopy(spec)
             incompatible_spec["globalWidth"] += 1
             incompatible = BehavioralCloningTrainer(incompatible_spec, learning_rate=1e-3, seed=73)
             with self.assertRaisesRegex(ValueError, "featureSpec does not match"):
-                incompatible.resume_training_checkpoint(latest, 73, 1e-3)
+                incompatible.resume_training_checkpoint(latest, {key: state[key] for key in ("seed", "learningRate", "batchSize", "trainRange", "validationRange", "testRange")})
 
     def test_vectorized_batch_matches_single_sample_loss_and_ignores_padding(self):
         helper = PolicyModelTest()

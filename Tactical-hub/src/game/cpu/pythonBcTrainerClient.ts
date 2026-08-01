@@ -5,6 +5,30 @@ import type { RlReplayEncodedDecision } from "./rlImitationCollector";
 import { RL_PROJECT_ROOT } from "./rlProjectPaths";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
 import { packBcEncodedSamples, type PackedBcBatch } from "./rlBcPackedBatch";
+import type { EpisodeRange } from "./rlReplayReader";
+
+export type BcCheckpointAccumulator = { lossSum: number; correct: number; count: number };
+export type BcEpisodeCheckpointState = {
+  schemaVersion: 3;
+  checkpointKind: "behavioral_cloning_training";
+  currentEpoch: number;
+  completedEpoch: number;
+  phase: "train" | "validation";
+  nextEpisodeNumber: number;
+  completedTrainEpisodes: number[];
+  completedValidationEpisodes: number[];
+  trainAccumulator: BcCheckpointAccumulator;
+  validationAccumulator: BcCheckpointAccumulator;
+  bestEpoch: number | null;
+  bestValidationAccuracy: number | null;
+  seed: number;
+  learningRate: number;
+  batchSize: number;
+  trainRange: EpisodeRange;
+  validationRange: EpisodeRange;
+  testRange: EpisodeRange;
+  metadata: Record<string, unknown>;
+};
 
 type Response =
   | { type: "ready"; torchThreads: number; torchInteropThreads: number; selectedDevice: RlSelectedTorchDevice }
@@ -25,14 +49,10 @@ type Response =
   | {
     type: "trainingCheckpointResumed";
     requestId: number;
-    completedEpoch: number;
-    bestEpoch: number;
-    bestValidationAccuracy: number;
-    seed: number;
-    learningRate: number;
-    metadata: Record<string, unknown>;
+    state: BcEpisodeCheckpointState | ({ schemaVersion: 2; completedEpoch: number; bestEpoch: number; bestValidationAccuracy: number; seed: number; learningRate: number; metadata: Record<string, unknown> });
   }
   | { type: "parameterHash"; requestId: number; hash: string }
+  | { type: "optimizerHash"; requestId: number; hash: string }
   | { type: "error"; message: string };
 
 export type BcEncodedSample = {
@@ -193,12 +213,7 @@ export class PythonBcTrainerClient {
   }
   async saveTrainingCheckpoint(input: {
     path: string;
-    completedEpoch: number;
-    bestEpoch: number;
-    bestValidationAccuracy: number;
-    seed: number;
-    learningRate: number;
-    metadata: Record<string, unknown>;
+    state: BcEpisodeCheckpointState;
   }) {
     const requestId = this.requestId++;
     const response = await this.request({ type: "saveTrainingCheckpoint", requestId, ...input });
@@ -206,20 +221,24 @@ export class PythonBcTrainerClient {
       throw new Error("Unexpected BC training checkpoint save response");
     }
   }
-  async resumeTrainingCheckpoint(path: string, seed: number, learningRate: number) {
+  async resumeTrainingCheckpoint(path: string, expected: { seed: number; learningRate: number; batchSize: number; trainRange: EpisodeRange; validationRange: EpisodeRange; testRange: EpisodeRange }) {
     const requestId = this.requestId++;
-    const response = await this.request({ type: "resumeTrainingCheckpoint", requestId, path, seed, learningRate });
+    const response = await this.request({ type: "resumeTrainingCheckpoint", requestId, path, expected });
     if (response.type !== "trainingCheckpointResumed" || response.requestId !== requestId) {
       throw new Error("Unexpected BC training checkpoint resume response");
     }
-    const numeric = [response.completedEpoch, response.bestEpoch, response.bestValidationAccuracy, response.seed, response.learningRate];
-    if (!numeric.every(Number.isFinite)) throw new Error("BC resume state contains non-finite values");
-    return response;
+    return response.state;
   }
   async parameterHash() {
     const requestId = this.requestId++;
     const response = await this.request({ type: "parameterHash", requestId });
     if (response.type !== "parameterHash" || response.requestId !== requestId) throw new Error("Unexpected BC parameter hash response");
+    return response.hash;
+  }
+  async optimizerHash() {
+    const requestId = this.requestId++;
+    const response = await this.request({ type: "optimizerHash", requestId });
+    if (response.type !== "optimizerHash" || response.requestId !== requestId) throw new Error("Unexpected BC optimizer hash response");
     return response.hash;
   }
   async close() {

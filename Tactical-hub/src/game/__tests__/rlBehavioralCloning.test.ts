@@ -35,6 +35,7 @@ describe("RL-4B Behavioral Cloning smoke", () => {
       validationRange: { from: 5, to: 5 },
       testRange: { from: 6, to: 6 },
       seed: 19,
+      runTest: true,
     };
     await expect(runBehavioralCloning({
       ...common,
@@ -65,7 +66,7 @@ describe("RL-4B Behavioral Cloning smoke", () => {
 
     expect(parallel.epochs[0].train.sampleCount).toBe(serial.epochs[0].train.sampleCount);
     expect(parallel.epochs[0].validation.sampleCount).toBe(serial.epochs[0].validation.sampleCount);
-    expect(parallel.test.sampleCount).toBe(serial.test.sampleCount);
+    expect(parallel.test!.sampleCount).toBe(serial.test!.sampleCount);
     expect(parallel.torchThreads).toBe(2);
     expect(parallel.torchInteropThreads).toBe(1);
     expect(parallel.selectedDevice).toBe("cpu");
@@ -85,7 +86,7 @@ describe("RL-4B Behavioral Cloning smoke", () => {
       expect(result.epochs[0].train.sampleCount).toBeGreaterThan(0);
       expect(Number.isFinite(result.epochs[0].train.loss)).toBe(true);
       expect(Number.isFinite(result.epochs[0].validation.loss)).toBe(true);
-      expect(Number.isFinite(result.test.loss)).toBe(true);
+      expect(Number.isFinite(result.test!.loss)).toBe(true);
       expect(result.initialParameterHash).not.toBe(result.trainedParameterHash);
       expect(result.reloadedParameterHash).toBe(result.trainedParameterHash);
       expect(existsSync(result.checkpointPath)).toBe(true);
@@ -110,9 +111,9 @@ describe("RL-4B Behavioral Cloning smoke", () => {
     });
     expect(firstStage.completedEpoch).toBe(1);
     expect(existsSync(latestCheckpoint)).toBe(true);
-    expect(firstStageStatus.some((message) => message.includes("latest checkpoint saved epoch=1"))).toBe(true);
+    expect(firstStageStatus.some((message) => message.includes("latest checkpoint saved epoch=2 phase=train nextEpisode=1"))).toBe(true);
     expect(firstStageEvents.indexOf("validation-completed")).toBeLessThan(
-      firstStageEvents.findIndex((event) => event.includes("latest checkpoint saved epoch=1")),
+      firstStageEvents.findIndex((event) => event.includes("latest checkpoint saved epoch=2 phase=train nextEpisode=1")),
     );
 
     const resumeStatus: string[] = [];
@@ -134,7 +135,7 @@ describe("RL-4B Behavioral Cloning smoke", () => {
       "[BC] completedEpoch=1",
       "[BC] nextEpoch=2",
     ]));
-    expect(resumeStatus.some((message) => message.includes("latest checkpoint saved epoch=2"))).toBe(true);
+    expect(resumeStatus.some((message) => message.includes("latest checkpoint saved epoch=3 phase=train nextEpisode=1"))).toBe(true);
 
     const continuous = await runBehavioralCloning({
       ...common,

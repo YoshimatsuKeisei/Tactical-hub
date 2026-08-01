@@ -78,16 +78,19 @@ export type RlImitationEpisodeResult = RlImitationEpisodeEnd & {
   sampleCountByTeam: Record<string, number>;
 };
 
-export function getRlImitationEpisodeFeatureSpec(episode: RlImitationEpisode) {
+export function getRlImitationHeaderFeatureSpec(header: RlImitationEpisodeHeader) {
   const environment = new RlEnvironment();
-  const observation = environment.reset(episode.header.seed, episode.header.participantCount);
+  const observation = environment.reset(header.seed, header.participantCount);
   if (
-    observation.config.mapId !== episode.header.mapId
-    || JSON.stringify(observation.config) !== JSON.stringify(episode.header.gameConfig)
+    observation.config.mapId !== header.mapId
+    || JSON.stringify(observation.config) !== JSON.stringify(header.gameConfig)
   ) {
-    throw new Error(`Replay initial game settings do not match episode ${episode.header.episodeId}`);
+    throw new Error(`Replay initial game settings do not match episode ${header.episodeId}`);
   }
   return createRlFeatureSpec(observation);
+}
+export function getRlImitationEpisodeFeatureSpec(episode: RlImitationEpisode) {
+  return getRlImitationHeaderFeatureSpec(episode.header);
 }
 
 function currentDecision(

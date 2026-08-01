@@ -44,6 +44,7 @@ const result = await runBehavioralCloning({
   torchThreads: optionalPositiveIntegerArg("torch-threads"),
   torchInteropThreads: optionalPositiveIntegerArg("torch-interop-threads"),
   device: parseRlTorchDevice(stringArg("device", "auto")),
+  runTest: process.argv.includes("--run-test"),
   onProgress: (progress) => {
     console.error(
       `[BC] phase=${progress.phase} epoch=${progress.epoch}/${progress.totalEpochs}`

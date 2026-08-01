@@ -2,10 +2,48 @@ import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { RlImitationEpisode } from "./rlImitationCollector";
 import type { PackedBcBatch } from "./rlBcPackedBatch";
+import { packBcEncodedSamples } from "./rlBcPackedBatch";
+import { generateRlReplayRngSidecar, getRlImitationEpisodeFeatureSpec, replayHeuristicImitationEpisode } from "./rlImitationCollector";
+import type { BcEncodedSample } from "./pythonBcTrainerClient";
+import { loadOrCreateRlReplayRngSidecar } from "./rlReplayRngSidecar";
 import type { RlBcReplayWorkerRequest, RlBcReplayWorkerResponse } from "./rlBcReplayWorkerMessages";
 import { RL_PROJECT_ROOT, RL_VITE_NODE_ENTRY } from "./rlProjectPaths";
 
 export type NumberedReplayEpisode = { episodeNumber: number; episode: RlImitationEpisode };
+
+export async function runDirectBcReplayEpisode(input: {
+  item: NumberedReplayEpisode;
+  batchSize: number;
+  sidecarDirectory: string;
+  onBatch: (packedBatch: PackedBcBatch) => void | Promise<void>;
+}) {
+  const featureSpec = getRlImitationEpisodeFeatureSpec(input.item.episode);
+  let batch: BcEncodedSample[] = [];
+  let sampleCount = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    const current = batch; batch = [];
+    await input.onBatch(packBcEncodedSamples(current, featureSpec));
+  };
+  const sidecarStarted = performance.now();
+  const cached = await loadOrCreateRlReplayRngSidecar(input.item.episode, input.sidecarDirectory, () => generateRlReplayRngSidecar(input.item.episode));
+  const sidecarPreparationMs = performance.now() - sidecarStarted;
+  const timing = { directReplayMs: 0 };
+  await replayHeuristicImitationEpisode({
+    episode: input.item.episode,
+    rngSidecar: cached.sidecar,
+    timing,
+    onEncodedDecision: async (decision) => {
+      if (decision.encodedLegalActions.actionKeys[decision.selectedActionIndex] !== decision.record.selectedActionKey) throw new Error(`Replay target index mismatch for ${decision.record.selectedActionKey}`);
+      batch.push({ observation: decision.encodedObservation, actions: decision.encodedLegalActions.actions, targetIndex: decision.selectedActionIndex });
+      sampleCount += 1;
+      if (batch.length >= input.batchSize) await flush();
+    },
+  });
+  await flush();
+  if (sampleCount !== input.item.episode.end.decisionCount) throw new Error(`BC replay episode ${input.item.episodeNumber} sample count mismatch`);
+  return { sampleCount, sidecarGenerated: cached.generated, sidecarPreparationMs, directReplayMs: timing.directReplayMs };
+}
 
 export async function runParallelBcReplay(input: {
   episodes: NumberedReplayEpisode[];
@@ -13,7 +51,7 @@ export async function runParallelBcReplay(input: {
   batchSize: number;
   sidecarDirectory: string;
   onBatch: (packedBatch: PackedBcBatch) => void | Promise<void>;
-  onEpisodeCompleted?: (completed: number, total: number) => void;
+  onEpisodeCompleted?: (completed: number, total: number, episodeNumber: number) => void | Promise<void>;
   workerEntryPath?: string;
 }) {
   if (!input.episodes.length) throw new Error("Parallel BC replay requires at least one episode");
@@ -142,8 +180,9 @@ export async function runParallelBcReplay(input: {
           sidecarPreparationMs: raw.sidecarPreparationMs,
           directReplayMs: raw.directReplayMs,
         });
-        input.onEpisodeCompleted?.(completed.size, input.episodes.length);
-        assign(worker, workerId);
+        void Promise.resolve(input.onEpisodeCompleted?.(completed.size, input.episodes.length, raw.episodeNumber))
+          .then(() => assign(worker, workerId))
+          .catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
       });
       worker.on("error", (error) => fail(new Error(`BC replay worker ${workerId} process error: ${error.message}`)));
       worker.on("exit", (code, signal) => {
