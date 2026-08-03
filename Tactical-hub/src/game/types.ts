@@ -57,7 +57,7 @@ export type UnitPosition =
   | { kind: "bridge"; bridgeId: string; cellIndex: number }
   | {
       kind: "removed";
-      reason: "defeated" | "water_trap" | "king_defeat_reset" | "team_defeat";
+      reason: "defeated" | "water_trap" | "king_defeat_reset" | "team_defeat" | "merged";
     };
 
 export type Unit = {
@@ -68,6 +68,7 @@ export type Unit = {
   position: UnitPosition;
   statuses: UnitStatus[];
   role?: StrategistRole;
+  formation?: "heavy";
 };
 
 export type BaseSlot = {

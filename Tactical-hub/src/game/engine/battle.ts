@@ -19,6 +19,7 @@ import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetIna
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
 import { isLegalProfilingEnabled, measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
+import { isHeavyInfantry } from "./heavyInfantry";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -93,6 +94,16 @@ const SUCCESS_DENOMINATORS: Partial<
     engineer: 6,
     apprentice_ninja: 6,
   },
+};
+
+const HEAVY_INFANTRY_ATTACK_DENOMINATORS: Partial<Record<UnitType, number>> = {
+  infantry: 5,
+  archer: 4,
+  engineer: 4,
+  ninja: 4,
+  strategist: 4,
+  cavalry: 6,
+  king: 6,
 };
 
 function isAlive(unit: Unit) {
@@ -216,11 +227,9 @@ function getAttackDenominators(
   encouraged = false,
 ) {
   const context = { targetInBase: target.position.kind === "base", encouraged };
-  const baseSuccessDenominator = getBaseAttackDenominator(
-    attacker.type,
-    target.type,
-    context,
-  );
+  const baseSuccessDenominator = isHeavyInfantry(attacker)
+    ? isHeavyInfantry(target) ? 6 : HEAVY_INFANTRY_ATTACK_DENOMINATORS[target.type] ?? getBaseAttackDenominator(attacker.type, target.type, context)
+    : getBaseAttackDenominator(attacker.type, target.type, context);
   if (baseSuccessDenominator === null) return undefined;
   let finalSuccessDenominator = applyEncouragementToDenominator(
     baseSuccessDenominator,
@@ -529,9 +538,16 @@ export function resolveBattle(
   rng: () => number = Math.random,
 ): GameState {
   const next = structuredClone(state) as GameState;
+  const neutralIntents: AttackIntent[] = next.units
+    .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed" && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "neutral")
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((unit) => {
+      const target = getAttackCandidates(next, unit.id)[0];
+      return target ? [{ teamId: unit.ownerTeamId, attackerUnitId: unit.id, target, pass: false }] : [];
+    });
   const intents = next.turnState.actionIntents.flatMap(
     (intent) => intent.attackIntents ?? [],
-  );
+  ).concat(neutralIntents.filter((neutral) => !next.turnState.actionIntents.some((intent) => intent.attackIntents?.some((saved) => saved.attackerUnitId === neutral.attackerUnitId))));
   const encouragedUnitIds = getEncouragedUnitIds(next);
   const battleLogs: BattleLogDraft[] = [];
   const battleStartPositionsByUnitId = new Map(

@@ -5,6 +5,7 @@ import { chebyshevDistance } from "../utils/distance";
 import { getKingCampaign, recordKingDamage } from "./kingCampaign";
 import { resolveKingDefeats, type DefeatedKingPlan } from "./defeat";
 import { beginMovementPhase } from "./movement";
+import { isHeavyInfantry } from "./heavyInfantry";
 
 const ORTHOGONAL = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 const key = (cell: BoardCoord) => tileKey(cell.x, cell.y);
@@ -303,6 +304,7 @@ function resolveBridgeFloods(
   }
 
   const survivingKings: FloodSnapshot[] = [];
+  const survivingHeavyInfantry: FloodSnapshot[] = [];
   const defeatedKingData: { unit: Unit; resettingTeamId: string }[] = [];
   const orderedSnapshots = [...snapshots.values()].sort((left, right) =>
     left.unit.id.localeCompare(right.unit.id),
@@ -313,7 +315,7 @@ function resolveBridgeFloods(
       unit.position = { kind: "water", ...origin };
       continue;
     }
-    if (unit.type !== "king") {
+    if (unit.type !== "king" && !isHeavyInfantry(unit)) {
       removeFloodVictim(state, unit, resettingTeamId);
       continue;
     }
@@ -324,16 +326,18 @@ function resolveBridgeFloods(
       unit.position = { kind: "removed", reason: "water_trap" };
       unit.statuses = [];
       recordFloodKill(state, resettingTeamId, unit);
-      defeatedKingData.push({ unit, resettingTeamId });
-    } else survivingKings.push(snapshot);
+      if (unit.type === "king") defeatedKingData.push({ unit, resettingTeamId });
+    } else if (unit.type === "king") survivingKings.push(snapshot);
+    else survivingHeavyInfantry.push(snapshot);
   }
 
   const roadAssigned = new Set<string>();
   const unmatched: typeof survivingKings = [];
-  const orderedSurvivingKings = [...survivingKings].sort((left, right) =>
-    left.unit.id.localeCompare(right.unit.id),
-  );
-  for (const snapshot of randomized(orderedSurvivingKings, rng)) {
+  const prioritizedSurvivors = [survivingKings, survivingHeavyInfantry].flatMap((group) => randomized(
+    [...group].sort((left, right) => left.unit.id.localeCompare(right.unit.id)),
+    rng,
+  ));
+  for (const snapshot of prioritizedSurvivors) {
     const occupied = new Set(
       state.units.flatMap((unit) =>
         unit.position.kind === "tile" ? [tileKey(unit.position.x, unit.position.y)] : [],
@@ -368,10 +372,14 @@ function resolveBridgeFloods(
   }
 
   const noBase: typeof unmatched = [];
-  const orderedUnmatched = [...unmatched].sort((left, right) =>
-    left.unit.id.localeCompare(right.unit.id),
-  );
-  for (const snapshot of randomized(orderedUnmatched, rng)) {
+  const prioritizedUnmatched = [
+    unmatched.filter((snapshot) => snapshot.unit.type === "king"),
+    unmatched.filter((snapshot) => isHeavyInfantry(snapshot.unit)),
+  ].flatMap((group) => randomized(
+    [...group].sort((left, right) => left.unit.id.localeCompare(right.unit.id)),
+    rng,
+  ));
+  for (const snapshot of prioritizedUnmatched) {
     const team = state.teams.find((candidate) => candidate.id === snapshot.unit.ownerTeamId);
     const bases = state.bases
       .filter(
@@ -399,7 +407,7 @@ function resolveBridgeFloods(
 
   for (const snapshot of noBase) {
     removeFloodVictim(state, snapshot.unit, snapshot.resettingTeamId);
-    defeatedKingData.push({ unit: snapshot.unit, resettingTeamId: snapshot.resettingTeamId });
+    if (snapshot.unit.type === "king") defeatedKingData.push({ unit: snapshot.unit, resettingTeamId: snapshot.resettingTeamId });
   }
 
   const defeatedKings: DefeatedKingPlan[] = defeatedKingData.flatMap(({ unit, resettingTeamId }) => {

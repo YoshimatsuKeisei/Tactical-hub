@@ -65,17 +65,19 @@ function upsertProductionChoice(state: GameState, choice: ProductionChoice) {
     intent.teamId === choice.teamId
       ? {
           ...intent,
-          productionChoices: [
-            ...intent.productionChoices.filter((candidate) => candidate.baseId !== choice.baseId),
-            choice,
-          ],
+          // The opportunity belongs to the team, not to each owned base.
+          productionChoices: [choice],
         }
       : intent,
   );
 }
 
 function applyProductionChoices(next: GameState, choices: ProductionChoice[]) {
+  const seenTeams = new Set<string>();
   for (const choice of choices) {
+    // Old or externally-created states may still contain multiple choices.
+    if (seenTeams.has(choice.teamId)) continue;
+    seenTeams.add(choice.teamId);
     const base = next.bases.find((candidate) => candidate.id === choice.baseId);
     const legalTypes = getAvailableProductionTypes(next, choice.teamId, choice.baseId);
     const slot = base?.slots.find((candidate) => !candidate.unitId);

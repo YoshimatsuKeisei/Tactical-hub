@@ -27,6 +27,38 @@ function fillHomeBase(state: GameState) {
 }
 
 describe("production", () => {
+  it("keeps only one team choice across multiple owned bases and resolves at most one legacy choice", () => {
+    let state = createInitialGameState();
+    const second = state.bases.find((base) => base.type === "neutral")!;
+    second.ownerTeamId = "team-1";
+    second.slots.forEach((slot) => { slot.unitId = undefined; });
+    state = saveProductionChoice(state, { teamId: "team-1", baseId: "home-1", unitType: "infantry" });
+    state = saveProductionChoice(state, { teamId: "team-1", baseId: second.id, unitType: "cavalry" });
+    expect(state.turnState.actionIntents.find((intent) => intent.teamId === "team-1")?.productionChoices).toEqual([
+      { teamId: "team-1", baseId: second.id, unitType: "cavalry" },
+    ]);
+
+    const corrupt = structuredClone(state);
+    corrupt.turnState.actionIntents.find((intent) => intent.teamId === "team-1")!.productionChoices.push(
+      { teamId: "team-1", baseId: "home-1", unitType: "infantry" },
+    );
+    const before = corrupt.units.length;
+    const resolved = resolveProduction(corrupt);
+    expect(resolved.units).toHaveLength(before + 1);
+  });
+
+  it("enforces one production during movement-phase pending production", () => {
+    let state = createInitialGameState();
+    const second = state.bases.find((base) => base.type === "neutral")!;
+    second.ownerTeamId = "team-1";
+    second.slots.forEach((slot) => { slot.unitId = undefined; });
+    state = saveProductionChoice(state, { teamId: "team-1", baseId: "home-1", unitType: "infantry" });
+    state = saveProductionChoice(state, { teamId: "team-1", baseId: second.id, unitType: "archer" });
+    const before = state.units.length;
+    const submitted = submitTeamProduction(state, "team-1");
+    expect(submitted.units).toHaveLength(before + 1);
+    expect(submitted.productionCompletedTeamIdsThisTurn).toContain("team-1");
+  });
   it.each([
     [1, true], [2, false], [5, false], [6, true], [10, false], [11, true],
   ])("offers the movement-phase production step on turn %i: %s", (turnNumber, expected) => {

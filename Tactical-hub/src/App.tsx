@@ -188,6 +188,7 @@ export default function App() {
           resolveBattleAfterCompletingHumanChoices();
         }}
         battleResolveDisabled={state.phase === "attack_input" && state.teams.some((team) => team.status === "active" && isCpuController(cpuSettings[team.id]) && !cpuRuntime.completedAttackTeamIds.includes(team.id))}
+        manualUnitInteractionEnabled={Boolean(selectedUnit && (cpuSettings[selectedUnit.ownerTeamId] ?? "human") === "human")}
         onStateChange={setState}
         cpuSettingsControls={<CpuControlPanel
           view="settings"

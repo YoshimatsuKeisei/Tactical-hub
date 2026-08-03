@@ -19,6 +19,7 @@ import { positionKey } from "../game/utils/position";
 import { assignConstructionCapacityBonus, assignConstructionManager, getBuilderUnits, getManagedConstructions, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
 import { cancelTeleportIntent, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates, isTeleportAvailable, saveTeleportIntent } from "../game/engine/teleport";
 import { useState, type ReactNode } from "react";
+import { getHeavyInfantryMergeCandidates, mergeHeavyInfantry } from "../game/engine/heavyInfantry";
 
 type Props = {
   state: GameState;
@@ -34,9 +35,10 @@ type Props = {
   battleResolveDisabled?: boolean;
   cpuSettingsControls?: ReactNode;
   cpuLogControls?: ReactNode;
+  manualUnitInteractionEnabled?: boolean;
 };
 
-export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange, battleResolveDisabled, cpuSettingsControls, cpuLogControls }: Props) {
+export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange, battleResolveDisabled, cpuSettingsControls, cpuLogControls, manualUnitInteractionEnabled = true }: Props) {
   const [panelTab, setPanelTab] = useState<"settings" | "phase" | "logs">("settings");
   const [teleportTargets, setTeleportTargets] = useState<Record<string, string>>({});
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
@@ -251,6 +253,15 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
                 Save Stay / End Retreat
               </button>
             ) : null}
+            {(manualUnitInteractionEnabled ? getHeavyInfantryMergeCandidates(state, selectedUnit.id) : []).map((candidate) => (
+              <button
+                key={`merge-${candidate.id}`}
+                className="secondary"
+                onClick={() => onStateChange(mergeHeavyInfantry(state, selectedUnit.id, candidate.id))}
+              >
+                重装歩兵に合体: {candidate.id}
+              </button>
+            ))}
             {movementCandidates.length ? (
               movementCandidates.map((position) => (
                 <div key={positionKey(position)} className="intent-item">

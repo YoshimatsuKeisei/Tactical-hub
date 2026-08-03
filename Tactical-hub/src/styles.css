@@ -186,6 +186,21 @@ p {
   font-size: 10px;
 }
 
+.formation-badge {
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #374151;
+  color: white;
+  font-size: 9px;
+  text-shadow: none;
+}
+
 .retreat-badge {
   position: absolute;
   left: -5px;

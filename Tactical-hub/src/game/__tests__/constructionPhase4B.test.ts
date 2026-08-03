@@ -88,6 +88,26 @@ describe("Phase 4-B bridge reset and construction inheritance", () => {
     expect(resolved.kingCampaignStates.find((campaign) => campaign.kingUnitId === king.id)?.contributions).toContainEqual({ teamId: "team-1", cumulativeDamage: 1, effectiveAttackTurns: 0 });
   });
 
+  it("damages and evacuates heavy infantry while preserving king priority", () => {
+    const state = createInitialGameState(); builder(state); bridge(state);
+    const king = state.units.find((unit) => unit.id === "home-2-king")!;
+    move(state, king, { kind: "bridge", bridgeId: "flood-bridge", cellIndex: 0 });
+    const heavy = addUnit(state, "heavy-on-bridge", "team-2", "infantry", { kind: "bridge", bridgeId: "flood-bridge", cellIndex: 1 });
+    heavy.formation = "heavy"; heavy.hp = 2;
+    blockAllRoads(state, "team-2");
+    state.constructions = state.constructions.filter((construction) => construction.id !== "block-team-2-3-3");
+    const resolved = resolveReset(state);
+    expect(resolved.units.find((unit) => unit.id === king.id)).toMatchObject({ hp: 2, position: { kind: "tile", x: 3, y: 3 } });
+    expect(resolved.units.find((unit) => unit.id === heavy.id)).toMatchObject({ hp: 1, formation: "heavy", position: { kind: "base", baseId: "home-2" } });
+  });
+
+  it("defeats HP1 heavy infantry in a bridge flood", () => {
+    const state = createInitialGameState(); builder(state); bridge(state);
+    const heavy = addUnit(state, "wounded-heavy", "team-2", "infantry", { kind: "bridge", bridgeId: "flood-bridge", cellIndex: 1 });
+    heavy.formation = "heavy"; heavy.hp = 1;
+    expect(resolveReset(state).units.find((unit) => unit.id === heavy.id)?.position).toEqual({ kind: "removed", reason: "water_trap" });
+  });
+
   it("falls back to the home base when tied nearest bases have slots and roads are unavailable", () => {
     const state = createInitialGameState(); builder(state);
     bridge(state, "home-1-strategist", "flood-bridge", [{ x: 15, y: 3 }]);
