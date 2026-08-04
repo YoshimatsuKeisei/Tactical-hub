@@ -28,6 +28,7 @@ import { getSiegeState, resetInactiveSieges } from "./siege";
 import { defeatTeamsWithoutBases } from "./defeat";
 import { resolveTeamTeleports } from "./teleport";
 import { isTeamProductionPending } from "./productionSchedule";
+import { createTeamVisibleState, isUnitVisibleToTeam, isWaterNinja, revealNinjasToEachOther } from "../visibility";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -75,6 +76,7 @@ export function beginMovementPhase(state: GameState): GameState {
   next.currentMovementTeamId = next.movementOrderTeamIds[0];
   next.teleportIntents = [];
   next.movedUnitIdsThisMovementPhase = [];
+  next.ninjaRevealStates = [];
   next.phase = next.turnState.phase = "movement_input";
   return next;
 }
@@ -403,12 +405,13 @@ export function getMovementCandidates(
   if (state.movedUnitIdsThisMovementPhase.includes(unitId) || state.teleportIntents.some((intent) => intent.targetUnitId === unitId)) return [];
   if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
   const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
+    const visibleState = createTeamVisibleState(state, unit.ownerTeamId);
     // Candidate planning only changes unit positions and BaseSlot occupancy.
     // Keep all other dynamic state read-only and copy exactly those collections.
     const plannedState: GameState = {
-      ...state,
-      units: state.units.slice(),
-      bases: state.bases.map((base) => ({ ...base, slots: base.slots.map((slot) => ({ ...slot })) })),
+      ...visibleState,
+      units: visibleState.units.slice(),
+      bases: visibleState.bases.map((base) => ({ ...base, slots: base.slots.map((slot) => ({ ...slot })) })),
     };
     const teammatePlans = plannedState.turnState.actionIntents
       .find((intent) => intent.teamId === unit.ownerTeamId)
@@ -568,6 +571,34 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () =>
           ? `${intent.unitId} stayed and ended retreat.`
           : `${intent.unitId} stayed.`,
         relatedIds: [intent.unitId],
+      });
+      continue;
+    }
+
+    const destination = intent.to;
+    const hiddenWaterOccupant = destination.kind === "water" && isWaterNinja(unit)
+      ? next.units.find((candidate) =>
+        candidate.id !== unit.id &&
+        candidate.ownerTeamId !== unit.ownerTeamId &&
+        isWaterNinja(candidate) &&
+        candidate.position.kind === "water" &&
+        candidate.position.x === destination.x &&
+        candidate.position.y === destination.y &&
+        !isUnitVisibleToTeam(next, candidate, unit.ownerTeamId),
+      )
+      : undefined;
+    if (hiddenWaterOccupant) {
+      revealNinjasToEachOther(next, unit, hiddenWaterOccupant);
+      next.movedUnitIdsThisMovementPhase = [...new Set([
+        ...next.movedUnitIdsThisMovementPhase,
+        unit.id,
+        hiddenWaterOccupant.id,
+      ])];
+      next.logs.push({
+        id: `log-ninja-collision-${next.logs.length}`,
+        turnNumber: next.turnNumber,
+        type: "movement",
+        message: "Two hidden water units collided and discovered each other.",
       });
       continue;
     }

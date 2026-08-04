@@ -20,6 +20,7 @@ import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./king
 import { isLegalProfilingEnabled, measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
 import { isHeavyInfantry } from "./heavyInfantry";
+import { isUnitVisibleToTeam } from "../visibility";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -335,9 +336,13 @@ function getAttackCandidatesCore(state: GameState, attackerUnitId: string, conte
   if (range <= 0) return [];
 
   const enemies = context.enemiesByTeamId.get(attacker.ownerTeamId) ?? [];
+  const isVisibleAttackTarget = (target: Unit) =>
+    isUnitVisibleToTeam(state, target, attacker.ownerTeamId)
+    || (attacker.type === "ninja" && attacker.position.kind === "water"
+      && target.type === "ninja" && target.position.kind === "water");
   const targets = profile
-    ? measureLegalSegment("attackBasicFilter", () => enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id)))
-    : enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id));
+    ? measureLegalSegment("attackBasicFilter", () => enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id) && isVisibleAttackTarget(target)))
+    : enemies.filter((target) => target.id !== attacker.id && !context.protectedUnitIds.has(target.id) && isVisibleAttackTarget(target));
   const legal: Unit[] = [];
   for (const target of targets) {
     const positionAllowed = profile

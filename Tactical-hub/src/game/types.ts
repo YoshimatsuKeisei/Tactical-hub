@@ -71,6 +71,11 @@ export type Unit = {
   formation?: "heavy";
 };
 
+export type NinjaRevealState = {
+  ninjaUnitId: string;
+  visibleToTeamIds: string[];
+};
+
 export type BaseSlot = {
   id: string;
   baseId: string;
@@ -304,4 +309,5 @@ export type GameState = {
   teleportIntents: TeleportIntent[];
   teleportCooldowns: TeleportCooldown[];
   movedUnitIdsThisMovementPhase: string[];
+  ninjaRevealStates?: NinjaRevealState[];
 };

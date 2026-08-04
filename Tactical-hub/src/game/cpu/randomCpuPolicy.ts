@@ -9,6 +9,8 @@ import type { GameState } from "../types";
 import { positionKey } from "../utils/position";
 import type { CpuDecision, CpuRuntime, CpuTeamSettings } from "./types";
 import { withLegalProfileSink } from "./legalEnumerationProfile";
+import { createTeamVisibleState } from "../visibility";
+import { getPolicyActorTeamId } from "./policyVisibility";
 
 export function nextCpuRandom(runtime: CpuRuntime) {
   runtime.rngState = (Math.imul(runtime.rngState, 1664525) + 1013904223) >>> 0;
@@ -127,7 +129,9 @@ function decideRandomCpu(state: GameState, runtime: CpuRuntime, settings: CpuTea
 }
 
 export function getRandomCpuDecision(state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings): CpuDecision | undefined {
-  return decideRandomCpu(state, runtime, settings);
+  const viewerTeamId = getPolicyActorTeamId(state, runtime, settings, "random_cpu");
+  const policyState = viewerTeamId && state.phase !== "attack_input" ? createTeamVisibleState(state, viewerTeamId) : state;
+  return decideRandomCpu(policyState, runtime, settings);
 }
 
 export function createProfiledRandomCpuPolicy(record: (enumerationMs: number, policyTotalMs: number, details: LegalEnumerationTiming[]) => void) {
@@ -135,7 +139,9 @@ export function createProfiledRandomCpuPolicy(record: (enumerationMs: number, po
     const details: LegalEnumerationTiming[] = [];
     const timing: PolicyTiming = { enumerationMs: 0, record: (entry) => details.push(entry) };
     const start = performance.now();
-    const decision = withLegalProfileSink((category, milliseconds) => details.push({ category, phase: state.phase, milliseconds }), () => decideRandomCpu(state, runtime, settings, timing));
+    const viewerTeamId = getPolicyActorTeamId(state, runtime, settings, "random_cpu");
+    const policyState = viewerTeamId && state.phase !== "attack_input" ? createTeamVisibleState(state, viewerTeamId) : state;
+    const decision = withLegalProfileSink((category, milliseconds) => details.push({ category, phase: state.phase, milliseconds }), () => decideRandomCpu(policyState, runtime, settings, timing));
     record(timing.enumerationMs, performance.now() - start, details);
     return decision;
   };

@@ -11,6 +11,7 @@ import { advanceCpuOneStep, syncCpuContext } from "./cpuStep";
 import { createHeadlessInitialState } from "./headlessSimulation";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
 import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
+import { createTeamVisibleState } from "../visibility";
 import { createCpuRuntime } from "./types";
 
 export type RlActionType = CpuDecision["kind"];
@@ -144,6 +145,7 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, team
   if (state.phase === "movement_input") {
     const teamId = state.currentMovementTeamId;
     if (!teamId || !eligible.includes(teamId)) return [];
+    const visibleState = createTeamVisibleState(state, teamId);
     if (isTeamProductionPending(state, teamId)) {
       for (const baseId of state.bases.filter((base) => base.ownerTeamId === teamId).map((base) => base.id).sort()) {
         const actorKey = `movement-production:${teamId}:${baseId}`;
@@ -153,10 +155,10 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, team
       }
       return wrap([{ kind: "submit_team_production", teamId }]);
     }
-    const unitId = getTeamMovementUnitIds(state, teamId).find((id) => !runtime.processedKeys.includes(`movement:${teamId}:${id}`));
+    const unitId = getTeamMovementUnitIds(visibleState, teamId).find((id) => !runtime.processedKeys.includes(`movement:${teamId}:${id}`));
     if (unitId) {
       const actorKey = `movement:${teamId}:${unitId}`;
-      const destinations = getMovementCandidates(state, unitId).sort((left, right) => tileId(left).localeCompare(tileId(right)));
+      const destinations = getMovementCandidates(visibleState, unitId).sort((left, right) => tileId(left).localeCompare(tileId(right)));
       return wrap([
         { kind: "movement", teamId, actorKey, unitId },
         ...destinations.map((to): CpuDecision => ({ kind: "movement", teamId, actorKey, unitId, to })),
@@ -245,11 +247,12 @@ export class RlEnvironment {
 
   private buildObservation(teamId: string): RlObservation {
     if (!this.state.teams.some((team) => team.id === teamId && !team.isNeutral)) throw new Error(`Unknown observing team: ${teamId}`);
+    const visibleState = createTeamVisibleState(this.state, teamId);
     return {
-      config: this.state.config,
-      map: this.state.map,
-      turnNumber: this.state.turnNumber,
-      phase: this.state.phase,
+      config: visibleState.config,
+      map: visibleState.map,
+      turnNumber: visibleState.turnNumber,
+      phase: visibleState.phase,
       actorTeamId: this.getCurrentActorTeamId(),
       observingTeamId: teamId,
       actionIntents: this.state.turnState.actionIntents.filter((intent) => intent.teamId === teamId),
@@ -258,12 +261,12 @@ export class RlEnvironment {
       movementOrderStartIndex: this.state.movementOrderStartIndex,
       movementOrderTeamIds: this.state.movementOrderTeamIds,
       movementCompletedTeamIds: this.state.movementCompletedTeamIds,
-      movedUnitIdsThisMovementPhase: this.state.movedUnitIdsThisMovementPhase,
+      movedUnitIdsThisMovementPhase: visibleState.movedUnitIdsThisMovementPhase,
       productionCompletedTeamIdsThisTurn: this.state.productionCompletedTeamIdsThisTurn,
       teams: this.state.teams,
-      units: this.state.units,
+      units: visibleState.units,
       bases: this.state.bases,
-      unitTurnFlags: this.state.unitTurnFlags,
+      unitTurnFlags: visibleState.unitTurnFlags,
       siegeStates: this.state.siegeStates,
       kingCampaignStates: this.state.kingCampaignStates,
       constructions: this.state.constructions,

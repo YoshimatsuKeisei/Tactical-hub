@@ -89,7 +89,13 @@ export function getBridgeCandidates(state: GameState, strategistUnitId: string) 
     let x = start.x + dx, y = start.y + dy;
     while (getTile(state.map.tiles, x, y)?.terrain === "lake") { cells.push({ x, y }); x += dx; y += dy; }
     const opposite = getTile(state.map.tiles, x, y);
-    if (!cells.length || !opposite?.roadSectionId || cells.some((cell) => occupied.has(key(cell)))) continue;
+    const ownWaterNinjaOccupiesCandidate = state.units.some((unit) =>
+      unit.ownerTeamId === strategist.ownerTeamId
+      && unit.type === "ninja"
+      && unit.position.kind === "water"
+      && cells.some((cell) => cell.x === unit.position.x && cell.y === unit.position.y),
+    );
+    if (!cells.length || !opposite?.roadSectionId || cells.some((cell) => occupied.has(key(cell))) || ownWaterNinjaOccupiesCandidate) continue;
     candidates.set(bridgeKey(cells), cells);
   }
   return [...candidates.values()].sort((a, b) => a.map(key).join().localeCompare(b.map(key).join()));
@@ -444,7 +450,20 @@ export function resolveStrategistActions(state: GameState, rng: () => number = M
     const legal = snapshotIntent.action === "place_bridge" ? getBridgeCandidates(next, snapshotIntent.strategistUnitId).some((candidate) => bridgeKey(candidate) === bridgeKey(snapshotIntent.tiles ?? [])) : snapshotIntent.action === "place_obstacle" && snapshotIntent.tiles?.length === 1 && getObstacleCandidates(next, snapshotIntent.strategistUnitId).some((cell) => key(cell) === key(snapshotIntent.tiles![0]));
     if (!legal) { next.logs.push({ id: `log-construction-prerequisite-${next.logs.length}`, turnNumber: next.turnNumber, type: "construction", message: `${intent.teamId} ${intent.strategistUnitId} placement prerequisite disappeared.`, relatedIds: [intent.strategistUnitId] }); continue; }
     const kind = intent.action === "place_bridge" ? "bridge" : "obstacle";
-    next.constructions.push({ id: `${kind}-${next.turnNumber}-${next.constructions.length}`, kind, ownerTeamId: intent.teamId, managerUnitId: intent.strategistUnitId, tiles: intent.tiles!, placedTurn: next.turnNumber, active: true });
+    const construction: Construction = { id: `${kind}-${next.turnNumber}-${next.constructions.length}`, kind, ownerTeamId: intent.teamId, managerUnitId: intent.strategistUnitId, tiles: intent.tiles!, placedTurn: next.turnNumber, active: true };
+    next.constructions.push(construction);
+    if (kind === "bridge") {
+      const exposedNinjaIds = new Set<string>();
+      next.units = next.units.map((unit) => {
+        if (unit.type !== "ninja" || unit.position.kind !== "water" || unit.ownerTeamId === construction.ownerTeamId) return unit;
+        const { x, y } = unit.position;
+        const cellIndex = construction.tiles.findIndex((cell) => cell.x === x && cell.y === y);
+        if (cellIndex < 0) return unit;
+        exposedNinjaIds.add(unit.id);
+        return { ...unit, position: { kind: "bridge", bridgeId: construction.id, cellIndex } };
+      });
+      if (exposedNinjaIds.size) next.ninjaRevealStates = (next.ninjaRevealStates ?? []).filter((reveal) => !exposedNinjaIds.has(reveal.ninjaUnitId));
+    }
     next.logs.push({ id: `log-construction-place-${next.logs.length}`, turnNumber: next.turnNumber, type: "construction", message: `${intent.teamId} ${intent.strategistUnitId} placed ${kind} at ${intent.tiles!.map(key).join(" / ")}.`, relatedIds: [intent.strategistUnitId] });
   }
   next.strategistActionIntents = []; next.strategistSubmittedTeamIds = [];

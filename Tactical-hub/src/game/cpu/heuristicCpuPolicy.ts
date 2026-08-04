@@ -5,6 +5,8 @@ import { enumerateRlDecisions, getCpuDecisionActionKey, type EnumeratedDecision 
 import { isLegalProfilingEnabled, measureLegalSegment, recordLegalSegment } from "./legalEnumerationProfile";
 import { nextCpuRandom } from "./randomCpuPolicy";
 import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
+import { createTeamVisibleState } from "../visibility";
+import { getPolicyActorTeamId } from "./policyVisibility";
 
 const PREFERRED_TYPES = new Set<UnitType>(["archer", "cavalry", "infantry"]);
 
@@ -98,6 +100,8 @@ export function createHeuristicCpuPolicy(): HeuristicCpuPolicy {
   };
 
   const policy = ((state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings): CpuDecision | undefined => {
+    const viewerTeamId = getPolicyActorTeamId(state, runtime, settings, "heuristic_cpu");
+    if (viewerTeamId && state.phase !== "attack_input") state = createTeamVisibleState(state, viewerTeamId);
     const profileLegal = isLegalProfilingEnabled();
     const legalStarted = profileLegal ? performance.now() : 0;
     const legal = enumerateRlDecisions(state, runtime, (teamId) => settings[teamId] === "heuristic_cpu");

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
-import { getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
+import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
 import { saveMovementIntent, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
@@ -12,6 +12,7 @@ import { saveStrategistActionIntent } from "./game/engine/construction";
 import { advanceVisualCpuOneStep, resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
 import { createCpuRuntime, type CpuRuntime, type CpuTeamSettings, type TeamController } from "./game/cpu/types";
 import { createVisualCpuPolicyRouter, isCpuController } from "./game/cpu/cpuPolicyRouter";
+import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
 
 export default function App() {
   const [state, setState] = useState(createInitialGameState);
@@ -37,6 +38,18 @@ export default function App() {
   const effectiveManualTeamId = state.phase === "movement_input" && state.currentMovementTeamId
     ? state.currentMovementTeamId
     : manualTeamId;
+  const visibleState = useMemo(() => {
+    const visible = createTeamVisibleState(state, effectiveManualTeamId);
+    if (state.phase !== "attack_input" || selectedUnit?.ownerTeamId !== effectiveManualTeamId
+      || selectedUnit.type !== "ninja" || selectedUnit.position.kind !== "water") return visible;
+    const visibleIds = new Set(visible.units.map((unit) => unit.id));
+    const targetIds = new Set(getAttackCandidates(state, selectedUnit.id).map((target) => target.unitId));
+    const revealedTargets = state.units.filter((unit) => targetIds.has(unit.id) && !visibleIds.has(unit.id));
+    return revealedTargets.length ? { ...visible, units: [...visible.units, ...revealedTargets] } : visible;
+  }, [effectiveManualTeamId, selectedUnit, state]);
+  useEffect(() => {
+    if (selectedUnit && !isUnitVisibleToTeam(state, selectedUnit, effectiveManualTeamId)) setSelectedUnitId(undefined);
+  }, [effectiveManualTeamId, selectedUnit, state]);
   const initialStrategistRolesLocked = state.turnNumber !== 1 || state.movementCompletedTeamIds.length > 0 || state.productionCompletedTeamIdsThisTurn.length > 0 || state.movedUnitIdsThisMovementPhase.length > 0;
   const initialStrategistRoles = Object.fromEntries(state.units.filter((unit) => unit.type === "strategist" && unit.id.startsWith("home-")).map((unit) => [unit.id, unit.role ?? "encourage"])) as Record<string, StrategistRole>;
 
@@ -150,7 +163,7 @@ export default function App() {
         </header>
         <div className="board-scroll">
           <BoardView
-            state={state}
+            state={visibleState}
             selectedUnitId={selectedUnitId}
             onSelectUnit={setSelectedUnitId}
             onChooseDestination={chooseDestination}

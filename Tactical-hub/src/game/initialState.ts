@@ -91,5 +91,6 @@ export function createInitialGameState(): GameState {
     teleportIntents: [],
     teleportCooldowns: [],
     movedUnitIdsThisMovementPhase: [],
+    ninjaRevealStates: [],
   };
 }
