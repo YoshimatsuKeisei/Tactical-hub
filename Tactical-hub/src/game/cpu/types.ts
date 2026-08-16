@@ -1,6 +1,6 @@
 import type { AttackIntent, GameState, ProductionChoice, StrategistActionIntent, TeleportIntent, UnitPosition } from "../types";
 
-export type TeamController = "human" | "random_cpu" | "heuristic_cpu";
+export type TeamController = "human" | "random_cpu" | "heuristic_cpu" | "bc_cpu";
 export type CpuTeamSettings = Record<string, TeamController>;
 
 export type CpuActionLog = {

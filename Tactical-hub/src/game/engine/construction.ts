@@ -89,12 +89,11 @@ export function getBridgeCandidates(state: GameState, strategistUnitId: string) 
     let x = start.x + dx, y = start.y + dy;
     while (getTile(state.map.tiles, x, y)?.terrain === "lake") { cells.push({ x, y }); x += dx; y += dy; }
     const opposite = getTile(state.map.tiles, x, y);
-    const ownWaterNinjaOccupiesCandidate = state.units.some((unit) =>
-      unit.ownerTeamId === strategist.ownerTeamId
-      && unit.type === "ninja"
-      && unit.position.kind === "water"
-      && cells.some((cell) => cell.x === unit.position.x && cell.y === unit.position.y),
-    );
+    const ownWaterNinjaOccupiesCandidate = state.units.some((unit) => {
+      if (unit.ownerTeamId !== strategist.ownerTeamId || unit.type !== "ninja" || unit.position.kind !== "water") return false;
+      const position = unit.position;
+      return cells.some((cell) => cell.x === position.x && cell.y === position.y);
+    });
     if (!cells.length || !opposite?.roadSectionId || cells.some((cell) => occupied.has(key(cell))) || ownWaterNinjaOccupiesCandidate) continue;
     candidates.set(bridgeKey(cells), cells);
   }

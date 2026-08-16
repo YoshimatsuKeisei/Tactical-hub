@@ -9,10 +9,12 @@ import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
 import type { AttackTarget, StrategistRole, UnitPosition } from "./game/types";
 import { saveStrategistActionIntent } from "./game/engine/construction";
-import { advanceVisualCpuOneStep, resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
+import { resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
 import { createCpuRuntime, type CpuRuntime, type CpuTeamSettings, type TeamController } from "./game/cpu/types";
 import { createVisualCpuPolicyRouter, isCpuController } from "./game/cpu/cpuPolicyRouter";
 import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
+import { HttpBrowserBcInferenceClient } from "./game/cpu/browserBcClient";
+import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
 
 export default function App() {
   const [state, setState] = useState(createInitialGameState);
@@ -25,6 +27,8 @@ export default function App() {
   const [cpuPaused, setCpuPaused] = useState(false);
   const [cpuSpeed, setCpuSpeed] = useState<CpuRunnerSpeed>("normal");
   const [visualCpuPolicy] = useState(createVisualCpuPolicyRouter);
+  const [bcInferenceClient] = useState(() => new HttpBrowserBcInferenceClient());
+  const cpuAdvancePendingRef = useRef(false);
   const stateRef = useRef(state);
   const runtimeRef = useRef(cpuRuntime);
   const settingsRef = useRef(cpuSettings);
@@ -59,22 +63,39 @@ export default function App() {
     return roles[hash % roles.length];
   }
 
-  const advanceCpu = useCallback(() => {
-    const result = advanceVisualCpuOneStep(stateRef.current, runtimeRef.current, settingsRef.current, visualCpuPolicy);
-    runtimeRef.current = result.runtime;
-    setCpuRuntime(result.runtime);
-    if (result.state !== stateRef.current) {
-      stateRef.current = result.state;
-      setState(result.state);
+  const advanceCpu = useCallback(async () => {
+    if (cpuAdvancePendingRef.current) return false;
+    cpuAdvancePendingRef.current = true;
+    const sourceState = stateRef.current;
+    const sourceRuntime = runtimeRef.current;
+    const sourceSettings = settingsRef.current;
+    try {
+      const result = await advanceVisualCpuOneStepWithBc(
+        sourceState,
+        sourceRuntime,
+        sourceSettings,
+        visualCpuPolicy,
+        bcInferenceClient,
+        () => stateRef.current === sourceState && runtimeRef.current === sourceRuntime && settingsRef.current === sourceSettings,
+      );
+      if (stateRef.current !== sourceState || runtimeRef.current !== sourceRuntime || settingsRef.current !== sourceSettings) return false;
+      runtimeRef.current = result.runtime;
+      setCpuRuntime(result.runtime);
+      if (result.state !== sourceState) {
+        stateRef.current = result.state;
+        setState(result.state);
+      }
+      if (result.runtime.stoppedReason) setCpuRunning(false);
+      return result.applied;
+    } finally {
+      cpuAdvancePendingRef.current = false;
     }
-    if (result.runtime.stoppedReason) setCpuRunning(false);
-    return result.applied;
-  }, [visualCpuPolicy]);
+  }, [bcInferenceClient, visualCpuPolicy]);
 
   useEffect(() => {
     if (!cpuRunning || cpuPaused) return;
     const delay = state.phase === "attack_input" ? 10 : cpuSpeed === "normal" ? 700 : cpuSpeed === "fast" ? 150 : 10;
-    const timer = window.setInterval(advanceCpu, delay);
+    const timer = window.setInterval(() => { void advanceCpu(); }, delay);
     return () => window.clearInterval(timer);
   }, [advanceCpu, cpuPaused, cpuRunning, cpuSpeed, state.phase]);
 

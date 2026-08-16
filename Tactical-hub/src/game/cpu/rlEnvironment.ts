@@ -210,6 +210,42 @@ const defaultRewards: RlRewardFunction = (state, result) => Object.fromEntries(
   state.teams.filter((team) => !team.isNeutral).map((team) => [team.id, result.terminal ? (team.id === result.winnerTeamId ? 1 : -1) : 0]),
 );
 
+export function buildRlObservation(state: GameState, teamId: string, actorTeamId?: string): RlObservation {
+  if (!state.teams.some((team) => team.id === teamId && !team.isNeutral)) throw new Error(`Unknown observing team: ${teamId}`);
+  const visibleState = createTeamVisibleState(state, teamId);
+  return {
+    config: visibleState.config,
+    map: visibleState.map,
+    turnNumber: visibleState.turnNumber,
+    phase: visibleState.phase,
+    actorTeamId,
+    observingTeamId: teamId,
+    actionIntents: state.turnState.actionIntents.filter((intent) => intent.teamId === teamId),
+    currentMovementTeamId: state.currentMovementTeamId,
+    movementSeatOrderTeamIds: state.movementSeatOrderTeamIds,
+    movementOrderStartIndex: state.movementOrderStartIndex,
+    movementOrderTeamIds: state.movementOrderTeamIds,
+    movementCompletedTeamIds: state.movementCompletedTeamIds,
+    movedUnitIdsThisMovementPhase: visibleState.movedUnitIdsThisMovementPhase,
+    productionCompletedTeamIdsThisTurn: state.productionCompletedTeamIdsThisTurn,
+    teams: state.teams,
+    units: visibleState.units,
+    bases: state.bases,
+    unitTurnFlags: visibleState.unitTurnFlags,
+    siegeStates: state.siegeStates,
+    kingCampaignStates: state.kingCampaignStates,
+    constructions: state.constructions,
+    strategistActionIntents: state.strategistActionIntents.filter((intent) => intent.teamId === teamId),
+    strategistSubmittedTeamIds: state.strategistSubmittedTeamIds,
+    strategistCooldowns: state.strategistCooldowns,
+    teleportIntents: state.teleportIntents.filter((intent) => intent.teamId === teamId),
+    teleportCooldowns: state.teleportCooldowns,
+    rewardPlacementRequests: state.rewardPlacementRequests,
+    pendingRewardRequestIds: state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired).map((request) => request.id),
+    phaseAfterRewards: state.phaseAfterRewards,
+  };
+}
+
 export class RlEnvironment {
   private state!: GameState;
   private runtime!: CpuRuntime;
@@ -246,39 +282,7 @@ export class RlEnvironment {
   getCurrentActorTeamId() { return this.decisions[0]?.action.actorTeamId === "all" ? undefined : this.decisions[0]?.action.actorTeamId; }
 
   private buildObservation(teamId: string): RlObservation {
-    if (!this.state.teams.some((team) => team.id === teamId && !team.isNeutral)) throw new Error(`Unknown observing team: ${teamId}`);
-    const visibleState = createTeamVisibleState(this.state, teamId);
-    return {
-      config: visibleState.config,
-      map: visibleState.map,
-      turnNumber: visibleState.turnNumber,
-      phase: visibleState.phase,
-      actorTeamId: this.getCurrentActorTeamId(),
-      observingTeamId: teamId,
-      actionIntents: this.state.turnState.actionIntents.filter((intent) => intent.teamId === teamId),
-      currentMovementTeamId: this.state.currentMovementTeamId,
-      movementSeatOrderTeamIds: this.state.movementSeatOrderTeamIds,
-      movementOrderStartIndex: this.state.movementOrderStartIndex,
-      movementOrderTeamIds: this.state.movementOrderTeamIds,
-      movementCompletedTeamIds: this.state.movementCompletedTeamIds,
-      movedUnitIdsThisMovementPhase: visibleState.movedUnitIdsThisMovementPhase,
-      productionCompletedTeamIdsThisTurn: this.state.productionCompletedTeamIdsThisTurn,
-      teams: this.state.teams,
-      units: visibleState.units,
-      bases: this.state.bases,
-      unitTurnFlags: visibleState.unitTurnFlags,
-      siegeStates: this.state.siegeStates,
-      kingCampaignStates: this.state.kingCampaignStates,
-      constructions: this.state.constructions,
-      strategistActionIntents: this.state.strategistActionIntents.filter((intent) => intent.teamId === teamId),
-      strategistSubmittedTeamIds: this.state.strategistSubmittedTeamIds,
-      strategistCooldowns: this.state.strategistCooldowns,
-      teleportIntents: this.state.teleportIntents.filter((intent) => intent.teamId === teamId),
-      teleportCooldowns: this.state.teleportCooldowns,
-      rewardPlacementRequests: this.state.rewardPlacementRequests,
-      pendingRewardRequestIds: this.state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired).map((request) => request.id),
-      phaseAfterRewards: this.state.phaseAfterRewards,
-    };
+    return buildRlObservation(this.state, teamId, this.getCurrentActorTeamId());
   }
 
   getObservation(teamId: string): RlObservation {
