@@ -9,8 +9,10 @@ import type {
   UnitPosition,
 } from "../types";
 import type { RlObservation } from "./rlEnvironment";
+import { isHeavyInfantry } from "../engine/heavyInfantry";
 
 export const RL_OBSERVATION_ENCODER_VERSION = 1;
+export const RL_OBSERVATION_ENCODER_VERSION_V2 = 2;
 
 export const RL_PHASES = ["production", "movement_input", "movement_resolution", "attack_input", "battle_resolution", "capture_resolution", "reward_placement", "strategist_action_input", "strategist_action_resolution"] as const;
 const TEAM_STATUSES = ["active", "defeated", "eliminated", "neutral"] as const;
@@ -39,6 +41,11 @@ export const RL_OBSERVATION_SCHEMA = {
   unitBase: ["hp", ...UNIT_TYPES.map((type) => `type:${type}`), ...POSITION_KINDS.map((kind) => `position:${kind}`), "hasCoordinate", "xNormalized", "yNormalized", ...STRATEGIST_ROLES.map((role) => `role:${role}`), "retreating", "encouraged", "cannotAttack", "statusRemainingTurns", "movedThisMovementPhase", "battleFlagPresent", "survivedPreviousBattle", "attackedInPreviousBattle", "wasTargetedInPreviousBattle", "retreatEligible", "enemyBaseDistanceAtBattleStart", "enemyBaseWithin3AtBattleStart"],
   mapBase: ["xNormalized", "yNormalized", ...TERRAIN_TYPES.map((terrain) => `terrain:${terrain}`), "hasBase", "hasRoadSection", "roadSection:N", "roadSection:NE", "roadSection:E", "roadSection:SE", "roadSection:S", "roadSection:SW", "roadSection:W", "roadSection:NW", "activeBridge", "activeObstacle"],
   constructionBase: ["active", "placedTurn", "tileCount", "hasCoordinate", "centroidXNormalized", "centroidYNormalized", "kind:bridge", "kind:obstacle", "hasOwner", "hasManager"],
+} as const;
+
+export const RL_OBSERVATION_SCHEMA_V2 = {
+  ...RL_OBSERVATION_SCHEMA,
+  unitBase: [RL_OBSERVATION_SCHEMA.unitBase[0], "formation:heavy", ...RL_OBSERVATION_SCHEMA.unitBase.slice(1)],
 } as const;
 
 export type EncodedStrategicState = {
@@ -202,12 +209,13 @@ function compareKeys(left: readonly (number | string)[], right: readonly (number
   return 0;
 }
 
-function encodeUnit(context: Context, unit: Unit) {
+function encodeUnit(context: Context, unit: Unit, schemaVersion: 1 | 2) {
   const flag = context.unitFlagById.get(unit.id);
   const remainingTurns = unit.statuses.reduce((maximum, status) => Math.max(maximum, status.remainingTurns ?? 0), 0);
   const coord = context.positionCoordinateByUnitId.get(unit.id);
   return [
     unit.hp,
+    ...(schemaVersion === 2 ? [Number(isHeavyInfantry(unit))] : []),
     ...oneHot(unit.type, UNIT_TYPES),
     ...oneHot(unit.position.kind, POSITION_KINDS),
     Number(Boolean(coord)),
@@ -467,7 +475,7 @@ function paddedRows(rows: number[][], length: number, width: number, cache?: RlO
   return result;
 }
 
-export function encodeRlObservation(observation: RlObservation, encoderCache?: RlObservationEncoderCache): EncodedObservation {
+function encodeRlObservationForVersion(observation: RlObservation, schemaVersion: 1 | 2, encoderCache?: RlObservationEncoderCache): EncodedObservation {
   const teams = orderedTeams(observation);
   const bases = [...observation.bases].sort((left, right) => {
     const leftCoord = left.coords[0], rightCoord = right.coords[0];
@@ -500,8 +508,8 @@ export function encodeRlObservation(observation: RlObservation, encoderCache?: R
   context.units = units;
   const maxUnits = observation.map.tiles.length + observation.bases.reduce((sum, base) => sum + base.slots.length, 0);
   if (units.length > maxUnits) throw new Error(`RL Observation contains ${units.length} board units, exceeding safe capacity ${maxUnits}`);
-  const encodedUnits = units.map((unit) => encodeUnit(context, unit));
-  const unitWidth = encodedUnits[0]?.length ?? encodeUnit(context, { id: "", ownerTeamId: "", type: "infantry", hp: 0, position: { kind: "tile", x: 0, y: 0 }, statuses: [] }).length;
+  const encodedUnits = units.map((unit) => encodeUnit(context, unit, schemaVersion));
+  const unitWidth = encodedUnits[0]?.length ?? encodeUnit(context, { id: "", ownerTeamId: "", type: "infantry", hp: 0, position: { kind: "tile", x: 0, y: 0 }, statuses: [] }, schemaVersion).length;
   const maxBases = Math.max(observation.map.bases.length, observation.bases.length);
   const maxBaseSlots = Math.max(0, ...observation.bases.map((base) => base.slots.length), ...observation.map.bases.map((base) => base.slots.length));
   const encodedBases = bases.map((base) => encodeBase(context, base, maxBaseSlots));
@@ -516,7 +524,7 @@ export function encodeRlObservation(observation: RlObservation, encoderCache?: R
   const constructionWidth = encodedConstructions[0]?.length ?? encodeConstruction(context, { id: "", kind: "bridge", tiles: [], placedTurn: 0, active: false }).length;
 
   return {
-    schemaVersion: RL_OBSERVATION_ENCODER_VERSION,
+    schemaVersion,
     global: [
       observation.turnNumber,
       observation.config.productionInterval,
@@ -552,12 +560,24 @@ export function encodeRlObservation(observation: RlObservation, encoderCache?: R
   };
 }
 
+/** Existing browser BC/checkpoints remain pinned to this v1 encoder. */
+export function encodeRlObservation(observation: RlObservation, encoderCache?: RlObservationEncoderCache) {
+  return encodeRlObservationForVersion(observation, 1, encoderCache);
+}
+export const encodeRlObservationV1 = encodeRlObservation;
+
+/** Future BC/RL encoder; v1 rows are unchanged and heavy formation is v2-only. */
+export function encodeRlObservationV2(observation: RlObservation, encoderCache?: RlObservationEncoderCache) {
+  return encodeRlObservationForVersion(observation, 2, encoderCache);
+}
+
 /**
  * Derives every width by running the real encoder. Synthetic rows are used only
  * to make otherwise-empty strategic tables report their encoder-defined width.
  */
-export function getRlObservationFeatureSpec(observation: RlObservation): RlObservationFeatureSpec {
-  const encoded = encodeRlObservation(observation);
+function getRlObservationFeatureSpecForVersion(observation: RlObservation, schemaVersion: 1 | 2): RlObservationFeatureSpec {
+  const encoder = schemaVersion === 1 ? encodeRlObservation : encodeRlObservationV2;
+  const encoded = encoder(observation);
   const probe = structuredClone(observation);
   const teamId = probe.teams[0]?.id ?? "";
   const otherTeamId = probe.teams[1]?.id ?? teamId;
@@ -584,10 +604,10 @@ export function getRlObservationFeatureSpec(observation: RlObservation): RlObser
   }];
   probe.strategistActionIntents = [{ teamId, strategistUnitId: unitId, action: "place_obstacle", tiles: [{ x: 0, y: 0 }] }];
   probe.teleportIntents = [{ teamId, strategistUnitId: unitId, targetUnitId: otherUnitId, to: position }];
-  const strategic = encodeRlObservation(probe).strategicState;
+  const strategic = encoder(probe).strategicState;
   const rowWidth = (rows: number[][]) => rows[0]?.length ?? 0;
   return {
-    schemaVersion: RL_OBSERVATION_ENCODER_VERSION,
+    schemaVersion,
     globalWidth: encoded.global.length,
     teamWidth: encoded.teams[0]?.length ?? 0,
     unitWidth: encoded.units[0]?.length ?? 0,
@@ -608,4 +628,13 @@ export function getRlObservationFeatureSpec(observation: RlObservation): RlObser
       teleportIntents: rowWidth(strategic.teleportIntents),
     },
   };
+}
+
+export function getRlObservationFeatureSpec(observation: RlObservation): RlObservationFeatureSpec {
+  return getRlObservationFeatureSpecForVersion(observation, 1);
+}
+export const getRlObservationFeatureSpecV1 = getRlObservationFeatureSpec;
+
+export function getRlObservationFeatureSpecV2(observation: RlObservation): RlObservationFeatureSpec {
+  return getRlObservationFeatureSpecForVersion(observation, 2);
 }

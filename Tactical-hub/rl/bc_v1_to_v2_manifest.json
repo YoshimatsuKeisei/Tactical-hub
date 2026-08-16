@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "sourceFeatureSpec": {
+    "schemaVersion": 1,
+    "observationSchemaVersion": 1,
+    "actionSchemaVersion": 1,
+    "globalWidth": 15,
+    "teamWidth": 15,
+    "unitWidth": 57,
+    "mapTileWidth": 38,
+    "baseWidth": 87,
+    "constructionWidth": 22,
+    "strategicGlobalWidth": 36,
+    "strategicTableRowWidths": {
+      "siegeStates": 35,
+      "kingCampaignStates": 31,
+      "rewardPlacementRequests": 67,
+      "strategistCooldowns": 18,
+      "teleportCooldowns": 16,
+      "productionIntents": 27,
+      "movementIntents": 58,
+      "attackIntents": 37,
+      "strategistActionIntents": 33,
+      "teleportIntents": 54
+    },
+    "actionFeatureWidth": 3403
+  },
+  "targetFeatureSpec": {
+    "schemaVersion": 2,
+    "observationSchemaVersion": 2,
+    "actionSchemaVersion": 2,
+    "globalWidth": 15,
+    "teamWidth": 15,
+    "unitWidth": 58,
+    "mapTileWidth": 38,
+    "baseWidth": 87,
+    "constructionWidth": 22,
+    "strategicGlobalWidth": 36,
+    "strategicTableRowWidths": {
+      "siegeStates": 35,
+      "kingCampaignStates": 31,
+      "rewardPlacementRequests": 67,
+      "strategistCooldowns": 18,
+      "teleportCooldowns": 16,
+      "productionIntents": 27,
+      "movementIntents": 58,
+      "attackIntents": 37,
+      "strategistActionIntents": 33,
+      "teleportIntents": 54
+    },
+    "actionFeatureWidth": 3955
+  },
+  "unitInputColumns": [
+    { "sourceStart": 0, "targetStart": 0, "width": 1 },
+    { "sourceStart": 1, "targetStart": 2, "width": 56 }
+  ],
+  "actionInputColumns": [
+    { "sourceStart": 0, "targetStart": 0, "width": 13 },
+    { "sourceStart": 13, "targetStart": 14, "width": 1109 },
+    { "sourceStart": 1122, "targetStart": 1674, "width": 2281 }
+  ]
+}

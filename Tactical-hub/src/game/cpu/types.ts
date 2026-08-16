@@ -30,6 +30,7 @@ export type CpuRuntime = {
 export type CpuDecision =
   | { kind: "production"; teamId: string; actorKey: string; choice?: ProductionChoice }
   | { kind: "movement"; teamId: string; actorKey: string; unitId: string; to?: UnitPosition }
+  | { kind: "merge_infantry"; teamId: string; actorKey: string; primaryUnitId: string; partnerUnitId: string }
   | { kind: "teleport"; teamId: string; actorKey: string; strategistUnitId: string; intent?: TeleportIntent }
   | { kind: "submit_movement"; teamId: string }
   | { kind: "submit_team_production"; teamId: string }

@@ -1,10 +1,10 @@
 import type { GameState } from "../types";
 import { advanceCpuOneStep, syncCpuContext, type CpuStepResult } from "./cpuStep";
 import { getVisualCpuActorTeamId } from "./cpuPolicyRouter";
-import { encodeRlLegalActions } from "./rlActionEncoder";
-import { buildRlObservation, enumerateRlDecisions } from "./rlEnvironment";
-import { createRlFeatureSpec } from "./rlFeatureSpec";
-import { encodeRlObservation } from "./rlObservationEncoder";
+import { encodeRlLegalActionsV1 } from "./rlActionEncoder";
+import { buildRlObservation, enumerateRlDecisionsV1 } from "./rlEnvironment";
+import { createRlFeatureSpecV1 } from "./rlFeatureSpec";
+import { encodeRlObservationV1 } from "./rlObservationEncoder";
 import type { BrowserBcInferenceClient } from "./browserBcClient";
 import type { CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
 
@@ -17,21 +17,21 @@ export function createBcInferenceRequest(state: GameState, sourceRuntime: CpuRun
   syncCpuContext(runtime, state);
   const teamId = getVisualCpuActorTeamId(state, runtime, settings);
   if (!teamId || settings[teamId] !== "bc_cpu") return undefined;
-  const decisions = enumerateRlDecisions(state, runtime, (candidateTeamId) => candidateTeamId === teamId);
+  const decisions = enumerateRlDecisionsV1(state, runtime, (candidateTeamId) => candidateTeamId === teamId);
   if (!decisions.length || decisions.some((entry) => entry.action.actorTeamId !== teamId)) {
     return { teamId, runtime, decisions: [], request: undefined };
   }
   const observation = buildRlObservation(state, teamId, teamId);
   const legalActions = decisions.map((entry) => entry.action);
-  const encodedLegalActions = encodeRlLegalActions(observation, legalActions);
+  const encodedLegalActions = encodeRlLegalActionsV1(observation, legalActions);
   return {
     teamId,
     runtime,
     decisions,
     request: {
       decisionKey: createBcDecisionKey(state, runtime, teamId, encodedLegalActions.actionKeys),
-      featureSpec: createRlFeatureSpec(observation),
-      observation: encodeRlObservation(observation),
+      featureSpec: createRlFeatureSpecV1(observation),
+      observation: encodeRlObservationV1(observation),
       legalActions: encodedLegalActions,
     },
   };

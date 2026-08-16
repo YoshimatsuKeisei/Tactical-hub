@@ -1,4 +1,5 @@
 import { getEnemyControlledBases } from "../engine/retreat";
+import type { MovementSemantics } from "../engine/movement";
 import type { Base, GameState, Unit, UnitPosition, UnitType } from "../types";
 import { createRoadAttackDistanceLookup, createRoadAttackTopologyContext } from "../utils/roadTopology";
 import { enumerateRlDecisions, getCpuDecisionActionKey, type EnumeratedDecision } from "./rlEnvironment";
@@ -74,7 +75,7 @@ function choosePreferredProduction(runtime: CpuRuntime, decisions: EnumeratedDec
   return preferred.length ? choose(runtime, preferred).decision : undefined;
 }
 
-export function createHeuristicCpuPolicy(): HeuristicCpuPolicy {
+export function createHeuristicCpuPolicy(movementSemantics: MovementSemantics = "current"): HeuristicCpuPolicy {
   const matches = new Map<number, MatchTargets>();
   let lastDiagnostics: HeuristicDecisionDiagnostics | undefined;
   let diagnosticsEnabled = false;
@@ -104,7 +105,7 @@ export function createHeuristicCpuPolicy(): HeuristicCpuPolicy {
     if (viewerTeamId && state.phase !== "attack_input") state = createTeamVisibleState(state, viewerTeamId);
     const profileLegal = isLegalProfilingEnabled();
     const legalStarted = profileLegal ? performance.now() : 0;
-    const legal = enumerateRlDecisions(state, runtime, (teamId) => settings[teamId] === "heuristic_cpu");
+    const legal = enumerateRlDecisions(state, runtime, (teamId) => settings[teamId] === "heuristic_cpu", movementSemantics);
     const legalMilliseconds = profileLegal ? performance.now() - legalStarted : 0;
     if (!legal.length) {
       if (diagnosticsEnabled) lastDiagnostics = { legalActionKeys: [], distanceCache: { requests: 0, searches: 0, hits: 0, misses: 0 } };

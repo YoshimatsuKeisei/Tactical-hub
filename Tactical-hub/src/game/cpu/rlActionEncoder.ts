@@ -10,6 +10,7 @@ import {
 } from "./rlObservationEncoder";
 
 export const RL_ACTION_ENCODER_VERSION = 1;
+export const RL_ACTION_ENCODER_VERSION_V2 = 2;
 export const RL_ACTION_TYPES = [
   "production",
   "movement",
@@ -25,12 +26,14 @@ export const RL_ACTION_TYPES = [
   "resolve_battle",
   "resolve_strategists",
 ] as const;
+export const RL_ACTION_TYPES_V2 = [...RL_ACTION_TYPES, "merge_infantry"] as const;
 
 export type EncodedLegalActions = {
   schemaVersion: 1;
   actions: number[][];
   actionKeys: string[];
 };
+export type EncodedLegalActionsV2 = Omit<EncodedLegalActions, "schemaVersion"> & { schemaVersion: 2 };
 
 export const RL_ACTION_SCHEMA_BLOCKS = [
   "actionType",
@@ -49,6 +52,11 @@ export const RL_ACTION_SCHEMA_BLOCKS = [
   "construction",
   "targetTileCount",
   "targetTileMask",
+] as const;
+export const RL_ACTION_SCHEMA_BLOCKS_V2 = [
+  ...RL_ACTION_SCHEMA_BLOCKS.slice(0, 5),
+  "partnerUnit",
+  ...RL_ACTION_SCHEMA_BLOCKS.slice(5),
 ] as const;
 
 const oneHot = (value: string | undefined, values: readonly string[]) => values.map((entry) => Number(value === entry));
@@ -292,15 +300,16 @@ function tileSetMask(context: EncodingContext, tileIds: string[] | undefined) {
   return mask;
 }
 
-function encodeAction(context: EncodingContext, action: RlLegalAction) {
+function encodeAction(context: EncodingContext, action: RlLegalAction, schemaVersion: 1 | 2) {
   const base = action.baseId ? context.bases.find((entry) => entry.id === action.baseId) : undefined;
   const slot = base?.slots.find((entry) => entry.id === action.slotId);
   return [
-    ...oneHot(action.actionType, RL_ACTION_TYPES),
+    ...oneHot(action.actionType, schemaVersion === 1 ? RL_ACTION_TYPES : RL_ACTION_TYPES_V2),
     Number(action.isPass),
     ...teamRef(context, action.actorTeamId),
     ...unitRef(context, action.unitId),
     ...unitRef(context, action.targetId),
+    ...(schemaVersion === 2 ? unitRef(context, action.partnerUnitId) : []),
     ...tileRef(context, action.tileId),
     ...baseRef(context, action.baseId),
     Number(Boolean(slot)), Number(slot?.kind === "front"), Number(slot?.kind === "protected"), ...unitRef(context, slot?.unitId),
@@ -318,7 +327,17 @@ export function encodeRlLegalActions(observation: RlObservation, legalActions: r
   const context = createContext(observation);
   return {
     schemaVersion: RL_ACTION_ENCODER_VERSION,
-    actions: legalActions.map((action) => encodeAction(context, action)),
+    actions: legalActions.map((action) => encodeAction(context, action, 1)),
+    actionKeys: legalActions.map((action) => action.actionKey),
+  };
+}
+export const encodeRlLegalActionsV1 = encodeRlLegalActions;
+
+export function encodeRlLegalActionsV2(observation: RlObservation, legalActions: readonly RlLegalAction[]): EncodedLegalActionsV2 {
+  const context = createContext(observation);
+  return {
+    schemaVersion: 2,
+    actions: legalActions.map((action) => encodeAction(context, action, 2)),
     actionKeys: legalActions.map((action) => action.actionKey),
   };
 }
@@ -330,5 +349,17 @@ export function getRlActionFeatureWidth(observation: RlObservation) {
     actionType: "submit_movement",
     actorTeamId: observation.observingTeamId,
     isPass: false,
-  }).length;
+  }, 1).length;
+}
+
+export const getRlActionFeatureWidthV1 = getRlActionFeatureWidth;
+
+export function getRlActionFeatureWidthV2(observation: RlObservation) {
+  const context = createContext(observation);
+  return encodeAction(context, {
+    actionKey: "<schema-width-v2>",
+    actionType: "submit_movement",
+    actorTeamId: observation.observingTeamId,
+    isPass: false,
+  }, 2).length;
 }

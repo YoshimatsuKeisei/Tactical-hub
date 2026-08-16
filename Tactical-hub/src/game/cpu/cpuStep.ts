@@ -1,9 +1,10 @@
 import { resolveBattle, saveAttackIntent } from "../engine/battle";
 import { resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../engine/construction";
-import { saveMovementIntent, submitMovement } from "../engine/movement";
+import { commitUnitMovement, saveMovementIntent, submitLegacyMovement, submitMovement, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
 import { placeRewardUnit } from "../engine/reward";
 import { saveTeleportIntent } from "../engine/teleport";
+import { mergeHeavyInfantry } from "../engine/heavyInfantry";
 import type { GameState } from "../types";
 import { positionKey } from "../utils/position";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
@@ -20,6 +21,7 @@ export function syncCpuContext(runtime: CpuRuntime, state: GameState) {
   runtime.hiddenAttackIntents = [];
 }
 export type CpuStepInstrumentation = {
+  movementSemantics?: MovementSemantics;
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
   onPolicy?: (milliseconds: number) => void;
@@ -76,17 +78,30 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     case "submit_team_production": next = submitTeamProduction(state, decision.teamId); writeLog(decision.teamId, "confirm production / skip"); break;
     case "movement": {
       const unit = state.units.find((entry) => entry.id === decision.unitId);
-      if (decision.to && unit) next = saveMovementIntent(state, { teamId: decision.teamId, unitId: unit.id, from: unit.position, to: decision.to, stay: false });
+      if (decision.to && unit) {
+        const intent = { teamId: decision.teamId, unitId: unit.id, from: unit.position, to: decision.to, stay: false } as const;
+        next = instrumentation?.movementSemantics === "legacy_batched" ? saveMovementIntent(state, intent) : commitUnitMovement(state, intent);
+      }
       runtime.processedKeys.push(decision.actorKey);
       writeLog(decision.teamId, decision.to ? "move" : "movement pass", `${decision.unitId}${decision.to ? ` -> ${positionKey(decision.to)}` : ""}`);
       break;
     }
+    case "merge_infantry":
+      next = mergeHeavyInfantry(state, decision.primaryUnitId, decision.partnerUnitId);
+      runtime.processedKeys.push(decision.actorKey);
+      writeLog(decision.teamId, "merge infantry", `${decision.primaryUnitId} + ${decision.partnerUnitId}`);
+      break;
     case "teleport":
       if (decision.intent) next = saveTeleportIntent(state, decision.intent);
       runtime.processedKeys.push(decision.actorKey);
       writeLog(decision.teamId, decision.intent ? "teleport" : "teleport pass", decision.intent ? `${decision.intent.strategistUnitId}:${decision.intent.targetUnitId} -> ${positionKey(decision.intent.to)}` : decision.strategistUnitId);
       break;
-    case "submit_movement": next = submitMovement(state, decision.teamId, injectedRng(runtime)); writeLog(decision.teamId, "confirm movement"); break;
+    case "submit_movement":
+      next = instrumentation?.movementSemantics === "legacy_batched"
+        ? submitLegacyMovement(state, decision.teamId, injectedRng(runtime))
+        : submitMovement(state, decision.teamId, injectedRng(runtime));
+      writeLog(decision.teamId, "confirm movement");
+      break;
     case "attack":
       runtime.hiddenAttackIntents = [...runtime.hiddenAttackIntents.filter((entry) => entry.attackerUnitId !== decision.intent.attackerUnitId), decision.intent];
       runtime.processedKeys.push(decision.actorKey);

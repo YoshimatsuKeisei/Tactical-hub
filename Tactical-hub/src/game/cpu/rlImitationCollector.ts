@@ -1,6 +1,6 @@
 import type { GameConfig } from "../types";
 import { encodeRlLegalActions, type EncodedLegalActions } from "./rlActionEncoder";
-import { RlEnvironment, type RlResult } from "./rlEnvironment";
+import { LegacyReplayRlEnvironment, RlEnvironment, type RlResult } from "./rlEnvironment";
 import {
   createRlObservationEncoderCache,
   encodeRlObservation,
@@ -16,6 +16,7 @@ import {
 } from "./rlReplayRngSidecar";
 
 export const RL_IMITATION_REPLAY_SCHEMA_VERSION = 1;
+export const RL_IMMEDIATE_MOVEMENT_SEMANTICS_VERSION = 2;
 
 export type RlImitationEpisodeHeader = {
   type: "episode_start";
@@ -26,6 +27,8 @@ export type RlImitationEpisodeHeader = {
   mapId: string;
   gameConfig: GameConfig;
   maxTurns: number;
+  /** Missing/1 means the historical batched movement replay semantics. */
+  movementSemanticsVersion?: typeof RL_IMMEDIATE_MOVEMENT_SEMANTICS_VERSION;
 };
 
 export type RlImitationDecisionRecord = {
@@ -93,6 +96,16 @@ export function getRlImitationEpisodeFeatureSpec(episode: RlImitationEpisode) {
   return getRlImitationHeaderFeatureSpec(episode.header);
 }
 
+function createReplayEnvironment(header: RlImitationEpisodeHeader) {
+  return header.movementSemanticsVersion === RL_IMMEDIATE_MOVEMENT_SEMANTICS_VERSION
+    ? new RlEnvironment()
+    : new LegacyReplayRlEnvironment();
+}
+
+function createReplayHeuristicPolicy(header: RlImitationEpisodeHeader) {
+  return createHeuristicCpuPolicy(header.movementSemanticsVersion === RL_IMMEDIATE_MOVEMENT_SEMANTICS_VERSION ? "current" : "legacy_batched");
+}
+
 function currentDecision(
   environment: RlEnvironment,
   expected: Pick<RlImitationDecisionRecord, "teamId" | "turnNumber">,
@@ -129,6 +142,7 @@ export async function runHeuristicImitationEpisode(input: {
     mapId: firstObservation.config.mapId,
     gameConfig: firstObservation.config,
     maxTurns,
+    movementSemanticsVersion: RL_IMMEDIATE_MOVEMENT_SEMANTICS_VERSION,
   };
   await input.onRecord(header);
 
@@ -191,14 +205,14 @@ export async function replayHeuristicImitationEpisode(input: {
   if (header.schemaVersion !== RL_IMITATION_REPLAY_SCHEMA_VERSION) {
     throw new Error(`Unsupported replay schemaVersion ${header.schemaVersion}`);
   }
-  const environment = new RlEnvironment();
+  const environment = createReplayEnvironment(header);
   const initial = environment.reset(header.seed, header.participantCount);
   if (initial.config.mapId !== header.mapId || JSON.stringify(initial.config) !== JSON.stringify(header.gameConfig)) {
     throw new Error("Replay initial game settings do not match the saved episode");
   }
   await input.onFeatureSpec?.(createRlFeatureSpec(initial));
   if (input.rngSidecar) validateRlReplayRngSidecar(input.episode, input.rngSidecar);
-  const policy = input.rngSidecar ? undefined : createHeuristicCpuPolicy();
+  const policy = input.rngSidecar ? undefined : createReplayHeuristicPolicy(header);
   policy?.setDecisionDiagnosticsEnabled(true);
   const observationEncoderCache = createRlObservationEncoderCache();
 
@@ -266,12 +280,12 @@ export async function generateRlReplayRngSidecar(episode: RlImitationEpisode): P
   if (header.schemaVersion !== RL_IMITATION_REPLAY_SCHEMA_VERSION) {
     throw new Error(`Unsupported replay schemaVersion ${header.schemaVersion}`);
   }
-  const environment = new RlEnvironment();
+  const environment = createReplayEnvironment(header);
   const initial = environment.reset(header.seed, header.participantCount);
   if (initial.config.mapId !== header.mapId || JSON.stringify(initial.config) !== JSON.stringify(header.gameConfig)) {
     throw new Error("Replay initial game settings do not match the saved episode");
   }
-  const policy = createHeuristicCpuPolicy();
+  const policy = createReplayHeuristicPolicy(header);
   policy.setDecisionDiagnosticsEnabled(true);
   const rngStatesAfterPolicy: number[] = [];
   for (const record of decisions) {
@@ -326,7 +340,7 @@ export async function replayRlImitationEpisodePrefix(input: {
   onDecisionCompleted?: (profile: RlReplayPrefixProfile) => void | Promise<void>;
 }): Promise<{ decisionCount: number; profile: RlReplayPrefixProfile }> {
   validateRlReplayRngSidecar(input.episode, input.rngSidecar);
-  const environment = new RlEnvironment();
+  const environment = createReplayEnvironment(input.episode.header);
   const initial = environment.reset(input.episode.header.seed, input.episode.header.participantCount);
   if (initial.config.mapId !== input.episode.header.mapId || JSON.stringify(initial.config) !== JSON.stringify(input.episode.header.gameConfig)) {
     throw new Error("Replay initial game settings do not match the saved episode");

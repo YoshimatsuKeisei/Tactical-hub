@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAttackCandidates } from "../engine/battle";
-import { beginMovementPhase, getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
+import { beginMovementPhase, commitUnitMovement, getMovementCandidates } from "../engine/movement";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit } from "../types";
 import { createTeamVisibleState, isUnitVisibleToTeam } from "../visibility";
@@ -38,16 +38,16 @@ describe("team-scoped water ninja visibility", () => {
     expect(createTeamVisibleState(state, "team-2").units.map((unit) => unit.id)).toEqual(expect.arrayContaining([ground.id, bridge.id]));
   });
 
-  it("keeps the hidden occupied water tile selectable and detects collision only at resolution", () => {
+  it("keeps the hidden occupied water tile selectable and detects collision on immediate movement", () => {
     let { state, mover, waiting } = collisionState();
     state.phase = state.turnState.phase = "attack_input";
     expect(getAttackCandidates(state, mover.id).map((target) => target.unitId)).toEqual([waiting.id]);
     expect(getAttackCandidates(state, waiting.id).map((target) => target.unitId)).toEqual([mover.id]);
     state.phase = state.turnState.phase = "movement_input";
     expect(getMovementCandidates(state, mover.id)).toContainEqual(waiting.position);
-    const saved = saveMovementIntent(state, { teamId: "team-1", unitId: mover.id, from: mover.position, to: waiting.position, stay: false });
-    expect(saved).not.toBe(state);
-    state = submitMovement(saved, "team-1", () => 0);
+    const moved = commitUnitMovement(state, { teamId: "team-1", unitId: mover.id, from: mover.position, to: waiting.position, stay: false });
+    expect(moved).not.toBe(state);
+    state = moved;
     expect(state.units.find((unit) => unit.id === mover.id)?.position).toEqual(mover.position);
     expect(state.units.find((unit) => unit.id === waiting.id)?.position).toEqual(waiting.position);
     expect(state.movedUnitIdsThisMovementPhase).toEqual(expect.arrayContaining([mover.id, waiting.id]));

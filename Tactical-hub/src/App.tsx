@@ -3,7 +3,7 @@ import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
 import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
-import { saveMovementIntent, resolveMovement } from "./game/engine/movement";
+import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
@@ -103,7 +103,7 @@ export default function App() {
     if (!selectedUnit) return;
     if ((cpuSettings[selectedUnit.ownerTeamId] ?? "human") !== "human") return;
     setState(
-      saveMovementIntent(state, {
+      commitUnitMovement(state, {
         teamId: selectedUnit.ownerTeamId,
         unitId: selectedUnit.id,
         from: selectedUnit.position,

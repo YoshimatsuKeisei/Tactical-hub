@@ -309,5 +309,7 @@ export type GameState = {
   teleportIntents: TeleportIntent[];
   teleportCooldowns: TeleportCooldown[];
   movedUnitIdsThisMovementPhase: string[];
+  /** Present only while the current immediate-movement team is acting. */
+  movementDefendedBaseIdsAtTeamStart?: string[];
   ninjaRevealStates?: NinjaRevealState[];
 };

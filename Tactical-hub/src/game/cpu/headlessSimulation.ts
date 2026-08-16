@@ -246,6 +246,7 @@ function decisionSignature(decision: CpuDecision) {
   switch (decision.kind) {
     case "production": return `${decision.kind}:${decision.teamId}:${decision.actorKey}:${decision.choice ? `${decision.choice.baseId}/${decision.choice.unitType}` : "pass"}`;
     case "movement": return `${decision.kind}:${decision.teamId}:${decision.unitId}:${decision.to ? positionKey(decision.to) : "pass"}`;
+    case "merge_infantry": return `${decision.kind}:${decision.teamId}:${decision.primaryUnitId}:${decision.partnerUnitId}`;
     case "teleport": return `${decision.kind}:${decision.teamId}:${decision.strategistUnitId}:${decision.intent ? `${decision.intent.targetUnitId}/${positionKey(decision.intent.to)}` : "pass"}`;
     case "attack": return `${decision.kind}:${decision.teamId}:${decision.intent.attackerUnitId}:${decision.intent.target?.unitId ?? "pass"}`;
     case "reward": return `${decision.kind}:${decision.teamId}:${decision.requestId}:${decision.baseId}:${decision.unitType}`;

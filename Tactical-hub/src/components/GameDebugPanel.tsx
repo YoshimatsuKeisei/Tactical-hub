@@ -1,7 +1,7 @@
 import { UNIT_STATS } from "../game/constants";
 import { getAttackCandidates, saveAttackIntent } from "../game/engine/battle";
 import { getEncourageRadius, getEncouragedUnitIds, getEncouragedUnitIdsByStrategist, isUnitEncouraged } from "../game/engine/encouragement";
-import { getMovementCandidates, saveMovementIntent } from "../game/engine/movement";
+import { commitUnitMovement, getMovementCandidates } from "../game/engine/movement";
 import { getAvailableProductionTypes, saveProductionChoice, STRATEGIST_ROLES } from "../game/engine/production";
 import { isTeamProductionPending } from "../game/engine/productionSchedule";
 import { getEligibleRewardBaseIds, getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
@@ -240,7 +240,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
                 className="secondary"
                 onClick={() =>
                   onStateChange(
-                    saveMovementIntent(state, {
+                    commitUnitMovement(state, {
                       teamId: selectedUnit.ownerTeamId,
                       unitId: selectedUnit.id,
                       from: selectedUnit.position,

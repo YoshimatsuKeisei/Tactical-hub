@@ -3,8 +3,8 @@ import { UNIT_STATS } from "../constants";
 import { saveAttackIntent } from "../engine/battle";
 import {
   beginMovementPhase,
+  commitUnitMovement,
   getMovementCandidates,
-  saveMovementIntent,
   submitMovement,
 } from "../engine/movement";
 import { createInitialGameState } from "../initialState";
@@ -76,7 +76,7 @@ describe("rotating sequential team movement", () => {
     const state = createInitialGameState();
     const enemy = state.units.find((unit) => unit.id === "home-2-strategist")!;
     expect(getMovementCandidates(state, enemy.id)).toEqual([]);
-    const rejected = saveMovementIntent(state, { teamId: "team-2", unitId: enemy.id, from: enemy.position, to: enemy.position, stay: true });
+    const rejected = commitUnitMovement(state, { teamId: "team-2", unitId: enemy.id, from: enemy.position, to: enemy.position, stay: true });
     expect(rejected).toBe(state);
     expect(submitMovement(state, "team-2")).toBe(state);
   });
@@ -85,7 +85,7 @@ describe("rotating sequential team movement", () => {
     let occupied = createInitialGameState();
     relocate(occupied, "home-1-strategist", { kind: "tile", x: 4, y: 1 });
     relocate(occupied, "home-2-strategist", { kind: "tile", x: 6, y: 1 });
-    occupied = saveMovementIntent(occupied, {
+    occupied = commitUnitMovement(occupied, {
       teamId: "team-1", unitId: "home-1-strategist",
       from: { kind: "tile", x: 4, y: 1 }, to: { kind: "tile", x: 5, y: 1 }, stay: false,
     });
@@ -96,7 +96,7 @@ describe("rotating sequential team movement", () => {
     let vacated = createInitialGameState();
     relocate(vacated, "home-1-strategist", { kind: "tile", x: 4, y: 1 });
     relocate(vacated, "home-2-strategist", { kind: "tile", x: 5, y: 1 });
-    vacated = saveMovementIntent(vacated, {
+    vacated = commitUnitMovement(vacated, {
       teamId: "team-1", unitId: "home-1-strategist",
       from: { kind: "tile", x: 4, y: 1 }, to: { kind: "tile", x: 3, y: 1 }, stay: false,
     });
@@ -108,7 +108,7 @@ describe("rotating sequential team movement", () => {
     let state = createInitialGameState();
     const first = addUnit(state, "team-1-sequential-cavalry", "team-1", "cavalry", { kind: "tile", x: 4, y: 1 });
     const second = addUnit(state, "team-2-sequential-cavalry", "team-2", "cavalry", { kind: "tile", x: 6, y: 1 });
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: first.id, from: first.position, to: { kind: "tile", x: 5, y: 1 }, stay: false });
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: first.id, from: first.position, to: { kind: "tile", x: 5, y: 1 }, stay: false });
     state = submitMovement(state, "team-1");
     expect(getMovementCandidates(state, second.id).map(positionKey)).not.toContain("5,1");
   });
@@ -135,7 +135,7 @@ describe("rotating sequential team movement", () => {
     }
     if (!destination || !source) throw new Error("No neutral-base entry fixture found");
     const rewardsBefore = state.rewardPlacementRequests.length;
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: mover.id, from: source, to: destination, stay: false });
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: mover.id, from: source, to: destination, stay: false });
     state = submitMovement(state, "team-1");
     expect(state.bases.find((candidate) => candidate.id === base.id)?.ownerTeamId).toBe("team-1");
     expect(state.rewardPlacementRequests).toHaveLength(rewardsBefore);
@@ -148,11 +148,11 @@ describe("rotating sequential team movement", () => {
     let state = createInitialGameState();
     const front = addUnit(state, "a-front", "team-1", "infantry", { kind: "tile", x: 4, y: 1 });
     const back = addUnit(state, "b-back", "team-1", "infantry", { kind: "tile", x: 3, y: 1 });
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: front.id, from: front.position, to: { kind: "tile", x: 5, y: 1 }, stay: false });
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: front.id, from: front.position, to: { kind: "tile", x: 5, y: 1 }, stay: false });
     expect(getMovementCandidates(state, back.id).map(positionKey)).toContain("4,1");
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: back.id, from: back.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: back.id, from: back.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
     const duplicate = addUnit(state, "c-duplicate", "team-1", "infantry", { kind: "tile", x: 6, y: 1 });
-    const rejected = saveMovementIntent(state, { teamId: "team-1", unitId: duplicate.id, from: duplicate.position, to: { kind: "tile", x: 5, y: 1 }, stay: false });
+    const rejected = commitUnitMovement(state, { teamId: "team-1", unitId: duplicate.id, from: duplicate.position, to: { kind: "tile", x: 5, y: 1 }, stay: false });
     expect(rejected).toBe(state);
 
     const resolved = submitMovement(state, "team-1");

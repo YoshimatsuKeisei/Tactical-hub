@@ -1,6 +1,6 @@
 import { getAttackCandidates, getTeamAttackerUnitIds } from "../engine/battle";
 import { getBuilderUnits, getStrategistActionCandidatesForUnit } from "../engine/construction";
-import { getMovementCandidates, getTeamMovementUnitIds } from "../engine/movement";
+import { getMovementCandidates, getTeamMovementUnitIds, type MovementSemantics } from "../engine/movement";
 import { getProductionCandidatesForBase } from "../engine/production";
 import { isTeamProductionPending } from "../engine/productionSchedule";
 import { getRewardPlacementCandidates } from "../engine/reward";
@@ -13,6 +13,7 @@ import { getRandomCpuDecision } from "./randomCpuPolicy";
 import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
 import { createTeamVisibleState } from "../visibility";
 import { createCpuRuntime } from "./types";
+import { getHeavyInfantryMergeCandidates } from "../engine/heavyInfantry";
 
 export type RlActionType = CpuDecision["kind"];
 export type RlLegalAction = {
@@ -22,6 +23,7 @@ export type RlLegalAction = {
   isPass: boolean;
   unitId?: string;
   targetId?: string;
+  partnerUnitId?: string;
   tileId?: string;
   tileIds?: string[];
   baseId?: string;
@@ -84,6 +86,7 @@ export const getCpuDecisionActionKey = (decision: CpuDecision) => {
   switch (decision.kind) {
     case "production": return `production:${decision.teamId}:${decision.actorKey}:${decision.choice ? `${decision.choice.baseId}:${decision.choice.unitType}:${decision.choice.strategistRole ?? ""}` : "pass"}`;
     case "movement": return `movement:${decision.teamId}:${decision.unitId}:${decision.to ? tileId(decision.to) : "pass"}`;
+    case "merge_infantry": return `merge_infantry:${decision.teamId}:${decision.primaryUnitId}:${decision.partnerUnitId}`;
     case "teleport": return `teleport:${decision.teamId}:${decision.strategistUnitId}:${decision.intent ? `${decision.intent.targetUnitId}:${tileId(decision.intent.to)}` : "pass"}`;
     case "attack": return `attack:${decision.teamId}:${decision.intent.attackerUnitId}:${decision.intent.target?.unitId ?? "pass"}`;
     case "reward": return `reward:${decision.teamId}:${decision.requestId}:${decision.baseId}:${decision.unitType}`;
@@ -102,6 +105,7 @@ export function describeRlDecision(decision: CpuDecision): RlLegalAction {
   switch (decision.kind) {
     case "production": return { ...base, baseId: decision.choice?.baseId, unitType: decision.choice?.unitType, strategistRole: decision.choice?.strategistRole };
     case "movement": return { ...base, unitId: decision.unitId, tileId: decision.to ? tileId(decision.to) : undefined };
+    case "merge_infantry": return { ...base, unitId: decision.primaryUnitId, partnerUnitId: decision.partnerUnitId };
     case "teleport": return { ...base, unitId: decision.strategistUnitId, targetId: decision.intent?.targetUnitId, tileId: decision.intent ? tileId(decision.intent.to) : undefined };
     case "attack": return { ...base, unitId: decision.intent.attackerUnitId, targetId: decision.intent.target?.unitId, baseId: decision.intent.target?.baseId, slotId: decision.intent.target?.slotId };
     case "reward": return { ...base, requestId: decision.requestId, baseId: decision.baseId, unitType: decision.unitType };
@@ -124,7 +128,7 @@ function wrap(decisions: CpuDecision[]): EnumeratedDecision[] {
   return decisions.map((decision) => ({ decision, action: describeRlDecision(decision) }));
 }
 
-export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, teamEligible: (teamId: string) => boolean = () => true): EnumeratedDecision[] {
+export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, teamEligible: (teamId: string) => boolean = () => true, movementSemantics: MovementSemantics = "current"): EnumeratedDecision[] {
   syncCpuContext(runtime, state);
   const active = activeTeamIds(state);
   const eligible = active.filter(teamEligible);
@@ -138,7 +142,7 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, team
         if (candidates.length) return wrap(candidates.map((choice) => ({ kind: "production", teamId, actorKey, choice })));
       }
       runtime.completedProductionTeamIds.push(teamId);
-      return enumerateRlDecisions(state, runtime, teamEligible);
+      return enumerateRlDecisions(state, runtime, teamEligible, movementSemantics);
     }
     return eligible.length === active.length ? wrap([{ kind: "resolve_production", teamId: "all" }]) : [];
   }
@@ -158,7 +162,7 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, team
     const unitId = getTeamMovementUnitIds(visibleState, teamId).find((id) => !runtime.processedKeys.includes(`movement:${teamId}:${id}`));
     if (unitId) {
       const actorKey = `movement:${teamId}:${unitId}`;
-      const destinations = getMovementCandidates(visibleState, unitId).sort((left, right) => tileId(left).localeCompare(tileId(right)));
+      const destinations = getMovementCandidates(visibleState, unitId, movementSemantics).sort((left, right) => tileId(left).localeCompare(tileId(right)));
       return wrap([
         { kind: "movement", teamId, actorKey, unitId },
         ...destinations.map((to): CpuDecision => ({ kind: "movement", teamId, actorKey, unitId, to })),
@@ -204,6 +208,25 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, team
   }
   if (state.phase === "strategist_action_resolution") return eligible.length === active.length ? wrap([{ kind: "resolve_strategists", teamId: "all" }]) : [];
   return [];
+}
+
+export const enumerateRlDecisionsV1 = enumerateRlDecisions;
+
+export function enumerateRlDecisionsV2(state: GameState, runtime: CpuRuntime, teamEligible: (teamId: string) => boolean = () => true): EnumeratedDecision[] {
+  const decisions = enumerateRlDecisions(state, runtime, teamEligible);
+  if (state.phase !== "movement_input" || decisions[0]?.decision.kind !== "movement") return decisions;
+  const primaryUnitId = decisions[0].decision.unitId;
+  const teamId = decisions[0].decision.teamId;
+  const mergeDecisions = getHeavyInfantryMergeCandidates(state, primaryUnitId)
+    .filter((partner) => primaryUnitId.localeCompare(partner.id) < 0)
+    .map((partner): CpuDecision => ({
+      kind: "merge_infantry",
+      teamId,
+      actorKey: `movement:${teamId}:${primaryUnitId}`,
+      primaryUnitId,
+      partnerUnitId: partner.id,
+    }));
+  return [...decisions, ...wrap(mergeDecisions)];
 }
 
 const defaultRewards: RlRewardFunction = (state, result) => Object.fromEntries(
@@ -252,7 +275,11 @@ export class RlEnvironment {
   private decisions: EnumeratedDecision[] = [];
   private readonly rewardFunction: RlRewardFunction;
 
-  constructor(rewardFunction: RlRewardFunction = defaultRewards) { this.rewardFunction = rewardFunction; }
+  constructor(
+    rewardFunction: RlRewardFunction = defaultRewards,
+    private readonly schemaVersion: 1 | 2 = 1,
+    private readonly movementSemantics: MovementSemantics = "current",
+  ) { this.rewardFunction = rewardFunction; }
 
   reset(seed: number, participantCount: 3 | 4 = 4, initialState?: GameState) {
     this.state = structuredClone(initialState ?? createHeadlessInitialState(participantCount)) as GameState;
@@ -263,7 +290,7 @@ export class RlEnvironment {
 
   private apply(decision: CpuDecision) {
     const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, "random_cpu"]));
-    const result = advanceCpuOneStep(this.state, this.runtime, settings, () => decision, { logMode: "none" });
+    const result = advanceCpuOneStep(this.state, this.runtime, settings, () => decision, { logMode: "none", movementSemantics: this.movementSemantics });
     if (!result.applied) throw new Error("RL action was not applied");
     this.state = result.state;
     this.runtime = result.runtime;
@@ -272,7 +299,9 @@ export class RlEnvironment {
   private advanceAutomatic() {
     for (let guard = 0; guard < 100; guard += 1) {
       if (this.isTerminal()) { this.decisions = []; return; }
-      this.decisions = enumerateRlDecisions(this.state, this.runtime);
+      this.decisions = this.schemaVersion === 1
+        ? enumerateRlDecisions(this.state, this.runtime, () => true, this.movementSemantics)
+        : enumerateRlDecisionsV2(this.state, this.runtime);
       if (this.decisions.length !== 1 || !["resolve_production", "resolve_battle", "resolve_strategists"].includes(this.decisions[0].decision.kind)) return;
       this.apply(this.decisions[0].decision);
     }
@@ -362,4 +391,13 @@ export class RlEnvironment {
     for (const character of text) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
     return hash.toString(16).padStart(8, "0");
   }
+}
+
+export class RlEnvironmentV2 extends RlEnvironment {
+  constructor(rewardFunction: RlRewardFunction = defaultRewards) { super(rewardFunction, 2); }
+}
+
+/** Schema-v1 environment retained only for replaying pre-immediate-movement data. */
+export class LegacyReplayRlEnvironment extends RlEnvironment {
+  constructor(rewardFunction: RlRewardFunction = defaultRewards) { super(rewardFunction, 1, "legacy_batched"); }
 }

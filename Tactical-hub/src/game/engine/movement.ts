@@ -50,6 +50,8 @@ export type MovementValidationResult =
   | { valid: true; path: MovementPath }
   | { valid: false; reason: string };
 
+export type MovementSemantics = "current" | "legacy_batched";
+
 const directions = [-1, 0, 1]
   .flatMap((dx) => [-1, 0, 1].map((dy) => ({ dx, dy })))
   .filter(({ dx, dy }) => dx || dy);
@@ -76,6 +78,7 @@ export function beginMovementPhase(state: GameState): GameState {
   next.currentMovementTeamId = next.movementOrderTeamIds[0];
   next.teleportIntents = [];
   next.movedUnitIdsThisMovementPhase = [];
+  delete next.movementDefendedBaseIdsAtTeamStart;
   next.ninjaRevealStates = [];
   next.phase = next.turnState.phase = "movement_input";
   return next;
@@ -399,11 +402,17 @@ export function getMovementPaths(
 export function getMovementCandidates(
   state: GameState,
   unitId: string,
+  semantics: MovementSemantics = "current",
 ): UnitPosition[] {
   const unit = state.units.find((candidate) => candidate.id === unitId);
   if (state.phase === "movement_input" && unit?.ownerTeamId !== state.currentMovementTeamId) return [];
   if (state.movedUnitIdsThisMovementPhase.includes(unitId) || state.teleportIntents.some((intent) => intent.targetUnitId === unitId)) return [];
   if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
+  if (semantics === "current") {
+    const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
+    return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(createTeamVisibleState(state, unit.ownerTeamId), unitId)
+      .map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
+  }
   const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
     const visibleState = createTeamVisibleState(state, unit.ownerTeamId);
     // Candidate planning only changes unit positions and BaseSlot occupancy.
@@ -531,12 +540,80 @@ function applyRetreatStatus(
   );
 }
 
-function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () => number): GameState {
+function getDefendedBaseIds(state: GameState) {
+  return state.bases.filter((base) => state.units.some((unit) =>
+    unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId,
+  )).map((base) => base.id);
+}
+
+function applySingleMovementInPlace(next: GameState, intent: MovementIntent, markStayMoved: boolean) {
+  const unit = next.units.find((candidate) => candidate.id === intent.unitId);
+  if (!unit) return false;
+  if (intent.stay) {
+    const wasRetreating = isRetreating(unit);
+    if (wasRetreating) applyRetreatStatus(next, unit.id, false);
+    if (markStayMoved) next.movedUnitIdsThisMovementPhase = [...new Set([...next.movedUnitIdsThisMovementPhase, unit.id])];
+    next.logs.push({
+      id: `log-move-stay-${next.logs.length}`,
+      turnNumber: next.turnNumber,
+      type: "movement",
+      message: wasRetreating ? `${intent.unitId} stayed and ended retreat.` : `${intent.unitId} stayed.`,
+      relatedIds: [intent.unitId],
+    });
+    return true;
+  }
+
+  const destination = intent.to;
+  const hiddenWaterOccupant = destination.kind === "water" && isWaterNinja(unit)
+    ? next.units.find((candidate) => candidate.id !== unit.id && candidate.ownerTeamId !== unit.ownerTeamId
+      && isWaterNinja(candidate) && candidate.position.kind === "water" && candidate.position.x === destination.x
+      && candidate.position.y === destination.y && !isUnitVisibleToTeam(next, candidate, unit.ownerTeamId))
+    : undefined;
+  if (hiddenWaterOccupant) {
+    revealNinjasToEachOther(next, unit, hiddenWaterOccupant);
+    next.movedUnitIdsThisMovementPhase = [...new Set([...next.movedUnitIdsThisMovementPhase, unit.id, hiddenWaterOccupant.id])];
+    next.logs.push({ id: `log-ninja-collision-${next.logs.length}`, turnNumber: next.turnNumber, type: "movement", message: "Two hidden water units collided and discovered each other." });
+    return true;
+  }
+
+  const movement = validateMovementPath(next, unit, intent.from, intent.to);
+  if (!movement.valid) {
+    next.logs.push({ id: `log-move-fail-${next.logs.length}`, turnNumber: next.turnNumber, type: "movement", message: `${intent.unitId} failed to move to ${positionKey(intent.to)}: ${movement.reason}.`, relatedIds: [intent.unitId] });
+    return false;
+  }
+  const retreatEffect = getRetreatMoveEffect(next, unit, intent.from, intent.to);
+  const retreatTargetBaseId = retreatEffect === "start" ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to) : undefined;
+  applyPosition(next, unit.id, intent.to);
+  next.movedUnitIdsThisMovementPhase = [...new Set([...next.movedUnitIdsThisMovementPhase, unit.id])];
+  if (retreatEffect === "start" || retreatEffect === "maintain") applyRetreatStatus(next, unit.id, true, retreatTargetBaseId);
+  if (retreatEffect === "release" || retreatEffect === "complete") applyRetreatStatus(next, unit.id, false);
+  const retreatMessage = retreatEffect === "start" ? " Retreat started." : retreatEffect === "maintain" ? " Retreat maintained." : retreatEffect === "release" ? " Retreat ended." : retreatEffect === "complete" ? " Retreat completed at a friendly base." : "";
+  next.logs.push({ id: `log-move-ok-${next.logs.length}`, turnNumber: next.turnNumber, type: "movement", message: `${unit.id} moved to ${positionKey(intent.to)}.${retreatMessage}`, relatedIds: [unit.id] });
+  return true;
+}
+
+/** Applies one current-game movement immediately without ending the team's movement turn. */
+export function commitUnitMovement(state: GameState, intent: MovementIntent): GameState {
+  const unit = state.units.find((candidate) => candidate.id === intent.unitId);
+  if (state.phase !== "movement_input" || state.currentMovementTeamId !== intent.teamId || unit?.ownerTeamId !== intent.teamId
+    || state.movementCompletedTeamIds.includes(intent.teamId) || state.movedUnitIdsThisMovementPhase.includes(intent.unitId)
+    || state.teleportIntents.some((entry) => entry.targetUnitId === intent.unitId || (!intent.stay && samePosition(entry.to, intent.to)))) return state;
+  const source = state.movementDefendedBaseIdsAtTeamStart ? state : { ...state, movementDefendedBaseIdsAtTeamStart: getDefendedBaseIds(state) };
+  const next = structuredClone(source) as GameState;
+  return applySingleMovementInPlace(next, intent, true) ? next : state;
+}
+
+function resolveCurrentTeamMovement(
+  state: GameState,
+  teamId: string,
+  rng: () => number,
+  applySavedIntents: boolean,
+): GameState {
   const next = structuredClone(state) as GameState;
   resolveTeamTeleports(next, teamId);
   resetInactiveSieges(next);
-  const defendingCountsAtStart = new Map(next.bases.map((base) => [base.id, next.units.filter((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId).length]));
-  const intents = next.turnState.actionIntents
+  const defendedBaseIdsAtStart = new Set(next.movementDefendedBaseIdsAtTeamStart ?? getDefendedBaseIds(next));
+  const intents = applySavedIntents ? next.turnState.actionIntents
     .filter((intent) => intent.teamId === teamId)
     .flatMap((intent) => intent.movementIntents.filter((movement) => movement.teamId === teamId))
     .sort((a, b) => {
@@ -546,7 +623,7 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () =>
         (aUnit ? UNIT_STATS[aUnit.type].priority : 99) -
         (bUnit ? UNIT_STATS[bUnit.type].priority : 99);
       return priority || a.unitId.localeCompare(b.unitId);
-    });
+    }) : [];
 
   for (const intent of intents) {
     const unit = next.units.find((candidate) => candidate.id === intent.unitId);
@@ -560,93 +637,7 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () =>
       continue;
     }
 
-    if (intent.stay) {
-      const wasRetreating = isRetreating(unit);
-      if (wasRetreating) applyRetreatStatus(next, unit.id, false);
-      next.logs.push({
-        id: `log-move-stay-${next.logs.length}`,
-        turnNumber: next.turnNumber,
-        type: "movement",
-        message: wasRetreating
-          ? `${intent.unitId} stayed and ended retreat.`
-          : `${intent.unitId} stayed.`,
-        relatedIds: [intent.unitId],
-      });
-      continue;
-    }
-
-    const destination = intent.to;
-    const hiddenWaterOccupant = destination.kind === "water" && isWaterNinja(unit)
-      ? next.units.find((candidate) =>
-        candidate.id !== unit.id &&
-        candidate.ownerTeamId !== unit.ownerTeamId &&
-        isWaterNinja(candidate) &&
-        candidate.position.kind === "water" &&
-        candidate.position.x === destination.x &&
-        candidate.position.y === destination.y &&
-        !isUnitVisibleToTeam(next, candidate, unit.ownerTeamId),
-      )
-      : undefined;
-    if (hiddenWaterOccupant) {
-      revealNinjasToEachOther(next, unit, hiddenWaterOccupant);
-      next.movedUnitIdsThisMovementPhase = [...new Set([
-        ...next.movedUnitIdsThisMovementPhase,
-        unit.id,
-        hiddenWaterOccupant.id,
-      ])];
-      next.logs.push({
-        id: `log-ninja-collision-${next.logs.length}`,
-        turnNumber: next.turnNumber,
-        type: "movement",
-        message: "Two hidden water units collided and discovered each other.",
-      });
-      continue;
-    }
-
-    const movement = validateMovementPath(next, unit, intent.from, intent.to);
-    if (movement.valid) {
-      const retreatEffect = getRetreatMoveEffect(
-        next,
-        unit,
-        intent.from,
-        intent.to,
-      );
-      const retreatTargetBaseId = retreatEffect === "start"
-        ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to)
-        : undefined;
-      applyPosition(next, unit.id, intent.to);
-      next.movedUnitIdsThisMovementPhase.push(unit.id);
-      if (retreatEffect === "start" || retreatEffect === "maintain")
-        applyRetreatStatus(next, unit.id, true, retreatTargetBaseId);
-      if (retreatEffect === "release" || retreatEffect === "complete")
-        applyRetreatStatus(next, unit.id, false);
-
-      const retreatMessage =
-        retreatEffect === "start"
-          ? " Retreat started."
-          : retreatEffect === "maintain"
-            ? " Retreat maintained."
-            : retreatEffect === "release"
-              ? " Retreat ended."
-              : retreatEffect === "complete"
-                ? " Retreat completed at a friendly base."
-                : "";
-      next.logs.push({
-        id: `log-move-ok-${next.logs.length}`,
-        turnNumber: next.turnNumber,
-        type: "movement",
-        message: `${unit.id} moved to ${positionKey(intent.to)}.${retreatMessage}`,
-        relatedIds: [unit.id],
-      });
-    } else {
-      next.logs.push({
-        id: `log-move-fail-${next.logs.length}`,
-        turnNumber: next.turnNumber,
-        type: "movement",
-        message: `${intent.unitId} failed to move to ${positionKey(intent.to)}: ${movement.reason}.`,
-        relatedIds: [intent.unitId],
-      });
-    }
+    applySingleMovementInPlace(next, intent, false);
   }
 
   next.turnState.actionIntents = next.turnState.actionIntents.map((intent) =>
@@ -654,7 +645,7 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () =>
   );
   const combatAbandonmentBases = new Set<string>();
   for (const base of [...next.bases]) {
-    if (!(defendingCountsAtStart.get(base.id) ?? 0)) continue;
+    if (!defendedBaseIdsAtStart.has(base.id)) continue;
     const defendersRemain = next.units.some((unit) => unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId);
     if (defendersRemain) continue;
     const siege = getSiegeState(next, base.id);
@@ -675,6 +666,7 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () =>
   }
   defeatTeamsWithoutBases(next);
   clearInvalidRetreatTargets(next);
+  delete next.movementDefendedBaseIdsAtTeamStart;
   next.movementCompletedTeamIds = [...new Set([...next.movementCompletedTeamIds, teamId])];
   next.movementOrderTeamIds = next.movementOrderTeamIds.filter((orderedTeamId) =>
     next.teams.some((team) => team.id === orderedTeamId && team.status === "active"),
@@ -709,12 +701,17 @@ function resolveCurrentTeamMovement(state: GameState, teamId: string, rng: () =>
   return next;
 }
 
+function canSubmitMovement(state: GameState, teamId: string) {
+  return state.phase === "movement_input"
+    && state.currentMovementTeamId === teamId
+    && state.teams.find((team) => team.id === teamId)?.status === "active"
+    && !state.movementCompletedTeamIds.includes(teamId);
+}
+
+/** Ends the current team's immediate-movement turn; it does not apply saved movement intents. */
 export function submitMovement(state: GameState, teamId: string, rng: () => number = Math.random): GameState {
   if (
-    state.phase !== "movement_input" ||
-    state.currentMovementTeamId !== teamId ||
-    state.teams.find((team) => team.id === teamId)?.status !== "active" ||
-    state.movementCompletedTeamIds.includes(teamId)
+    !canSubmitMovement(state, teamId)
   ) return state;
   if (state.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     return {
@@ -724,7 +721,7 @@ export function submitMovement(state: GameState, teamId: string, rng: () => numb
       turnState: { ...state.turnState, phase: "reward_placement" },
     };
   }
-  if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId, rng);
+  if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId, rng, false);
   const hasSavedProduction = state.turnState.actionIntents.some(
     (intent) => intent.teamId === teamId && intent.productionChoices.length > 0,
   );
@@ -733,7 +730,20 @@ export function submitMovement(state: GameState, teamId: string, rng: () => numb
     ...state,
     productionCompletedTeamIdsThisTurn: [...new Set([...state.productionCompletedTeamIdsThisTurn, teamId])],
   };
-  return resolveCurrentTeamMovement(skipped, teamId, rng);
+  return resolveCurrentTeamMovement(skipped, teamId, rng, false);
+}
+
+/** Legacy replay-only batched movement semantics. */
+export function submitLegacyMovement(state: GameState, teamId: string, rng: () => number = Math.random): GameState {
+  if (!canSubmitMovement(state, teamId)) return state;
+  if (state.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+    return { ...state, phase: "reward_placement", phaseAfterRewards: "movement_input", turnState: { ...state.turnState, phase: "reward_placement" } };
+  }
+  if (!isTeamProductionPending(state, teamId)) return resolveCurrentTeamMovement(state, teamId, rng, true);
+  const hasSavedProduction = state.turnState.actionIntents.some((intent) => intent.teamId === teamId && intent.productionChoices.length > 0);
+  if (hasSavedProduction) return state;
+  const skipped = { ...state, productionCompletedTeamIdsThisTurn: [...new Set([...state.productionCompletedTeamIdsThisTurn, teamId])] };
+  return resolveCurrentTeamMovement(skipped, teamId, rng, true);
 }
 
 export function resolveMovement(state: GameState, rng: () => number = Math.random): GameState {
