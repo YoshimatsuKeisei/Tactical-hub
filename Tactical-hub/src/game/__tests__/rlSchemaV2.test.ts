@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mergeHeavyInfantry } from "../engine/heavyInfantry";
+import { commitUnitMovement, getMovementCandidates } from "../engine/movement";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit } from "../types";
 import { createBcInferenceRequest } from "../cpu/browserBcPolicy";
@@ -122,12 +123,40 @@ describe("RL schema v1/v2 coexistence", () => {
     expect(v1Environment.getLegalActions("team-1").some((candidate) => candidate.actionType === "merge_infantry")).toBe(false);
   });
 
+  it("exposes one merge after immediate movement and when both infantry are already moved", () => {
+    const fixture = mergeFixture();
+    const base = fixture.state.bases.find((candidate) => candidate.id === "home-1")!;
+    for (const slot of base.slots) if (slot.unitId === fixture.primary.id || slot.unitId === fixture.partner.id) slot.unitId = undefined;
+    fixture.primary.position = { kind: "tile", x: 3, y: 1 };
+    fixture.partner.position = { kind: "tile", x: 5, y: 1 };
+    const moved = commitUnitMovement(fixture.state, {
+      teamId: "team-1", unitId: fixture.primary.id, from: fixture.primary.position, to: { kind: "tile", x: 4, y: 1 }, stay: false,
+    });
+    expect(moved.movedUnitIdsThisMovementPhase).toContain(fixture.primary.id);
+    const afterOneMove = enumerateRlDecisionsV2(moved, createCpuRuntime(5), (teamId) => teamId === "team-1")
+      .filter((entry) => entry.decision.kind === "merge_infantry");
+    expect(afterOneMove).toHaveLength(1);
+
+    moved.movedUnitIdsThisMovementPhase.push(fixture.partner.id);
+    const afterBothMove = enumerateRlDecisionsV2(moved, createCpuRuntime(5), (teamId) => teamId === "team-1")
+      .filter((entry) => entry.decision.kind === "merge_infantry");
+    expect(afterBothMove).toHaveLength(1);
+    expect(afterBothMove[0].action.actionKey).toBe(`merge_infantry:team-1:${fixture.primary.id}:${fixture.partner.id}`);
+
+    const merged = mergeHeavyInfantry(moved, fixture.primary.id, fixture.partner.id);
+    expect(getMovementCandidates(merged, fixture.primary.id)).toEqual([]);
+  });
+
   it("omits invalid merge pairs and does not add merge decisions to Random or Heuristic policies", () => {
+    const valid = mergeFixture();
+    const randomSettings: CpuTeamSettings = { "team-1": "random_cpu", "team-2": "human", "team-3": "human", "team-4": "human" };
+    const heuristicSettings: CpuTeamSettings = { ...randomSettings, "team-1": "heuristic_cpu" };
+    expect(getRandomCpuDecision(valid.state, createCpuRuntime(4), randomSettings)?.kind).not.toBe("merge_infantry");
+    expect(createHeuristicCpuPolicy()(valid.state, createCpuRuntime(4), heuristicSettings)?.kind).not.toBe("merge_infantry");
+
     const { state, partner } = mergeFixture();
     partner.formation = "heavy";
     expect(enumerateRlDecisionsV2(state, createCpuRuntime(4), (teamId) => teamId === "team-1").some((entry) => entry.decision.kind === "merge_infantry")).toBe(false);
-    const randomSettings: CpuTeamSettings = { "team-1": "random_cpu", "team-2": "human", "team-3": "human", "team-4": "human" };
-    const heuristicSettings: CpuTeamSettings = { ...randomSettings, "team-1": "heuristic_cpu" };
     expect(getRandomCpuDecision(state, createCpuRuntime(4), randomSettings)?.kind).not.toBe("merge_infantry");
     expect(createHeuristicCpuPolicy()(state, createCpuRuntime(4), heuristicSettings)?.kind).not.toBe("merge_infantry");
   });

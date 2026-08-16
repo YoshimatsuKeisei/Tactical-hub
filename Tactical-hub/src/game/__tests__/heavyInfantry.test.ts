@@ -3,7 +3,7 @@ import { getAttackCandidates, resolveBattle } from "../engine/battle";
 import { getHeavyInfantryMergeCandidates, mergeHeavyInfantry } from "../engine/heavyInfantry";
 import { getMovementCandidates } from "../engine/movement";
 import { createInitialGameState } from "../initialState";
-import type { GameState, Unit, UnitType } from "../types";
+import type { GameState, Unit, UnitPosition, UnitType } from "../types";
 
 function addToBase(state: GameState, id: string, slotId: string) {
   const base = state.bases.find((candidate) => candidate.id === "home-1")!;
@@ -25,6 +25,23 @@ function attackFixture(targetType: UnitType, encouraged = false, heavyTarget = f
   return { state, attacker, target };
 }
 
+function positionedFixture(firstPosition: UnitPosition, secondPosition: UnitPosition) {
+  const state = createInitialGameState();
+  const removedIds = new Set(state.units.filter((unit) => unit.ownerTeamId === "team-1").map((unit) => unit.id));
+  state.units = state.units.filter((unit) => !removedIds.has(unit.id));
+  for (const base of state.bases) for (const slot of base.slots) if (slot.unitId && removedIds.has(slot.unitId)) slot.unitId = undefined;
+  state.productionCompletedTeamIdsThisTurn = ["team-1"];
+  for (const position of [firstPosition, secondPosition]) {
+    if (position.kind !== "tile") continue;
+    const tile = state.map.tiles.find((candidate) => candidate.x === position.x && candidate.y === position.y);
+    if (tile) Object.assign(tile, { terrain: "road", symbol: "", roadSectionId: "merge-fixture", baseId: undefined });
+  }
+  const first: Unit = { id: "merge-a", ownerTeamId: "team-1", type: "infantry", hp: 1, position: firstPosition, statuses: [] };
+  const second: Unit = { id: "merge-b", ownerTeamId: "team-1", type: "infantry", hp: 1, position: secondPosition, statuses: [] };
+  state.units.push(first, second);
+  return { state, first, second };
+}
+
 describe("heavy infantry", () => {
   it("merges two eligible infantry into one moved HP2 unit and frees one slot", () => {
     const state = createInitialGameState();
@@ -38,14 +55,52 @@ describe("heavy infantry", () => {
     expect(getMovementCandidates(merged, first.id)).toEqual([]);
   });
 
-  it("rejects moved, retreating, reserved, heavy, and different-base infantry", () => {
+  it.each([
+    [-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1],
+  ])("allows all eight adjacent directions (%i,%i)", (dx, dy) => {
+    const { state, first, second } = positionedFixture(
+      { kind: "tile", x: 10, y: 10 },
+      { kind: "tile", x: 10 + dx, y: 10 + dy },
+    );
+    expect(getHeavyInfantryMergeCandidates(state, first.id).map((unit) => unit.id)).toEqual([second.id]);
+  });
+
+  it("allows adjacent road and active-bridge infantry but rejects distance two", () => {
+    const road = positionedFixture({ kind: "tile", x: 4, y: 1 }, { kind: "tile", x: 5, y: 1 });
+    expect(getHeavyInfantryMergeCandidates(road.state, road.first.id).map((unit) => unit.id)).toEqual([road.second.id]);
+    road.second.position = { kind: "tile", x: 6, y: 1 };
+    expect(getHeavyInfantryMergeCandidates(road.state, road.first.id)).toEqual([]);
+
+    const bridge = positionedFixture(
+      { kind: "bridge", bridgeId: "merge-bridge", cellIndex: 0 },
+      { kind: "bridge", bridgeId: "merge-bridge", cellIndex: 1 },
+    );
+    bridge.state.constructions.push({ id: "merge-bridge", kind: "bridge", tiles: [{ x: 4, y: 2 }, { x: 5, y: 2 }], placedTurn: 1, active: true });
+    expect(getHeavyInfantryMergeCandidates(bridge.state, bridge.first.id).map((unit) => unit.id)).toEqual([bridge.second.id]);
+  });
+
+  it("allows moved infantry while retaining the existing special-state prohibitions", () => {
     const state = createInitialGameState();
     const first = addToBase(state, "merge-a", "slot_0_1");
     const second = addToBase(state, "merge-b", "slot_1_1");
     state.movedUnitIdsThisMovementPhase.push(second.id);
-    expect(getHeavyInfantryMergeCandidates(state, first.id)).toEqual([]);
-    state.movedUnitIdsThisMovementPhase = [];
+    expect(getHeavyInfantryMergeCandidates(state, first.id).map((unit) => unit.id)).toEqual([second.id]);
+    state.movedUnitIdsThisMovementPhase.push(first.id);
+    expect(getHeavyInfantryMergeCandidates(state, first.id).map((unit) => unit.id)).toEqual([second.id]);
     second.formation = "heavy";
+    expect(getHeavyInfantryMergeCandidates(state, first.id)).toEqual([]);
+  });
+
+  it.each([
+    ["enemy", (unit: Unit) => { unit.ownerTeamId = "team-2"; }],
+    ["non-infantry", (unit: Unit) => { unit.type = "archer"; }],
+    ["dead", (unit: Unit) => { unit.hp = 0; }],
+    ["removed", (unit: Unit) => { unit.position = { kind: "removed", reason: "defeated" }; }],
+    ["retreating", (unit: Unit) => { unit.statuses = [{ kind: "retreating", retreatTargetBaseId: "home-1" }]; }],
+    ["heavy", (unit: Unit) => { unit.formation = "heavy"; }],
+  ] as const)("rejects a %s partner", (_label, alter) => {
+    const { state, first, second } = positionedFixture({ kind: "tile", x: 4, y: 1 }, { kind: "tile", x: 5, y: 1 });
+    alter(second);
     expect(getHeavyInfantryMergeCandidates(state, first.id)).toEqual([]);
   });
 

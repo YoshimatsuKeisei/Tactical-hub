@@ -214,18 +214,20 @@ export const enumerateRlDecisionsV1 = enumerateRlDecisions;
 
 export function enumerateRlDecisionsV2(state: GameState, runtime: CpuRuntime, teamEligible: (teamId: string) => boolean = () => true): EnumeratedDecision[] {
   const decisions = enumerateRlDecisions(state, runtime, teamEligible);
-  if (state.phase !== "movement_input" || decisions[0]?.decision.kind !== "movement") return decisions;
-  const primaryUnitId = decisions[0].decision.unitId;
-  const teamId = decisions[0].decision.teamId;
-  const mergeDecisions = getHeavyInfantryMergeCandidates(state, primaryUnitId)
-    .filter((partner) => primaryUnitId.localeCompare(partner.id) < 0)
-    .map((partner): CpuDecision => ({
-      kind: "merge_infantry",
-      teamId,
-      actorKey: `movement:${teamId}:${primaryUnitId}`,
-      primaryUnitId,
-      partnerUnitId: partner.id,
-    }));
+  const teamId = state.currentMovementTeamId;
+  if (state.phase !== "movement_input" || !teamId || !teamEligible(teamId)) return decisions;
+  const mergeDecisions = state.units
+    .filter((unit) => unit.ownerTeamId === teamId)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((unit) => getHeavyInfantryMergeCandidates(state, unit.id)
+      .filter((partner) => unit.id.localeCompare(partner.id) < 0)
+      .map((partner): CpuDecision => ({
+        kind: "merge_infantry",
+        teamId,
+        actorKey: `movement:${teamId}:${unit.id}`,
+        primaryUnitId: unit.id,
+        partnerUnitId: partner.id,
+      })));
   return [...decisions, ...wrap(mergeDecisions)];
 }
 
