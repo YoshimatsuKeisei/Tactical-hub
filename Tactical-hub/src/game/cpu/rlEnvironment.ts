@@ -8,7 +8,7 @@ import { getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTa
 import type { GameState, StrategistActionKind, StrategistRole, UnitPosition } from "../types";
 import { positionKey } from "../utils/position";
 import { advanceCpuOneStep, syncCpuContext } from "./cpuStep";
-import { createHeadlessInitialState } from "./headlessSimulation";
+import { createHeadlessInitialState, getHeadlessProgressSignature } from "./headlessSimulation";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
 import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
 import { createTeamVisibleState } from "../visibility";
@@ -333,12 +333,23 @@ export class RlEnvironment {
     return structuredClone(this.decisions.map((entry) => entry.action));
   }
 
-  step(actionKeyValue: string) {
+  /** Transient read-only legal-action view for synchronous encoder hot paths. */
+  getLegalActionsForEncoding(teamId: string): readonly RlLegalAction[] {
+    if (teamId !== this.getCurrentActorTeamId()) return [];
+    return this.decisions.map((entry) => entry.action);
+  }
+
+  stepWithoutObservation(actionKeyValue: string) {
     const selected = this.decisions.find((entry) => entry.action.actionKey === actionKeyValue);
     if (!selected) throw new Error(`Illegal or stale RL actionKey: ${actionKeyValue}`);
     this.apply(selected.decision);
     this.advanceAutomatic();
-    return { observation: this.getCurrentActorTeamId() ? this.getObservation(this.getCurrentActorTeamId()!) : undefined, result: this.getResult() };
+    return this.getResult();
+  }
+
+  step(actionKeyValue: string) {
+    const result = this.stepWithoutObservation(actionKeyValue);
+    return { observation: this.getCurrentActorTeamId() ? this.getObservation(this.getCurrentActorTeamId()!) : undefined, result };
   }
 
   stepReplayAction(actionKeyValue: string, rngStateAfterPolicy: number) {
@@ -393,6 +404,14 @@ export class RlEnvironment {
     for (const character of text) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
     return hash.toString(16).padStart(8, "0");
   }
+
+  getProgressHash() {
+    return getHeadlessProgressSignature(this.state, this.runtime);
+  }
+
+  /** Transient state view for synchronous headless validation only. Callers must not mutate or retain it. */
+  getStateForValidation(): GameState { return this.state; }
+
 }
 
 export class RlEnvironmentV2 extends RlEnvironment {

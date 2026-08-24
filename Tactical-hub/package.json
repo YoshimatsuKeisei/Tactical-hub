@@ -18,6 +18,7 @@
     "rl:prepare-sidecars": "vite-node src/game/cpu/rlPrepareSidecarsCli.ts",
     "rl:bc": "vite-node src/game/cpu/rlBehavioralCloningCli.ts",
     "rl:bc-profile": "vite-node src/game/cpu/rlBcProfilerCli.ts",
+    "rl:ppo-smoke": "vite-node src/game/cpu/rlPpoSmokeCli.ts",
     "rl:bc-server": "python -u -m rl.browser_bc_server --checkpoint rl-checkpoints/bc-best.pt"
   },
   "dependencies": {
