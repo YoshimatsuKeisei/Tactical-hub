@@ -78,7 +78,14 @@ class PpoTrainerTest(unittest.TestCase):
             self.assertTrue(result["valueParametersChanged"])
 
             checkpoint = os.path.join(directory, "ppo.pt")
-            trainer.save(checkpoint, {"test": True})
+            metadata = {
+                "victoryEpisodeCount": 0, "adjudicatedEpisodeCount": 1,
+                "truncatedEpisodeCount": 2, "replayedSamples": 2,
+            }
+            trainer.save(checkpoint, metadata)
+            saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+            self.assertEqual(saved["metadata"], metadata)
+            self.assertEqual(saved["schemaVersion"], 1)
             self.assertFalse(any(name.startswith(".ppo-checkpoint-") for name in os.listdir(directory)))
             model_hash = trainer.parameter_hash()
             optimizer_hash = trainer.optimizer_hash()

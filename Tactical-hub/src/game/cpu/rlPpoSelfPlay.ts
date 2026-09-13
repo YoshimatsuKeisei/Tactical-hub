@@ -1,5 +1,6 @@
 import { encodeRlLegalActionsV2 } from "./rlActionEncoder";
-import { RlEnvironmentV2 } from "./rlEnvironment";
+import { RlEnvironmentV2, type RlResult } from "./rlEnvironment";
+import { adjudicatePpoTimeLimit, isPpoTimeLimitReason, type PpoTeamAdjudication, type PpoTimeLimitReason } from "./rlPpoAdjudication";
 import { createRlFeatureSpecV2 } from "./rlFeatureSpec";
 import { createRlObservationEncoderCache, encodeRlObservationV2 } from "./rlObservationEncoder";
 import { PythonPpoClient, type PpoHyperparameters } from "./pythonPpoClient";
@@ -13,7 +14,7 @@ export const DEFAULT_PPO_HYPERPARAMETERS: PpoHyperparameters = {
   valueCoefficient: 0.5, entropyCoefficient: 0.01, maxGradientNorm: 0.5,
 };
 
-/** Scalar-only rollout record. Encoded features are reconstructed after victory. */
+/** Scalar-only rollout record. Encoded features are reconstructed during replay. */
 export type PpoTrajectoryStep = {
   decisionIndex: number;
   turnNumber: number;
@@ -31,12 +32,26 @@ export type PpoTrajectoryStep = {
 
 export type PpoReplayRollout = {
   seed: number;
+  outcomeKind: "victory" | "time_limit_adjudicated";
+  limitReason?: PpoTimeLimitReason;
+  adjudication?: PpoTeamAdjudication[];
   terminal: boolean;
   endReason: "ongoing" | "victory" | "stopped";
   winnerTeamId?: string;
   finalStateHash: string;
   loserTeamIds: string[];
   trajectory: PpoTrajectoryStep[];
+};
+
+type PpoEpisodeSummary = {
+  seed: number;
+  decisionCount: number;
+  environmentResult: RlResult;
+  finalStateHash: string;
+  outcomeKind: PpoReplayRollout["outcomeKind"] | "abnormal_truncated";
+  reason: string;
+  limitReason?: PpoTimeLimitReason;
+  adjudication?: PpoTeamAdjudication[];
 };
 
 export function calculateTeamGae(steps: PpoTrajectoryStep[], gamma: number, gaeLambda: number) {
@@ -55,6 +70,11 @@ export function calculateTeamGae(steps: PpoTrajectoryStep[], gamma: number, gaeL
 }
 
 export function finalizeVictoryTrajectory(steps: PpoTrajectoryStep[], rewards: Record<string, number>, hyperparameters: Pick<PpoHyperparameters, "gamma" | "gaeLambda">) {
+  return finalizeTerminalTrajectory(steps, rewards, hyperparameters);
+}
+
+/** Training terminal only; the environment result remains untouched. */
+export function finalizeTerminalTrajectory(steps: PpoTrajectoryStep[], rewards: Record<string, number>, hyperparameters: Pick<PpoHyperparameters, "gamma" | "gaeLambda">) {
   const byTeam = new Map<string, PpoTrajectoryStep[]>();
   for (const step of steps) {
     step.reward = 0; step.done = false;
@@ -169,8 +189,10 @@ export async function runPpoSelfPlaySmoke(input: {
   const featureSpec = createRlFeatureSpecV2(first);
   const client = input.client ?? new PythonPpoClient();
   const initialized = await client.start({ seed: input.seed, featureSpec, hyperparameters, initialCheckpoint: input.initialCheckpoint, resume: input.resume });
-  const completedRollouts: PpoReplayRollout[] = [];
-  const truncated: Array<{ seed: number; reason: string; decisionCount: number }> = [];
+  const learnableRollouts: PpoReplayRollout[] = [];
+  const completed: Array<PpoEpisodeSummary & { winnerTeamId: string }> = [];
+  const adjudicated: PpoEpisodeSummary[] = [];
+  const truncated: PpoEpisodeSummary[] = [];
   let mergeLegalActionCount = 0;
   try {
     for (let episodeIndex = 0; episodeIndex < (input.episodes ?? 1); episodeIndex += 1) {
@@ -186,10 +208,10 @@ export async function runPpoSelfPlaySmoke(input: {
           const actor = environment.getCurrentActorTeamId();
           if (!actor) { reason = "no_actor"; break; }
           const observation = environment.getObservationForEncoding(actor);
-          if (observation.turnNumber > (input.safetyMaxTurns ?? 1_000)) { reason = "safety_turn_limit"; break; }
-          if (trajectory.length >= (input.safetyMaxActions ?? 100_000)) { reason = "safety_action_limit"; break; }
           const legal = environment.getLegalActionsForEncoding(actor);
           if (!legal.length) { reason = "no_legal_actions"; break; }
+          if (observation.turnNumber > (input.safetyMaxTurns ?? 1_000)) { reason = "safety_turn_limit"; break; }
+          if (trajectory.length >= (input.safetyMaxActions ?? 100_000)) { reason = "safety_action_limit"; break; }
           const encodedObservation = encodeRlObservationV2(observation, encoderCache);
           const encodedActions = encodeRlLegalActionsV2(observation, legal);
           mergeLegalActionCount += legal.filter((action) => action.actionType === "merge_infantry").length;
@@ -208,34 +230,57 @@ export async function runPpoSelfPlaySmoke(input: {
         reason = `exception:${error instanceof Error ? error.message : String(error)}`;
       }
       const result = environment.getResult();
-      if (!reason && result.terminal && result.endReason === "victory") {
+      if (result.endReason === "stopped" && (!reason || isPpoTimeLimitReason(reason))) reason = "stopped";
+      if ((!reason && result.terminal && result.endReason === "victory")
+        || (isPpoTimeLimitReason(reason) && !result.terminal && result.endReason === "ongoing")) {
         const { checkHeadlessInvariants } = await import("./headlessSimulation");
         const violations = checkHeadlessInvariants(environment.getStateForValidation());
         if (violations.length) reason = `invariant_violation:${violations.join(" | ")}`;
       }
       memorySnapshot("rollout_end", trajectory.length);
+      const finalStateHash = environment.getStateHash();
+      const summary: PpoEpisodeSummary = {
+        seed, decisionCount: trajectory.length, environmentResult: result, finalStateHash,
+        outcomeKind: "abnormal_truncated", reason: reason ?? result.endReason,
+      };
       if (!reason && result.terminal && result.endReason === "victory" && result.winnerTeamId) {
         finalizeVictoryTrajectory(trajectory, result.rewards, hyperparameters);
-        completedRollouts.push({ seed, terminal: true, endReason: "victory", winnerTeamId: result.winnerTeamId, loserTeamIds: result.loserTeamIds, finalStateHash: environment.getStateHash(), trajectory });
+        summary.outcomeKind = "victory";
+        completed.push({ ...summary, winnerTeamId: result.winnerTeamId });
+      } else if (isPpoTimeLimitReason(reason) && !result.terminal && result.endReason === "ongoing") {
+        summary.outcomeKind = "time_limit_adjudicated";
+        summary.limitReason = reason;
+        summary.adjudication = adjudicatePpoTimeLimit(environment.getStateForValidation());
+        finalizeTerminalTrajectory(trajectory, Object.fromEntries(summary.adjudication.map((team) => [team.teamId, team.reward])), hyperparameters);
+        adjudicated.push(summary);
       } else {
-        truncated.push({ seed, reason: reason ?? result.endReason, decisionCount: trajectory.length });
+        truncated.push(summary);
       }
+      if (summary.outcomeKind !== "abnormal_truncated") {
+        learnableRollouts.push({
+          seed, outcomeKind: summary.outcomeKind, limitReason: summary.limitReason, adjudication: summary.adjudication,
+          terminal: result.terminal, endReason: result.endReason, winnerTeamId: result.winnerTeamId,
+          loserTeamIds: result.loserTeamIds, finalStateHash, trajectory,
+        });
+      }
+      process.stderr.write(`[PPO episode] ${JSON.stringify(summary)}\n`);
     }
-    const totalSamples = completedRollouts.reduce((sum, rollout) => sum + rollout.trajectory.length, 0);
-    if (!completedRollouts.length || !totalSamples) throw new Error("PPO Smoke produced no normal victory trajectory; truncated episodes are excluded from replay and updates");
+    const totalSamples = learnableRollouts.reduce((sum, rollout) => sum + rollout.trajectory.length, 0);
+    if (!learnableRollouts.length || !totalSamples) throw new Error("PPO Smoke produced no learnable trajectory; victory or time-limit adjudication with samples is required; abnormal truncated episodes are excluded from replay and updates");
     await client.beginUpdate(totalSamples);
     let replayedSamples = 0;
-    for (const rollout of completedRollouts) replayedSamples += await replayPpoTrajectory({ rollout, client, chunkSize: replayChunkSize, memoryLogInterval });
+    for (const rollout of learnableRollouts) replayedSamples += await replayPpoTrajectory({ rollout, client, chunkSize: replayChunkSize, memoryLogInterval });
     if (replayedSamples !== totalSamples) throw new Error(`PPO replay total mismatch: ${replayedSamples} != ${totalSamples}`);
-    const update = await client.finishUpdate(completedRollouts.length);
+    const update = await client.finishUpdate(learnableRollouts.length);
     memorySnapshot("ppo_update_end", replayedSamples);
-    const metadata = { purpose: "phase_12b_smoke", truncatedEpisodeCount: truncated.length, replayedSamples };
+    const episodeCounts = { victoryEpisodeCount: completed.length, adjudicatedEpisodeCount: adjudicated.length, truncatedEpisodeCount: truncated.length };
+    const metadata = { purpose: "phase_12b_smoke", ...episodeCounts, replayedSamples };
     const saved = await client.save(input.outputCheckpoint, metadata);
     const bestSaved = input.bestCheckpoint ? await client.save(input.bestCheckpoint, { ...metadata, checkpointRole: "best" }) : undefined;
     return {
       featureSpec,
-      completed: completedRollouts.map((rollout) => ({ seed: rollout.seed, winnerTeamId: rollout.winnerTeamId!, decisionCount: rollout.trajectory.length })),
-      truncated, mergeLegalActionCount, replayedSamples, update, saved, bestSaved, selectedDevice: initialized.selectedDevice,
+      completed, adjudicated, truncated, ...episodeCounts,
+      mergeLegalActionCount, replayedSamples, update, saved, bestSaved, selectedDevice: initialized.selectedDevice,
     };
   } finally {
     await client.close();
