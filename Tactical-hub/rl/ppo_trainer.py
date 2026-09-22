@@ -308,5 +308,5 @@ class PpoTrainer:
         torch.set_rng_state(checkpoint["torchRngState"].cpu())
         cuda_states = checkpoint.get("cudaRngStateAll")
         if cuda_states is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(cuda_states)
+            torch.cuda.set_rng_state_all([state.cpu() for state in cuda_states])
         return {"updateCount": self.update_count, "episodeCount": self.episode_count}
