@@ -3,6 +3,7 @@ import { PythonPpoClient } from "./pythonPpoClient";
 import { parseRlTorchDevice } from "./rlTorchDevice";
 
 const args = process.argv.slice(2);
+if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
 const value = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
 const numeric = (name: string, fallback: number) => {
   const parsed = Number(value(name) ?? fallback);

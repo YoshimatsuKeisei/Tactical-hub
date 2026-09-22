@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 
 import torch
 
@@ -18,6 +20,20 @@ def send(payload):
 def main():
     trainer = None
     stream = sys.stdin.buffer
+    profile = os.environ.get("PPO_PROFILE") == "1"
+    timings = {}
+
+    def record(stage, elapsed):
+        if not profile:
+            return
+        item = timings.setdefault(stage, {"count": 0, "totalMs": 0.0})
+        item["count"] += 1
+        item["totalMs"] += elapsed * 1000.0
+
+    def sync_device():
+        if profile and trainer is not None and trainer.device.type == "cuda":
+            torch.cuda.synchronize(trainer.device)
+
     while True:
         line = stream.readline()
         if not line:
@@ -38,6 +54,8 @@ def main():
             elif trainer is None:
                 raise RuntimeError("PPO server is not initialized")
             elif kind in ("packedAct", "packedUpdateChunk"):
+                if profile:
+                    prepare_start = time.perf_counter()
                 byte_length = int(message["byteLength"])
                 payload = bytearray()
                 while len(payload) < byte_length:
@@ -47,14 +65,30 @@ def main():
                     payload.extend(chunk)
                 views = decode_packed_views(message, payload)
                 prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                if profile:
+                    sync_device()
+                    record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
                 if kind == "packedAct":
-                    send({"type": "action", "requestId": message["requestId"], **trainer.act_prepared(prepared, actions, action_mask)})
+                    if profile:
+                        sync_device()
+                        inference_start = time.perf_counter()
+                    action = trainer.act_prepared(prepared, actions, action_mask)
+                    if profile:
+                        sync_device()
+                        record("act_inference", time.perf_counter() - inference_start)
+                    send({"type": "action", "requestId": message["requestId"], **action})
                 else:
+                    if profile:
+                        sync_device()
+                        accumulate_start = time.perf_counter()
                     floating = lambda name: torch.from_numpy(views[name]).to(device=trainer.device, dtype=torch.float32)
                     result = trainer.accumulate_prepared_chunk(
                         prepared, actions, action_mask, targets,
                         floating("oldLogProbabilities"), floating("advantages"), floating("returns"),
                     )
+                    if profile:
+                        sync_device()
+                        record("update_accumulate_chunk", time.perf_counter() - accumulate_start)
                     send({"type": "updateChunkAccepted", "requestId": message["requestId"], **result})
             elif kind == "act":
                 send({"type": "action", "requestId": message["requestId"], **trainer.act(message["observation"], message["actions"])})
@@ -62,7 +96,13 @@ def main():
                 result = trainer.begin_accumulated_update(int(message["totalSamples"]))
                 send({"type": "updateBegun", "requestId": message["requestId"], **result})
             elif kind == "finishUpdate":
+                if profile:
+                    sync_device()
+                    update_start = time.perf_counter()
                 update_result = trainer.finish_accumulated_update()
+                if profile:
+                    sync_device()
+                    record("update_finish", time.perf_counter() - update_start)
                 trainer.episode_count += int(message.get("completedEpisodes", 0))
                 send({"type": "updateResult", "requestId": message["requestId"], **update_result, "episodeCount": trainer.episode_count})
             elif kind == "update":
@@ -73,6 +113,10 @@ def main():
                 trainer.save(message["path"], message.get("metadata"))
                 send({"type": "saved", "requestId": message["requestId"], "path": message["path"], "updateCount": trainer.update_count, "episodeCount": trainer.episode_count})
             elif kind == "close":
+                if profile:
+                    summary = {name: {"count": item["count"], "totalMs": round(item["totalMs"], 2), "avgMs": round(item["totalMs"] / item["count"], 3)} for name, item in timings.items()}
+                    sys.stderr.write("[PPO profile python] " + json.dumps({"stages": summary}, separators=(",", ":")) + "\n")
+                    sys.stderr.flush()
                 send({"type": "closed"})
                 return
             else:

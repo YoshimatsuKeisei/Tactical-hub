@@ -4,6 +4,7 @@ import { adjudicatePpoTimeLimit, isPpoTimeLimitReason, type PpoTeamAdjudication,
 import { createRlFeatureSpecV2 } from "./rlFeatureSpec";
 import { createRlObservationEncoderCache, encodeRlObservationV2 } from "./rlObservationEncoder";
 import { PythonPpoClient, type PpoHyperparameters } from "./pythonPpoClient";
+import { PpoTimingProfiler } from "./rlPpoProfiler";
 import type { PpoEncodedSample } from "./rlPpoPackedBatch";
 import type { GameState } from "../types";
 
@@ -110,8 +111,10 @@ export async function replayPpoTrajectory(input: {
   client: PpoClientLike;
   chunkSize: number;
   memoryLogInterval: number;
+  profiler?: PpoTimingProfiler;
 }) {
   const { rollout, client } = input;
+  const profiler = input.profiler ?? new PpoTimingProfiler();
   const environment = new RlEnvironmentV2();
   environment.reset(rollout.seed, 4);
   const encoderCache = createRlObservationEncoderCache();
@@ -122,19 +125,19 @@ export async function replayPpoTrajectory(input: {
     if (!chunk.length) return;
     const sending = chunk;
     chunk = [];
-    await client.accumulatePacked(sending);
+    await profiler.measureAsync("replay_pack_ipc_accumulate", () => client.accumulatePacked(sending));
     sentSamples += sending.length;
   };
 
   for (const expected of rollout.trajectory) {
     const actorTeamId = environment.getCurrentActorTeamId();
-    const observation = actorTeamId ? environment.getObservationForEncoding(actorTeamId) : undefined;
+    const observation = actorTeamId ? profiler.measure("replay_observation", () => environment.getObservationForEncoding(actorTeamId)) : undefined;
     const prefix = `PPO replay mismatch seed=${rollout.seed} decision=${expected.decisionIndex}`;
     if (!actorTeamId || !observation) throw new Error(`${prefix}: no actor, expected team=${expected.teamId}`);
     if (actorTeamId !== expected.teamId || observation.turnNumber !== expected.turnNumber || observation.phase !== expected.phase) {
       throw new Error(`${prefix}: expected team/turn/phase=${expected.teamId}/${expected.turnNumber}/${expected.phase}, actual=${actorTeamId}/${observation.turnNumber}/${observation.phase}`);
     }
-    const legalActions = environment.getLegalActionsForEncoding(actorTeamId);
+    const legalActions = profiler.measure("replay_legal_actions", () => environment.getLegalActionsForEncoding(actorTeamId));
     const actualIndex = legalActions.findIndex((action) => action.actionKey === expected.selectedActionKey);
     const actualKeyAtExpectedIndex = legalActions[expected.selectedActionIndex]?.actionKey;
     if (actualIndex < 0 || actualIndex !== expected.selectedActionIndex || actualKeyAtExpectedIndex !== expected.selectedActionKey) {
@@ -142,14 +145,14 @@ export async function replayPpoTrajectory(input: {
     }
     assertFiniteTrajectory(expected);
     chunk.push({
-      observation: encodeRlObservationV2(observation, encoderCache),
-      actions: encodeRlLegalActionsV2(observation, legalActions).actions,
+      observation: profiler.measure("replay_encode_observation", () => encodeRlObservationV2(observation, encoderCache)),
+      actions: profiler.measure("replay_encode_actions", () => encodeRlLegalActionsV2(observation, legalActions).actions),
       targetIndex: expected.selectedActionIndex,
       oldLogProbability: expected.oldLogProbability,
       advantage: expected.advantage!,
       return: expected.return!,
     });
-    environment.stepWithoutObservation(expected.selectedActionKey);
+    profiler.measure("replay_game_step", () => environment.stepWithoutObservation(expected.selectedActionKey));
     if (chunk.length >= input.chunkSize) await flush();
     if ((expected.decisionIndex + 1) % input.memoryLogInterval === 0) memorySnapshot("replay_progress", expected.decisionIndex + 1);
   }
@@ -184,11 +187,12 @@ export async function runPpoSelfPlaySmoke(input: {
   const memoryLogInterval = input.memoryLogInterval ?? 500;
   if (!Number.isInteger(replayChunkSize) || replayChunkSize <= 0) throw new Error("replayChunkSize must be a positive integer");
   if (!Number.isInteger(memoryLogInterval) || memoryLogInterval <= 0) throw new Error("memoryLogInterval must be a positive integer");
+  const profiler = new PpoTimingProfiler();
   const probe = new RlEnvironmentV2();
   const first = probe.reset(input.seed, 4);
   const featureSpec = createRlFeatureSpecV2(first);
   const client = input.client ?? new PythonPpoClient();
-  const initialized = await client.start({ seed: input.seed, featureSpec, hyperparameters, initialCheckpoint: input.initialCheckpoint, resume: input.resume });
+  const initialized = await profiler.measureAsync("client_start", () => client.start({ seed: input.seed, featureSpec, hyperparameters, initialCheckpoint: input.initialCheckpoint, resume: input.resume }));
   const learnableRollouts: PpoReplayRollout[] = [];
   const completed: Array<PpoEpisodeSummary & { winnerTeamId: string }> = [];
   const adjudicated: PpoEpisodeSummary[] = [];
@@ -207,17 +211,17 @@ export async function runPpoSelfPlaySmoke(input: {
         while (!environment.isTerminal()) {
           const actor = environment.getCurrentActorTeamId();
           if (!actor) { reason = "no_actor"; break; }
-          const observation = environment.getObservationForEncoding(actor);
-          const legal = environment.getLegalActionsForEncoding(actor);
+          const observation = profiler.measure("rollout_observation", () => environment.getObservationForEncoding(actor));
+          const legal = profiler.measure("rollout_legal_actions", () => environment.getLegalActionsForEncoding(actor));
           if (!legal.length) { reason = "no_legal_actions"; break; }
           if (observation.turnNumber > (input.safetyMaxTurns ?? 1_000)) { reason = "safety_turn_limit"; break; }
           if (trajectory.length >= (input.safetyMaxActions ?? 100_000)) { reason = "safety_action_limit"; break; }
-          const encodedObservation = encodeRlObservationV2(observation, encoderCache);
-          const encodedActions = encodeRlLegalActionsV2(observation, legal);
+          const encodedObservation = profiler.measure("rollout_encode_observation", () => encodeRlObservationV2(observation, encoderCache));
+          const encodedActions = profiler.measure("rollout_encode_actions", () => encodeRlLegalActionsV2(observation, legal));
           mergeLegalActionCount += legal.filter((action) => action.actionType === "merge_infantry").length;
-          const selected = await client.act(encodedObservation, encodedActions);
+          const selected = await profiler.measureAsync("rollout_pack_ipc_python_act", () => client.act(encodedObservation, encodedActions));
           const before = environment.getProgressHash();
-          environment.stepWithoutObservation(selected.actionKey);
+          profiler.measure("rollout_game_step", () => environment.stepWithoutObservation(selected.actionKey));
           trajectory.push({
             decisionIndex: trajectory.length, turnNumber: observation.turnNumber, phase: observation.phase,
             teamId: actor, selectedActionIndex: selected.actionIndex, selectedActionKey: selected.actionKey,
@@ -267,16 +271,16 @@ export async function runPpoSelfPlaySmoke(input: {
     }
     const totalSamples = learnableRollouts.reduce((sum, rollout) => sum + rollout.trajectory.length, 0);
     if (!learnableRollouts.length || !totalSamples) throw new Error("PPO Smoke produced no learnable trajectory; victory or time-limit adjudication with samples is required; abnormal truncated episodes are excluded from replay and updates");
-    await client.beginUpdate(totalSamples);
+    await profiler.measureAsync("begin_update", () => client.beginUpdate(totalSamples));
     let replayedSamples = 0;
-    for (const rollout of learnableRollouts) replayedSamples += await replayPpoTrajectory({ rollout, client, chunkSize: replayChunkSize, memoryLogInterval });
+    for (const rollout of learnableRollouts) replayedSamples += await replayPpoTrajectory({ rollout, client, chunkSize: replayChunkSize, memoryLogInterval, profiler });
     if (replayedSamples !== totalSamples) throw new Error(`PPO replay total mismatch: ${replayedSamples} != ${totalSamples}`);
-    const update = await client.finishUpdate(learnableRollouts.length);
+    const update = await profiler.measureAsync("finish_update", () => client.finishUpdate(learnableRollouts.length));
     memorySnapshot("ppo_update_end", replayedSamples);
     const episodeCounts = { victoryEpisodeCount: completed.length, adjudicatedEpisodeCount: adjudicated.length, truncatedEpisodeCount: truncated.length };
     const metadata = { purpose: "phase_12b_smoke", ...episodeCounts, replayedSamples };
-    const saved = await client.save(input.outputCheckpoint, metadata);
-    const bestSaved = input.bestCheckpoint ? await client.save(input.bestCheckpoint, { ...metadata, checkpointRole: "best" }) : undefined;
+    const saved = await profiler.measureAsync("checkpoint_save", () => client.save(input.outputCheckpoint, metadata));
+    const bestSaved = input.bestCheckpoint ? await profiler.measureAsync("checkpoint_best_save", () => client.save(input.bestCheckpoint!, { ...metadata, checkpointRole: "best" })) : undefined;
     return {
       featureSpec,
       completed, adjudicated, truncated, ...episodeCounts,
@@ -284,5 +288,6 @@ export async function runPpoSelfPlaySmoke(input: {
     };
   } finally {
     await client.close();
+    profiler.report("smoke_final");
   }
 }
