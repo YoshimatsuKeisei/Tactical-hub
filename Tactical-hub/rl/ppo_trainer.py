@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 import hashlib
 import os
 import tempfile
+import time
 
 import torch
 from torch.nn import functional as F
@@ -104,24 +105,52 @@ class PpoTrainer:
         prepared_observations: dict[str, Any],
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> dict[str, float | int]:
         if prepared_actions.shape[0] != 1 or not bool(action_mask[0].any()):
             raise ValueError("Packed PPO act requires exactly one sample with legal actions")
+
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if profile_stage is None:
+                return operation()
+            # CUDA kernels are asynchronous; synchronize only in opt-in diagnostics.
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            start = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - start)
+
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = self.model.forward_prepared_batch(
-                prepared_observations, prepared_actions, action_mask
+            logits, values, _, _, returned_mask = timed(
+                "act_model_forward",
+                lambda: self.model.forward_prepared_batch(
+                    prepared_observations, prepared_actions, action_mask
+                ),
             )
-            if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
-                raise FloatingPointError("Packed PPO action calculation contains NaN or Inf")
-            distribution = torch.distributions.Categorical(logits=logits[0])
-            selected = distribution.sample()
-            log_probability = distribution.log_prob(selected)
-        return {
+
+            def validate_outputs() -> None:
+                if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
+                    raise FloatingPointError("Packed PPO action calculation contains NaN or Inf")
+
+            timed("act_finite_checks", validate_outputs)
+            distribution = timed(
+                "act_distribution_init",
+                lambda: torch.distributions.Categorical(logits=logits[0]),
+            )
+            selected = timed("act_sampling", distribution.sample)
+            log_probability = timed(
+                "act_log_probability", lambda: distribution.log_prob(selected)
+            )
+        return timed("act_host_scalars", lambda: {
             "actionIndex": int(selected.item()),
             "logProbability": float(log_probability.item()),
             "value": float(values[0].item()),
-        }
+        })
 
     def begin_accumulated_update(self, total_samples: int) -> dict[str, int]:
         if self._accumulation is not None:

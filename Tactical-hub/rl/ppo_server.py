@@ -72,7 +72,10 @@ def main():
                     if profile:
                         sync_device()
                         inference_start = time.perf_counter()
-                    action = trainer.act_prepared(prepared, actions, action_mask)
+                    action = trainer.act_prepared(
+                        prepared, actions, action_mask,
+                        profile_stage=record if profile else None,
+                    )
                     if profile:
                         sync_device()
                         record("act_inference", time.perf_counter() - inference_start)

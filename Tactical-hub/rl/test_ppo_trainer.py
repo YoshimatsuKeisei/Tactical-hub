@@ -112,6 +112,30 @@ class PpoTrainerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "schemaVersion 2"):
                 PpoTrainer({**self.feature_spec(), "schemaVersion": 1}, self.hyperparameters(), 17, "cpu")
 
+    def test_act_stage_profile_preserves_action_and_log_probability(self):
+        trainer = PpoTrainer(self.feature_spec(), self.hyperparameters(), 17, "cpu")
+        observation = trainer.model.prepare_observation_batch([self.observation()])
+        actions, action_mask = padded_rows(
+            [[[1, 0], [0, 1]]], trainer.feature_spec["actionFeatureWidth"], trainer.device,
+        )
+        torch.manual_seed(123)
+        baseline = trainer.act_prepared(observation, actions, action_mask)
+        timings = []
+        torch.manual_seed(123)
+        measured = trainer.act_prepared(
+            observation, actions, action_mask,
+            profile_stage=lambda name, seconds: timings.append((name, seconds)),
+        )
+        self.assertEqual(measured, baseline)
+        self.assertEqual(
+            [name for name, _ in timings],
+            [
+                "act_model_forward", "act_finite_checks", "act_distribution_init",
+                "act_sampling", "act_log_probability", "act_host_scalars",
+            ],
+        )
+        self.assertTrue(all(seconds >= 0 for _, seconds in timings))
+
     def test_chunked_gradient_accumulation_matches_single_full_batch_update(self):
         with tempfile.TemporaryDirectory() as directory:
             initial = self.make_initial_checkpoint(directory)
