@@ -130,6 +130,8 @@ class PpoTrainerTest(unittest.TestCase):
         self.assertEqual(
             [name for name, _ in timings],
             [
+                "forward_state_encoder", "forward_action_encoder",
+                "forward_score_head", "forward_value_head",
                 "act_model_forward", "act_finite_checks", "act_distribution_init",
                 "act_sampling", "act_log_probability", "act_host_scalars",
             ],

@@ -22,6 +22,7 @@ def main():
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     timings = {}
+    legal_action_counts = []
 
     def record(stage, elapsed):
         if not profile:
@@ -70,6 +71,8 @@ def main():
                     record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
                 if kind == "packedAct":
                     if profile:
+                        # Packed action requests have a single sample, with no action padding.
+                        legal_action_counts.append(int(action_mask.shape[1]))
                         sync_device()
                         inference_start = time.perf_counter()
                     action = trainer.act_prepared(
@@ -118,7 +121,15 @@ def main():
             elif kind == "close":
                 if profile:
                     summary = {name: {"count": item["count"], "totalMs": round(item["totalMs"], 2), "avgMs": round(item["totalMs"] / item["count"], 3)} for name, item in timings.items()}
-                    sys.stderr.write("[PPO profile python] " + json.dumps({"stages": summary}, separators=(",", ":")) + "\n")
+                    legal_summary = {
+                        "count": len(legal_action_counts),
+                        "min": min(legal_action_counts) if legal_action_counts else 0,
+                        "max": max(legal_action_counts) if legal_action_counts else 0,
+                        "avg": round(sum(legal_action_counts) / len(legal_action_counts), 2) if legal_action_counts else 0,
+                    }
+                    sys.stderr.write("[PPO profile python] " + json.dumps(
+                        {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
+                    ) + "\n")
                     sys.stderr.flush()
                 send({"type": "closed"})
                 return

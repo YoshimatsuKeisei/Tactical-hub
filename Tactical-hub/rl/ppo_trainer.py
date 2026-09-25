@@ -129,7 +129,8 @@ class PpoTrainer:
             logits, values, _, _, returned_mask = timed(
                 "act_model_forward",
                 lambda: self.model.forward_prepared_batch(
-                    prepared_observations, prepared_actions, action_mask
+                    prepared_observations, prepared_actions, action_mask,
+                    profile_stage=profile_stage,
                 ),
             )
 

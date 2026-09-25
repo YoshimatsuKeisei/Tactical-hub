@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import torch
+import time
 from torch import nn
 
 
@@ -218,14 +219,39 @@ class TacticalPolicyValueNetwork(nn.Module):
         prepared_observations: dict[str, Any],
         prepared_action_rows: torch.Tensor,
         action_mask: torch.Tensor,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        state_embeddings = self.encode_prepared_state_batch(prepared_observations)
-        action_embeddings = self.action_encoder(prepared_action_rows)
+        if profile_stage is None:
+            state_embeddings = self.encode_prepared_state_batch(prepared_observations)
+            action_embeddings = self.action_encoder(prepared_action_rows)
+            repeated_states = state_embeddings.unsqueeze(1).expand(-1, action_embeddings.shape[1], -1)
+            logits = self.score_head(torch.cat((repeated_states, action_embeddings), dim=2)).squeeze(-1)
+            logits = logits.masked_fill(~action_mask, float("-inf"))
+            values = self.value_head(state_embeddings).squeeze(-1)
+            return logits, values, state_embeddings, action_embeddings, action_mask
+
+        # Diagnostic-only CUDA synchronization changes timing; do not use it for speed benchmarks.
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
+
+        state_embeddings = timed("forward_state_encoder", lambda: self.encode_prepared_state_batch(prepared_observations))
+        action_embeddings = timed("forward_action_encoder", lambda: self.action_encoder(prepared_action_rows))
         repeated_states = state_embeddings.unsqueeze(1).expand(-1, action_embeddings.shape[1], -1)
-        logits = self.score_head(torch.cat((repeated_states, action_embeddings), dim=2)).squeeze(-1)
+        logits = timed("forward_score_head", lambda: self.score_head(
+            torch.cat((repeated_states, action_embeddings), dim=2)
+        ).squeeze(-1))
         logits = logits.masked_fill(~action_mask, float("-inf"))
-        values = self.value_head(state_embeddings).squeeze(-1)
+        values = timed("forward_value_head", lambda: self.value_head(state_embeddings).squeeze(-1))
         return logits, values, state_embeddings, action_embeddings, action_mask
+
 
     def forward_batch(
         self,
