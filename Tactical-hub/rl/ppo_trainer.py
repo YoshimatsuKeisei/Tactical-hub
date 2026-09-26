@@ -26,6 +26,18 @@ class PpoTrainer:
         torch.manual_seed(self.seed)
         self.model = TacticalPolicyValueNetwork(feature_spec).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=float(hyperparameters["learningRate"]))
+        self._act_forward = self.model.forward_prepared_batch
+        compile_mode = os.environ.get("PPO_ACT_COMPILE_MODE")
+        if compile_mode:
+            if self.device.type != "cuda":
+                raise ValueError("PPO_ACT_COMPILE_MODE is only supported for CUDA action inference")
+            if compile_mode != "reduce-overhead":
+                raise ValueError(f"Unsupported PPO_ACT_COMPILE_MODE: {compile_mode}")
+            self._act_forward = torch.compile(
+                self.model.forward_prepared_batch,
+                mode=compile_mode,
+                dynamic=True,
+            )
         self.update_count = 0
         self.episode_count = 0
         self._accumulation: dict[str, Any] | None = None
@@ -126,12 +138,17 @@ class PpoTrainer:
 
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = timed(
-                "act_model_forward",
-                lambda: self.model.forward_prepared_batch(
+            forward_operation = (
+                (lambda: self._act_forward(prepared_observations, prepared_actions, action_mask))
+                if profile_stage is None
+                else (lambda: self.model.forward_prepared_batch(
                     prepared_observations, prepared_actions, action_mask,
                     profile_stage=profile_stage,
-                ),
+                ))
+            )
+            logits, values, _, _, returned_mask = timed(
+                "act_model_forward",
+                forward_operation,
             )
 
             def validate_outputs() -> None:
@@ -167,7 +184,7 @@ class PpoTrainer:
 
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = self.model.forward_prepared_batch(
+            logits, values, _, _, returned_mask = self._act_forward(
                 prepared_observations, prepared_actions, action_mask
             )
             if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
