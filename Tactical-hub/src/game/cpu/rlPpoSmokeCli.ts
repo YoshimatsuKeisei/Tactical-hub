@@ -28,6 +28,7 @@ const result = await runPpoSelfPlaySmoke({
   replayChunkSize: positiveInteger("--replay-chunk-size", 8),
   memoryLogInterval: positiveInteger("--memory-log-interval", 500),
   spoolTrajectory: args.includes("--spool-trajectory"),
+  fastRlMovement: args.includes("--fast-rl-movement"),
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4), gamma: numeric("--gamma", 0.99),
     gaeLambda: numeric("--gae-lambda", 0.95), clipEpsilon: numeric("--clip-epsilon", 0.2),

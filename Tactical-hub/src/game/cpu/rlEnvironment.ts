@@ -281,6 +281,7 @@ export class RlEnvironment {
     rewardFunction: RlRewardFunction = defaultRewards,
     private readonly schemaVersion: 1 | 2 = 1,
     private readonly movementSemantics: MovementSemantics = "current",
+    private readonly rlInPlaceMovement = false,
   ) { this.rewardFunction = rewardFunction; }
 
   reset(seed: number, participantCount: 3 | 4 = 4, initialState?: GameState) {
@@ -292,7 +293,11 @@ export class RlEnvironment {
 
   private apply(decision: CpuDecision) {
     const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, "random_cpu"]));
-    const result = advanceCpuOneStep(this.state, this.runtime, settings, () => decision, { logMode: "none", movementSemantics: this.movementSemantics });
+    const result = advanceCpuOneStep(this.state, this.runtime, settings, () => decision, {
+      logMode: "none",
+      movementSemantics: this.movementSemantics,
+      rlInPlaceMovement: this.rlInPlaceMovement,
+    });
     if (!result.applied) throw new Error("RL action was not applied");
     this.state = result.state;
     this.runtime = result.runtime;
@@ -415,7 +420,9 @@ export class RlEnvironment {
 }
 
 export class RlEnvironmentV2 extends RlEnvironment {
-  constructor(rewardFunction: RlRewardFunction = defaultRewards) { super(rewardFunction, 2); }
+  constructor(rewardFunction: RlRewardFunction = defaultRewards, rlInPlaceMovement = false) {
+    super(rewardFunction, 2, "current", rlInPlaceMovement);
+  }
 }
 
 /** Schema-v1 environment retained only for replaying pre-immediate-movement data. */

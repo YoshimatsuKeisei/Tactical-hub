@@ -1,6 +1,6 @@
 import { resolveBattle, saveAttackIntent } from "../engine/battle";
 import { resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../engine/construction";
-import { commitUnitMovement, saveMovementIntent, submitLegacyMovement, submitMovement, type MovementSemantics } from "../engine/movement";
+import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
 import { placeRewardUnit } from "../engine/reward";
 import { saveTeleportIntent } from "../engine/teleport";
@@ -22,6 +22,7 @@ export function syncCpuContext(runtime: CpuRuntime, state: GameState) {
 }
 export type CpuStepInstrumentation = {
   movementSemantics?: MovementSemantics;
+  rlInPlaceMovement?: boolean;
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
   onPolicy?: (milliseconds: number) => void;
@@ -80,7 +81,11 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       const unit = state.units.find((entry) => entry.id === decision.unitId);
       if (decision.to && unit) {
         const intent = { teamId: decision.teamId, unitId: unit.id, from: unit.position, to: decision.to, stay: false } as const;
-        next = instrumentation?.movementSemantics === "legacy_batched" ? saveMovementIntent(state, intent) : commitUnitMovement(state, intent);
+        next = instrumentation?.movementSemantics === "legacy_batched"
+          ? saveMovementIntent(state, intent)
+          : instrumentation?.rlInPlaceMovement
+            ? commitUnitMovementInPlaceForRl(state, intent)
+            : commitUnitMovement(state, intent);
       }
       runtime.processedKeys.push(decision.actorKey);
       writeLog(decision.teamId, decision.to ? "move" : "movement pass", `${decision.unitId}${decision.to ? ` -> ${positionKey(decision.to)}` : ""}`);

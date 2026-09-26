@@ -239,6 +239,7 @@ export async function runPpoSelfPlaySmoke(input: {
   replayChunkSize?: number;
   memoryLogInterval?: number;
   spoolTrajectory?: boolean;
+  fastRlMovement?: boolean;
   client?: PpoClientLike;
 }) {
   const hyperparameters = { ...DEFAULT_PPO_HYPERPARAMETERS, ...input.hyperparameters };
@@ -274,7 +275,7 @@ export async function runPpoSelfPlaySmoke(input: {
     const rolloutPhaseStart = phaseNow();
     for (let episodeIndex = 0; episodeIndex < (input.episodes ?? 1); episodeIndex += 1) {
       const seed = input.seed + initialized.episodeCount + episodeIndex;
-      const environment = new RlEnvironmentV2();
+      const environment = new RlEnvironmentV2(undefined, input.fastRlMovement ?? false);
       environment.reset(seed, 4);
       const encoderCache = createRlObservationEncoderCache();
       const trajectory: PpoTrajectoryStep[] = [];

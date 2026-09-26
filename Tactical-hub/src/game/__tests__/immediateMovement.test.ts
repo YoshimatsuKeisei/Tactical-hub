@@ -117,6 +117,21 @@ describe("immediate movement semantics", () => {
     expect(result.state.movedUnitIdsThisMovementPhase).toContain("a-front");
   });
 
+  it("keeps the RL in-place movement fast path state-identical to the standard path", () => {
+    const standard = new RlEnvironmentV2();
+    const fast = new RlEnvironmentV2(undefined, true);
+    standard.reset(7, 4, movementFixture());
+    fast.reset(7, 4, movementFixture());
+    const actor = standard.getCurrentActorTeamId()!;
+    const actionKey = standard.getLegalActions(actor)
+      .find((entry) => entry.actionType === "movement" && entry.unitId === "a-front" && entry.tileId === "5,1")!
+      .actionKey;
+    standard.stepWithoutObservation(actionKey);
+    fast.stepWithoutObservation(actionKey);
+    expect(fast.getStateHash()).toBe(standard.getStateHash());
+    expect(fast.getResult()).toEqual(standard.getResult());
+  });
+
   it.each([
     ["v1", () => new RlEnvironment()],
     ["v2", () => new RlEnvironmentV2()],

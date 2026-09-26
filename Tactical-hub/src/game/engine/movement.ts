@@ -603,6 +603,25 @@ export function commitUnitMovement(state: GameState, intent: MovementIntent): Ga
   return applySingleMovementInPlace(next, intent, true) ? next : state;
 }
 
+/**
+ * RL-only hot path. The RL environment owns its state exclusively, so legal
+ * movement decisions can be applied in place without cloning the whole GameState.
+ * General game/UI callers must continue using commitUnitMovement.
+ */
+export function commitUnitMovementInPlaceForRl(state: GameState, intent: MovementIntent): GameState {
+  const unit = state.units.find((candidate) => candidate.id === intent.unitId);
+  if (state.phase !== "movement_input" || state.currentMovementTeamId !== intent.teamId || unit?.ownerTeamId !== intent.teamId
+    || state.movementCompletedTeamIds.includes(intent.teamId) || state.movedUnitIdsThisMovementPhase.includes(intent.unitId)
+    || state.teleportIntents.some((entry) => entry.targetUnitId === intent.unitId || (!intent.stay && samePosition(entry.to, intent.to)))) return state;
+  if (!state.movementDefendedBaseIdsAtTeamStart) {
+    state.movementDefendedBaseIdsAtTeamStart = getDefendedBaseIds(state);
+  }
+  if (!applySingleMovementInPlace(state, intent, true)) {
+    throw new Error("RL legal movement failed validation in the in-place fast path");
+  }
+  return state;
+}
+
 function resolveCurrentTeamMovement(
   state: GameState,
   teamId: string,
