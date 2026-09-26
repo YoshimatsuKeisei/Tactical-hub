@@ -29,7 +29,10 @@ function fakeClient() {
   };
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("Phase 12B PPO self-play", () => {
   it("computes GAE independently per team and assigns only terminal victory rewards", () => {
@@ -69,6 +72,25 @@ describe("Phase 12B PPO self-play", () => {
     }));
     expect(stderr.mock.calls.some(([line]) => String(line).includes(`"limitReason":"${reason}"`))).toBe(true);
     expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it("emits coarse phase timings without enabling per-decision profiling", async () => {
+    vi.stubEnv("PPO_PHASE_PROFILE", "1");
+    const client = fakeClient();
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const result = await runPpoSelfPlaySmoke({
+      seed: 7, initialCheckpoint: "unused", outputCheckpoint: "latest",
+      safetyMaxActions: 2, replayChunkSize: 1, client: client as unknown as PpoClientLike,
+    });
+    const line = stderr.mock.calls.map(([value]) => String(value)).find((value) => value.startsWith("[PPO phase profile] "))!;
+    expect(line).toBeTruthy();
+    const profile = JSON.parse(line.slice("[PPO phase profile] ".length));
+    expect(profile).toMatchObject({ rolloutDecisions: result.replayedSamples, replaySamples: result.replayedSamples });
+    expect(Object.keys(profile.stages)).toEqual(expect.arrayContaining([
+      "clientStartMs", "rolloutMs", "beginUpdateMs", "replayMs", "finishUpdateMs", "checkpointSaveMs",
+    ]));
+    expect(Object.values(profile.stages).every((value) => Number.isFinite(value as number) && (value as number) >= 0)).toBe(true);
+    expect(process.env.PPO_PROFILE).not.toBe("1");
   });
 
   it.each(["phase_stall", "no_actor", "no_legal_actions", "exception", "invariant_violation", "stopped"])("excludes %s even at the action limit and logs before throwing", async (reason) => {

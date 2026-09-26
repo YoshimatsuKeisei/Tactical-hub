@@ -188,17 +188,27 @@ export async function runPpoSelfPlaySmoke(input: {
   if (!Number.isInteger(replayChunkSize) || replayChunkSize <= 0) throw new Error("replayChunkSize must be a positive integer");
   if (!Number.isInteger(memoryLogInterval) || memoryLogInterval <= 0) throw new Error("memoryLogInterval must be a positive integer");
   const profiler = new PpoTimingProfiler();
+  const phaseProfileEnabled = process.env.PPO_PHASE_PROFILE === "1";
+  const phaseTimings: Record<string, number> = {};
+  const phaseNow = () => phaseProfileEnabled ? performance.now() : 0;
+  const phaseRecord = (name: string, start: number) => {
+    if (phaseProfileEnabled) phaseTimings[name] = performance.now() - start;
+  };
+  const totalPhaseStart = phaseNow();
   const probe = new RlEnvironmentV2();
   const first = probe.reset(input.seed, 4);
   const featureSpec = createRlFeatureSpecV2(first);
   const client = input.client ?? new PythonPpoClient();
+  const clientStartPhase = phaseNow();
   const initialized = await profiler.measureAsync("client_start", () => client.start({ seed: input.seed, featureSpec, hyperparameters, initialCheckpoint: input.initialCheckpoint, resume: input.resume }));
+  phaseRecord("clientStartMs", clientStartPhase);
   const learnableRollouts: PpoReplayRollout[] = [];
   const completed: Array<PpoEpisodeSummary & { winnerTeamId: string }> = [];
   const adjudicated: PpoEpisodeSummary[] = [];
   const truncated: PpoEpisodeSummary[] = [];
   let mergeLegalActionCount = 0;
   try {
+    const rolloutPhaseStart = phaseNow();
     for (let episodeIndex = 0; episodeIndex < (input.episodes ?? 1); episodeIndex += 1) {
       const seed = input.seed + initialized.episodeCount + episodeIndex;
       const environment = new RlEnvironmentV2();
@@ -269,18 +279,40 @@ export async function runPpoSelfPlaySmoke(input: {
       }
       process.stderr.write(`[PPO episode] ${JSON.stringify(summary)}\n`);
     }
+    phaseRecord("rolloutMs", rolloutPhaseStart);
     const totalSamples = learnableRollouts.reduce((sum, rollout) => sum + rollout.trajectory.length, 0);
     if (!learnableRollouts.length || !totalSamples) throw new Error("PPO Smoke produced no learnable trajectory; victory or time-limit adjudication with samples is required; abnormal truncated episodes are excluded from replay and updates");
+    const beginUpdatePhaseStart = phaseNow();
     await profiler.measureAsync("begin_update", () => client.beginUpdate(totalSamples));
+    phaseRecord("beginUpdateMs", beginUpdatePhaseStart);
     let replayedSamples = 0;
+    const replayPhaseStart = phaseNow();
     for (const rollout of learnableRollouts) replayedSamples += await replayPpoTrajectory({ rollout, client, chunkSize: replayChunkSize, memoryLogInterval, profiler });
+    phaseRecord("replayMs", replayPhaseStart);
     if (replayedSamples !== totalSamples) throw new Error(`PPO replay total mismatch: ${replayedSamples} != ${totalSamples}`);
+    const finishUpdatePhaseStart = phaseNow();
     const update = await profiler.measureAsync("finish_update", () => client.finishUpdate(learnableRollouts.length));
+    phaseRecord("finishUpdateMs", finishUpdatePhaseStart);
     memorySnapshot("ppo_update_end", replayedSamples);
     const episodeCounts = { victoryEpisodeCount: completed.length, adjudicatedEpisodeCount: adjudicated.length, truncatedEpisodeCount: truncated.length };
     const metadata = { purpose: "phase_12b_smoke", ...episodeCounts, replayedSamples };
+    const checkpointSavePhaseStart = phaseNow();
     const saved = await profiler.measureAsync("checkpoint_save", () => client.save(input.outputCheckpoint, metadata));
     const bestSaved = input.bestCheckpoint ? await profiler.measureAsync("checkpoint_best_save", () => client.save(input.bestCheckpoint!, { ...metadata, checkpointRole: "best" })) : undefined;
+    phaseRecord("checkpointSaveMs", checkpointSavePhaseStart);
+    if (phaseProfileEnabled) {
+      const totalMs = performance.now() - totalPhaseStart;
+      const measuredMs = Object.values(phaseTimings).reduce((sum, value) => sum + value, 0);
+      process.stderr.write(`[PPO phase profile] ${JSON.stringify({
+        totalMs: Math.round(totalMs * 100) / 100,
+        stages: Object.fromEntries(Object.entries(phaseTimings).map(([name, value]) => [name, Math.round(value * 100) / 100])),
+        otherMs: Math.round(Math.max(0, totalMs - measuredMs) * 100) / 100,
+        rolloutDecisions: totalSamples,
+        replaySamples: replayedSamples,
+        rolloutMsPerDecision: Math.round((phaseTimings.rolloutMs / totalSamples) * 1000) / 1000,
+        replayMsPerSample: Math.round((phaseTimings.replayMs / replayedSamples) * 1000) / 1000,
+      })}\n`);
+    }
     return {
       featureSpec,
       completed, adjudicated, truncated, ...episodeCounts,
