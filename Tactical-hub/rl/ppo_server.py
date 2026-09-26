@@ -54,7 +54,7 @@ def main():
                 send({"type": "ready", "selectedDevice": device.type, **state})
             elif trainer is None:
                 raise RuntimeError("PPO server is not initialized")
-            elif kind in ("packedAct", "packedUpdateChunk"):
+            elif kind in ("packedAct", "packedActBatch", "packedUpdateChunk"):
                 if profile:
                     prepare_start = time.perf_counter()
                 byte_length = int(message["byteLength"])
@@ -83,6 +83,9 @@ def main():
                         sync_device()
                         record("act_inference", time.perf_counter() - inference_start)
                     send({"type": "action", "requestId": message["requestId"], **action})
+                elif kind == "packedActBatch":
+                    actions_result = trainer.act_prepared_batch(prepared, actions, action_mask)
+                    send({"type": "actions", "requestId": message["requestId"], **actions_result})
                 else:
                     if profile:
                         sync_device()

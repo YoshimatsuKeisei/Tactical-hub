@@ -153,6 +153,35 @@ class PpoTrainer:
             "value": float(values[0].item()),
         })
 
+    def act_prepared_batch(
+        self,
+        prepared_observations: dict[str, Any],
+        prepared_actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> dict[str, list[float] | list[int]]:
+        batch_size = int(prepared_actions.shape[0])
+        if batch_size <= 0 or action_mask.shape[0] != batch_size:
+            raise ValueError("Packed PPO batch act requires a non-empty aligned batch")
+        if not bool(action_mask.any(dim=1).all()):
+            raise ValueError("Packed PPO batch act requires legal actions for every sample")
+
+        self.model.eval()
+        with torch.no_grad():
+            logits, values, _, _, returned_mask = self.model.forward_prepared_batch(
+                prepared_observations, prepared_actions, action_mask
+            )
+            if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
+                raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
+            distribution = torch.distributions.Categorical(logits=logits)
+            selected = distribution.sample()
+            log_probabilities = distribution.log_prob(selected)
+
+        return {
+            "actionIndices": [int(value) for value in selected.tolist()],
+            "logProbabilities": [float(value) for value in log_probabilities.tolist()],
+            "values": [float(value) for value in values.tolist()],
+        }
+
     def begin_accumulated_update(self, total_samples: int) -> dict[str, int]:
         if self._accumulation is not None:
             raise RuntimeError("A PPO accumulated update is already active")

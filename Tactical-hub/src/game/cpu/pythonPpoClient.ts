@@ -4,7 +4,7 @@ import type { EncodedLegalActionsV2 } from "./rlActionEncoder";
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
 import type { EncodedObservation } from "./rlObservationEncoder";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
-import { packPpoActInput, packPpoEncodedSamples, type PpoEncodedSample } from "./rlPpoPackedBatch";
+import { packPpoActBatchInput, packPpoActInput, packPpoEncodedSamples, type PpoEncodedSample } from "./rlPpoPackedBatch";
 import type { PackedBcBatch } from "./rlBcPackedBatch";
 
 export type PpoHyperparameters = {
@@ -22,6 +22,7 @@ export type PpoTrainingSample = PpoEncodedSample;
 type Response =
   | { type: "ready"; selectedDevice: RlSelectedTorchDevice; updateCount: number; episodeCount: number }
   | { type: "action"; requestId: number; actionIndex: number; logProbability: number; value: number }
+  | { type: "actions"; requestId: number; actionIndices: number[]; logProbabilities: number[]; values: number[] }
   | { type: "updateBegun"; requestId: number; totalSamples: number }
   | { type: "updateChunkAccepted"; requestId: number; acceptedSamples: number; accumulatedSamples: number }
   | { type: "updateResult"; requestId: number; sampleCount: number; loss: number; policyLoss: number; valueLoss: number; entropy: number; gradientNorm: number; policyParametersChanged: boolean; valueParametersChanged: boolean; updateCount: number; episodeCount: number }
@@ -98,6 +99,43 @@ export class PythonPpoClient {
     if (!Number.isInteger(response.actionIndex) || response.actionIndex < 0 || response.actionIndex >= legalActions.actionKeys.length) throw new Error("PPO returned an illegal action index");
     if (![response.logProbability, response.value].every(Number.isFinite)) throw new Error("PPO returned NaN or Inf");
     return { ...response, actionKey: legalActions.actionKeys[response.actionIndex] };
+  }
+
+  async actBatch(samples: Array<{ observation: EncodedObservation; legalActions: EncodedLegalActionsV2 }>) {
+    if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
+    if (!samples.length) throw new Error("PPO action batch cannot be empty");
+    const requestId = this.nextRequestId++;
+    const responsePromise = this.wait();
+    this.sendPreparedPacked(
+      { type: "packedActBatch", requestId },
+      packPpoActBatchInput(
+        samples.map(({ observation, legalActions }) => ({ observation, actions: legalActions.actions })),
+        this.featureSpec,
+      ),
+    );
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (response.type !== "actions" || response.requestId !== requestId) throw new Error("Unexpected PPO batch-action response");
+    if (
+      response.actionIndices.length !== samples.length
+      || response.logProbabilities.length !== samples.length
+      || response.values.length !== samples.length
+    ) throw new Error("PPO returned an action batch with the wrong length");
+    return samples.map((sample, index) => {
+      const actionIndex = response.actionIndices[index];
+      const logProbability = response.logProbabilities[index];
+      const value = response.values[index];
+      if (!Number.isInteger(actionIndex) || actionIndex < 0 || actionIndex >= sample.legalActions.actionKeys.length) {
+        throw new Error("PPO returned an illegal batched action index");
+      }
+      if (![logProbability, value].every(Number.isFinite)) throw new Error("PPO returned NaN or Inf in batched action output");
+      return {
+        actionIndex,
+        logProbability,
+        value,
+        actionKey: sample.legalActions.actionKeys[actionIndex],
+      };
+    });
   }
 
   async beginUpdate(totalSamples: number) {

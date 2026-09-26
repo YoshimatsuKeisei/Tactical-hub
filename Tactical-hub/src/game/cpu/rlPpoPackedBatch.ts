@@ -59,3 +59,14 @@ export function packPpoActInput(
 ) {
   return packBcEncodedSamples([{ observation, actions, targetIndex: 0 }], featureSpec);
 }
+
+export function packPpoActBatchInput(
+  samples: Array<{ observation: EncodedObservation; actions: number[][] }>,
+  featureSpec: RlFeatureSpecV2,
+) {
+  if (!samples.length) throw new Error("Cannot pack an empty PPO action batch");
+  return packBcEncodedSamples(
+    samples.map((sample) => ({ ...sample, targetIndex: 0 })),
+    featureSpec,
+  );
+}
