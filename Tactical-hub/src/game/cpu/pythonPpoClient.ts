@@ -4,7 +4,14 @@ import type { EncodedLegalActionsV2 } from "./rlActionEncoder";
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
 import type { EncodedObservation } from "./rlObservationEncoder";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
-import { packPpoActBatchInput, packPpoActInput, packPpoEncodedSamples, type PpoEncodedSample } from "./rlPpoPackedBatch";
+import {
+  appendPpoUpdateScalars,
+  packPpoActBatchInput,
+  packPpoActInput,
+  packPpoEncodedSamples,
+  type PpoEncodedSample,
+  type PpoUpdateScalarSample,
+} from "./rlPpoPackedBatch";
 import type { PackedBcBatch } from "./rlBcPackedBatch";
 
 export type PpoHyperparameters = {
@@ -161,6 +168,26 @@ export class PythonPpoClient {
     if (response.type !== "updateChunkAccepted" || response.requestId !== requestId || response.acceptedSamples !== samples.length) {
       throw new Error("Unexpected PPO update-chunk response");
     }
+    return response;
+  }
+
+  async accumulatePrepacked(
+    base: PackedBcBatch,
+    scalars: PpoUpdateScalarSample[],
+  ) {
+    const requestId = this.nextRequestId++;
+    const responsePromise = this.wait();
+    this.sendPreparedPacked(
+      { type: "packedUpdateChunk", requestId },
+      appendPpoUpdateScalars(base, scalars),
+    );
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (
+      response.type !== "updateChunkAccepted"
+      || response.requestId !== requestId
+      || response.acceptedSamples !== base.batchSize
+    ) throw new Error("Unexpected PPO prepacked update-chunk response");
     return response;
   }
 

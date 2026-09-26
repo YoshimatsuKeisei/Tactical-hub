@@ -11,6 +11,11 @@ export type PpoEncodedSample = {
   return: number;
 };
 
+export type PpoUpdateScalarSample = Pick<
+  PpoEncodedSample,
+  "oldLogProbability" | "advantage" | "return"
+>;
+
 function appendFloatTensor(
   packed: PackedBcBatch,
   name: string,
@@ -31,9 +36,13 @@ function appendFloatTensor(
   };
 }
 
-export function packPpoEncodedSamples(samples: PpoEncodedSample[], featureSpec: RlFeatureSpecV2): PackedBcBatch {
-  if (!samples.length) throw new Error("Cannot pack an empty PPO batch");
-  const base = packBcEncodedSamples(samples, featureSpec);
+export function appendPpoUpdateScalars(
+  base: PackedBcBatch,
+  samples: PpoUpdateScalarSample[],
+): PackedBcBatch {
+  if (!samples.length || samples.length !== base.batchSize) {
+    throw new Error("PPO scalar batch size must match packed feature batch");
+  }
   const additions = [
     appendFloatTensor(base, "oldLogProbabilities", samples.map((sample) => sample.oldLogProbability)),
     appendFloatTensor(base, "advantages", samples.map((sample) => sample.advantage)),
@@ -48,8 +57,13 @@ export function packPpoEncodedSamples(samples: PpoEncodedSample[], featureSpec: 
   return {
     payload: Buffer.concat([base.payload, ...additions.map((entry) => entry.buffer)], offset),
     tensors: [...base.tensors, ...descriptors],
-    batchSize: samples.length,
+    batchSize: base.batchSize,
   };
+}
+
+export function packPpoEncodedSamples(samples: PpoEncodedSample[], featureSpec: RlFeatureSpecV2): PackedBcBatch {
+  if (!samples.length) throw new Error("Cannot pack an empty PPO batch");
+  return appendPpoUpdateScalars(packBcEncodedSamples(samples, featureSpec), samples);
 }
 
 export function packPpoActInput(

@@ -5,7 +5,8 @@ import { RlEnvironmentV2 } from "../cpu/rlEnvironment";
 import { finalizeTerminalTrajectory, finalizeVictoryTrajectory, replayPpoTrajectory, runPpoSelfPlaySmoke, type PpoClientLike, type PpoTrajectoryStep } from "../cpu/rlPpoSelfPlay";
 import { adjudicatePpoTimeLimit } from "../cpu/rlPpoAdjudication";
 import * as headless from "../cpu/headlessSimulation";
-import type { PpoEncodedSample } from "../cpu/rlPpoPackedBatch";
+import type { PpoEncodedSample, PpoUpdateScalarSample } from "../cpu/rlPpoPackedBatch";
+import type { PackedBcBatch } from "../cpu/rlBcPackedBatch";
 
 const step = (teamId: string, value = 0): PpoTrajectoryStep => ({
   decisionIndex: 0, turnNumber: 1, phase: "movement_input", selectedActionIndex: 0, selectedActionKey: "action",
@@ -22,6 +23,11 @@ function fakeClient() {
     accumulatePacked: vi.fn(async (samples: PpoEncodedSample[]) => {
       expect(samples.every((sample) => Number.isFinite(sample.advantage) && Number.isFinite(sample.return))).toBe(true);
       return { acceptedSamples: samples.length };
+    }),
+    accumulatePrepacked: vi.fn(async (base: PackedBcBatch, scalars: PpoUpdateScalarSample[]) => {
+      expect(base.batchSize).toBe(scalars.length);
+      expect(scalars.every((sample) => Number.isFinite(sample.advantage) && Number.isFinite(sample.return))).toBe(true);
+      return { acceptedSamples: base.batchSize };
     }),
     finishUpdate: vi.fn(async (episodeCount: number) => ({ episodeCount })),
     save: vi.fn(async (path: string, _metadata: Record<string, unknown>) => ({ path })),
@@ -72,6 +78,31 @@ describe("Phase 12B PPO self-play", () => {
     }));
     expect(stderr.mock.calls.some(([line]) => String(line).includes(`"limitReason":"${reason}"`))).toBe(true);
     expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it("spools encoded rollout features and updates without replaying the game", async () => {
+    const client = fakeClient();
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const result = await runPpoSelfPlaySmoke({
+      seed: 7,
+      initialCheckpoint: "unused",
+      outputCheckpoint: "latest",
+      safetyMaxActions: 8,
+      replayChunkSize: 3,
+      spoolTrajectory: true,
+      client: client as unknown as PpoClientLike,
+    });
+    expect(result.replayedSamples).toBe(8);
+    expect(client.accumulatePacked).not.toHaveBeenCalled();
+    expect(client.accumulatePrepacked).toHaveBeenCalled();
+    expect(
+      client.accumulatePrepacked.mock.calls.reduce((sum, [base]) => sum + base.batchSize, 0),
+    ).toBe(8);
+    expect(result.trajectorySpoolStats).toMatchObject({
+      sampleCount: 8,
+      chunkCount: 3,
+    });
+    expect(result.trajectorySpoolStats!.fileBytes).toBeGreaterThan(0);
   });
 
   it("emits coarse phase timings without enabling per-decision profiling", async () => {
