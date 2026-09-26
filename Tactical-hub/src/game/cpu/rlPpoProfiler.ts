@@ -3,7 +3,7 @@
  * Node's RPC duration includes pack + IPC + Python prepare + PyTorch inference.
  */
 export class PpoTimingProfiler {
-  readonly enabled = process.env.PPO_PROFILE === "1";
+  readonly enabled = process.env.PPO_PROFILE === "1" || process.env.PPO_NODE_PROFILE === "1";
   private readonly totals = new Map<string, { count: number; totalMs: number }>();
 
   private add(stage: string, elapsedMs: number) {
