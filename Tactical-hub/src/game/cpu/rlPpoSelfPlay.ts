@@ -124,11 +124,12 @@ export async function replayPpoTrajectory(input: {
   client: PpoClientLike;
   chunkSize: number;
   memoryLogInterval: number;
+  fastRlMovement?: boolean;
   profiler?: PpoTimingProfiler;
 }) {
   const { rollout, client } = input;
   const profiler = input.profiler ?? new PpoTimingProfiler();
-  const environment = new RlEnvironmentV2();
+  const environment = new RlEnvironmentV2(undefined, input.fastRlMovement ?? false);
   environment.reset(rollout.seed, 4);
   const encoderCache = createRlObservationEncoderCache();
   let chunk: PpoEncodedSample[] = [];
@@ -399,7 +400,14 @@ export async function runPpoSelfPlaySmoke(input: {
     for (const rollout of learnableRollouts) {
       replayedSamples += rollout.spoolPath
         ? await replayPpoTrajectoryFromSpool({ rollout, client, memoryLogInterval, profiler })
-        : await replayPpoTrajectory({ rollout, client, chunkSize: replayChunkSize, memoryLogInterval, profiler });
+        : await replayPpoTrajectory({
+          rollout,
+          client,
+          chunkSize: replayChunkSize,
+          memoryLogInterval,
+          fastRlMovement: input.fastRlMovement,
+          profiler,
+        });
       if (rollout.spoolPath) {
         deletePpoTrajectorySpool(rollout.spoolPath);
         spoolPaths.delete(rollout.spoolPath);

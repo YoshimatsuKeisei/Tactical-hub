@@ -132,6 +132,30 @@ describe("immediate movement semantics", () => {
     expect(fast.getResult()).toEqual(standard.getResult());
   });
 
+  it("keeps the RL in-place movement fast path identical across a long deterministic action sequence", () => {
+    const standard = new RlEnvironmentV2();
+    const fast = new RlEnvironmentV2(undefined, true);
+    standard.reset(8, 4);
+    fast.reset(8, 4);
+    for (let index = 0; index < 300 && !standard.isTerminal(); index += 1) {
+      expect(fast.getStateHash()).toBe(standard.getStateHash());
+      const actor = standard.getCurrentActorTeamId();
+      expect(actor).toBeTruthy();
+      expect(fast.getCurrentActorTeamId()).toBe(actor);
+      const standardActions = standard.getLegalActionsForEncoding(actor!);
+      const fastActions = fast.getLegalActionsForEncoding(actor!);
+      expect(fastActions.map((action) => action.actionKey)).toEqual(
+        standardActions.map((action) => action.actionKey),
+      );
+      const actionKey = standardActions[0]?.actionKey;
+      expect(actionKey).toBeTruthy();
+      standard.stepWithoutObservation(actionKey!);
+      fast.stepWithoutObservation(actionKey!);
+    }
+    expect(fast.getStateHash()).toBe(standard.getStateHash());
+    expect(fast.getResult()).toEqual(standard.getResult());
+  });
+
   it.each([
     ["v1", () => new RlEnvironment()],
     ["v2", () => new RlEnvironmentV2()],
