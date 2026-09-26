@@ -1,5 +1,5 @@
 /**
- * Standalone two-environment PPO inference probe input generator.
+ * Standalone multi-environment PPO inference probe input generator.
  * Does not run PPO training or write checkpoints.
  */
 import { createWriteStream } from "node:fs";
@@ -15,26 +15,32 @@ const value = (name: string) => {
   const index = args.indexOf(name);
   return index < 0 ? undefined : args[index + 1];
 };
-const episodes = 2;
-const decisions = Number(value("--decisions") ?? "100");
+const environmentCount = Number(value("--environments") ?? "16");
+const decisions = Number(value("--decisions") ?? "50");
 const seed = Number(value("--seed") ?? "8");
 const destination = value("--out");
 if (!destination) throw new Error("Specify --out FILE (new probe fixture only)");
-if (!Number.isInteger(decisions) || decisions < 1 || decisions > 100) throw new Error("--decisions must be 1..100");
+if (!Number.isInteger(environmentCount) || environmentCount < 2 || environmentCount > 16) {
+  throw new Error("--environments must be an integer in 2..16");
+}
+if (!Number.isInteger(decisions) || decisions < 1 || decisions > 100) {
+  throw new Error("--decisions must be an integer in 1..100");
+}
 if (!Number.isInteger(seed) || seed < 1) throw new Error("--seed must be a positive integer");
 
-const environments = Array.from({ length: episodes }, (_, index) => {
+const environments = Array.from({ length: environmentCount }, (_, index) => {
   const environment = new RlEnvironmentV2();
   const initialObservation = environment.reset(seed + index, 4);
   return { environment, cache: createRlObservationEncoderCache(), initialObservation };
 });
+const seeds = environments.map((_, index) => seed + index);
 const featureSpec = createRlFeatureSpecV2(environments[0].initialObservation);
 const stream = createWriteStream(resolve(destination), { flags: "wx", encoding: "utf8" });
 const write = async (payload: unknown) => {
   if (!stream.write(JSON.stringify(payload) + "\n")) await once(stream, "drain");
 };
 try {
-  await write({ type: "header", schemaVersion: 2, featureSpec, seeds: [seed, seed + 1], decisions });
+  await write({ type: "header", schemaVersion: 2, featureSpec, seeds, decisions, environmentCount });
   for (let step = 0; step < decisions; step += 1) {
     const samples = environments.map(({ environment, cache }, environmentIndex) => {
       if (environment.isTerminal()) throw new Error(`Environment ${environmentIndex} terminated at step ${step}`);
@@ -50,17 +56,26 @@ try {
       };
     });
     await write({ type: "pair", step, samples });
-    // A fixed legal action advances each environment independently; no PPO sampling or model update.
+    // A fixed legal action advances every environment independently; no PPO sampling or model update.
     for (const { environment } of environments) {
       const actor = environment.getCurrentActorTeamId()!;
       environment.stepWithoutObservation(environment.getLegalActionsForEncoding(actor)[0].actionKey);
     }
   }
-  await write({ type: "end", decisionCounts: [decisions, decisions],
-    finalStateHashes: environments.map(({ environment }) => environment.getStateHash()) });
+  await write({
+    type: "end",
+    decisionCounts: Array.from({ length: environmentCount }, () => decisions),
+    finalStateHashes: environments.map(({ environment }) => environment.getStateHash()),
+  });
 } finally {
   stream.end();
   await once(stream, "close");
 }
-console.log(JSON.stringify({ probe: "two_environment_inputs", destination: resolve(destination),
-  seeds: [seed, seed + 1], decisionsPerEnvironment: decisions, featureSpecSchemaVersion: featureSpec.schemaVersion }));
+console.log(JSON.stringify({
+  probe: "multi_environment_inputs",
+  destination: resolve(destination),
+  seeds,
+  environmentCount,
+  decisionsPerEnvironment: decisions,
+  featureSpecSchemaVersion: featureSpec.schemaVersion,
+}));
