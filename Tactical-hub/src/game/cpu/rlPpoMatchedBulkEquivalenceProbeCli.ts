@@ -94,6 +94,8 @@ let serialActMs = 0;
 let batchActMs = 0;
 let serialEncodeStepMs = 0;
 let batchEncodeStepMs = 0;
+let serialPostDiagnostics: Awaited<ReturnType<PythonPpoClient["diagnostics"]>> | undefined;
+let batchPostDiagnostics: Awaited<ReturnType<PythonPpoClient["diagnostics"]>> | undefined;
 
 const encodeSlot = (slot: EnvSlot, slotIndex: number, round: number) => {
   if (slot.environment.isTerminal()) {
@@ -191,6 +193,8 @@ try {
       }
     }
   }
+  serialPostDiagnostics = await serialClient.diagnostics();
+  batchPostDiagnostics = await batchClient.diagnostics();
 } finally {
   await serialClient.close();
   await batchClient.close();
@@ -198,21 +202,25 @@ try {
 const serialFinalHashes = serialSlots.map(({ environment }) => environment.getStateHash());
 const batchFinalHashes = batchSlots.map(({ environment }) => environment.getStateHash());
 const exactFinalHashes = serialFinalHashes.every((hash, index) => hash === batchFinalHashes[index]);
+const exactPostRng = Boolean(
+  serialPostDiagnostics
+  && batchPostDiagnostics
+  && serialPostDiagnostics.rngHash === batchPostDiagnostics.rngHash
+);
+const exactPostParameters = Boolean(
+  serialPostDiagnostics
+  && batchPostDiagnostics
+  && serialPostDiagnostics.parameterHash === batchPostDiagnostics.parameterHash
+  && serialPostDiagnostics.optimizerHash === batchPostDiagnostics.optimizerHash
+);
 const status = (
   actionMismatchCount === 0
   && logProbabilityMismatchCount === 0
   && valueMismatchCount === 0
   && exactFinalHashes
+  && exactPostRng
+  && exactPostParameters
 ) ? "passed" : "mismatch";
-
-const serialDiagnosticsClient = makeClient();
-const batchDiagnosticsClient = makeClient();
-const serialDiagReady = await startClient(serialDiagnosticsClient);
-const batchDiagReady = await startClient(batchDiagnosticsClient);
-const serialDiagnostics = await serialDiagnosticsClient.diagnostics();
-const batchDiagnostics = await batchDiagnosticsClient.diagnostics();
-await serialDiagnosticsClient.close();
-await batchDiagnosticsClient.close();
 
 console.log(JSON.stringify({
   probe: "ppo_matched_bulk_equivalence_1_vs_8",
@@ -226,12 +234,10 @@ console.log(JSON.stringify({
   checkpoint: {
     updateCount: serialReady.updateCount,
     episodeCount: serialReady.episodeCount,
-    diagnosticsFreshReloadMatch:
-      serialDiagReady.updateCount === batchDiagReady.updateCount
-      && serialDiagReady.episodeCount === batchDiagReady.episodeCount
-      && serialDiagnostics.parameterHash === batchDiagnostics.parameterHash
-      && serialDiagnostics.optimizerHash === batchDiagnostics.optimizerHash
-      && serialDiagnostics.rngHash === batchDiagnostics.rngHash,
+    exactPostRunRngHash: exactPostRng,
+    exactPostRunParameterAndOptimizerHash: exactPostParameters,
+    serialPostRngHash: serialPostDiagnostics?.rngHash ?? null,
+    batchPostRngHash: batchPostDiagnostics?.rngHash ?? null,
   },
   equivalence: {
     actionMismatchCount,
