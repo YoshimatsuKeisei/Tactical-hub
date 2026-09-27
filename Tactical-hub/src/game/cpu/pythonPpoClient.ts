@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
+import { deflateRawSync } from "node:zlib";
 import { createInterface, type Interface } from "node:readline";
 import type { EncodedLegalActionsV2 } from "./rlActionEncoder";
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
@@ -26,13 +28,36 @@ export type PpoHyperparameters = {
 
 export type PpoTrainingSample = PpoEncodedSample;
 
+export type PpoRetentionChunkStats = {
+  retentionId: string;
+  batchSize: number;
+  rawBytes: number;
+  compressedBytes: number;
+  rawSha256: string;
+  tensorSignature: string;
+};
+
+export type PpoRetentionStats = {
+  currentChunks: number;
+  currentRetainedBytes: number;
+  peakRetainedBytes: number;
+  storedChunks: number;
+  storedSamples: number;
+  rawBytes: number;
+  compressedBytes: number;
+};
+
 type Response =
   | { type: "ready"; selectedDevice: RlSelectedTorchDevice; updateCount: number; episodeCount: number }
   | { type: "action"; requestId: number; actionIndex: number; logProbability: number; value: number }
   | { type: "actions"; requestId: number; actionIndices: number[]; logProbabilities: number[]; values: number[] }
   | { type: "updateBegun"; requestId: number; totalSamples: number }
   | { type: "updateChunkAccepted"; requestId: number; acceptedSamples: number; accumulatedSamples: number }
-  | { type: "updateResult"; requestId: number; sampleCount: number; loss: number; policyLoss: number; valueLoss: number; entropy: number; gradientNorm: number; policyParametersChanged: boolean; valueParametersChanged: boolean; updateCount: number; episodeCount: number }
+  | { type: "retainedChunkStored"; requestId: number; retentionId: string; batchSize: number; rawBytes: number; compressedBytes: number; rawSha256: string }
+  | { type: "retentionDiscarded"; requestId: number; discardedCount: number }
+  | { type: "retentionStats"; requestId: number; currentChunks: number; currentRetainedBytes: number; peakRetainedBytes: number; storedChunks: number; storedSamples: number; rawBytes: number; compressedBytes: number }
+  | { type: "diagnostics"; requestId: number; parameterHash: string; optimizerHash: string; rngHash: string; gradientHash: string }
+  | { type: "updateResult"; requestId: number; sampleCount: number; loss: number; policyLoss: number; valueLoss: number; entropy: number; gradientNorm: number; policyParametersChanged: boolean; valueParametersChanged: boolean; updateCount: number; episodeCount: number; diagnostics?: { gradientHash: string; parameterHash: string; optimizerHash: string; rngHash: string } }
   | { type: "saved"; requestId: number; path: string; updateCount: number; episodeCount: number }
   | { type: "closed" }
   | { type: "error"; requestId?: number; message: string };
@@ -45,7 +70,7 @@ export class PythonPpoClient {
   private stderr = "";
   private featureSpec?: RlFeatureSpecV2;
 
-  constructor(private readonly options: { command?: string; args?: string[]; cwd?: string; device?: RlTorchDevice } = {}) {}
+  constructor(private readonly options: { command?: string; args?: string[]; cwd?: string; device?: RlTorchDevice; env?: NodeJS.ProcessEnv } = {}) {}
 
   private wait() { return new Promise<Response>((resolve, reject) => this.waiting.push({ resolve, reject })); }
   private send(payload: unknown) {
@@ -75,6 +100,7 @@ export class PythonPpoClient {
     if (this.process) throw new Error("Python PPO process is already running");
     this.process = spawn(this.options.command ?? "python", this.options.args ?? ["-u", "-m", "rl.ppo_server"], {
       cwd: this.options.cwd ?? process.cwd(), stdio: ["pipe", "pipe", "pipe"],
+      env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
     });
     this.process.stderr.on("data", (chunk) => { this.stderr += String(chunk); process.stderr.write(chunk); });
     this.lines = createInterface({ input: this.process.stdout });
@@ -189,6 +215,117 @@ export class PythonPpoClient {
       || response.acceptedSamples !== base.batchSize
     ) throw new Error("Unexpected PPO prepacked update-chunk response");
     return response;
+  }
+
+  async retainPackedChunk(
+    retentionId: string,
+    base: PackedBcBatch,
+    options: { corruptCompressedByteForTest?: boolean } = {},
+  ): Promise<PpoRetentionChunkStats> {
+    if (!this.process?.stdin.writable) throw new Error("Python PPO process is not running");
+    if (!retentionId) throw new Error("PPO retentionId must not be empty");
+    const requestId = this.nextRequestId++;
+    const rawSha256 = createHash("sha256").update(base.payload).digest("hex");
+    const tensorSignature = createHash("sha256").update(JSON.stringify(base.tensors.map((tensor) => ({
+      name: tensor.name, dtype: tensor.dtype, shape: tensor.shape, byteLength: tensor.byteLength,
+    })))).digest("hex");
+    const compressed = deflateRawSync(base.payload, { level: 1 });
+    if (options.corruptCompressedByteForTest && compressed.byteLength) {
+      compressed[Math.floor(compressed.byteLength / 2)] ^= 0x01;
+    }
+    const responsePromise = this.wait();
+    this.process.stdin.write(`${JSON.stringify({
+      type: "retainPackedChunk",
+      requestId,
+      retentionId,
+      encoding: "packed-deflate-raw-v1",
+      codec: "deflate-raw-1",
+      byteLength: compressed.byteLength,
+      rawByteLength: base.payload.byteLength,
+      rawSha256,
+      batchSize: base.batchSize,
+      tensors: base.tensors,
+    })}\n`);
+    this.process.stdin.write(compressed);
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (
+      response.type !== "retainedChunkStored"
+      || response.requestId !== requestId
+      || response.retentionId !== retentionId
+      || response.batchSize !== base.batchSize
+      || response.rawSha256 !== rawSha256
+    ) throw new Error("Unexpected PPO retained-chunk response");
+    return { ...response, tensorSignature };
+  }
+
+  async accumulateRetained(
+    retentionId: string,
+    scalars: PpoUpdateScalarSample[],
+  ) {
+    if (!this.process?.stdin.writable) throw new Error("Python PPO process is not running");
+    if (!scalars.length) throw new Error("PPO retained scalar batch cannot be empty");
+    if (!scalars.every((sample) => [sample.oldLogProbability, sample.advantage, sample.return].every(Number.isFinite))) {
+      throw new Error("PPO retained scalars contain NaN or Inf");
+    }
+    const batchSize = scalars.length;
+    const old = Float32Array.from(scalars.map((sample) => sample.oldLogProbability));
+    const advantages = Float32Array.from(scalars.map((sample) => sample.advantage));
+    const returns = Float32Array.from(scalars.map((sample) => sample.return));
+    const payload = Buffer.concat([
+      Buffer.from(old.buffer, old.byteOffset, old.byteLength),
+      Buffer.from(advantages.buffer, advantages.byteOffset, advantages.byteLength),
+      Buffer.from(returns.buffer, returns.byteOffset, returns.byteLength),
+    ]);
+    const requestId = this.nextRequestId++;
+    const responsePromise = this.wait();
+    this.process.stdin.write(`${JSON.stringify({
+      type: "retainedUpdateChunk",
+      requestId,
+      retentionId,
+      encoding: "ppo-retained-scalars-v1",
+      byteLength: payload.byteLength,
+      batchSize,
+    })}\n`);
+    this.process.stdin.write(payload);
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (
+      response.type !== "updateChunkAccepted"
+      || response.requestId !== requestId
+      || response.acceptedSamples !== batchSize
+    ) throw new Error("Unexpected PPO retained update-chunk response");
+    return response;
+  }
+
+  async discardRetained(retentionIds: string[]) {
+    if (!retentionIds.length) return { discardedCount: 0 };
+    const requestId = this.nextRequestId++;
+    const response = await this.request({ type: "discardRetained", requestId, retentionIds });
+    if (response.type !== "retentionDiscarded" || response.requestId !== requestId) {
+      throw new Error("Unexpected PPO retention-discard response");
+    }
+    return response;
+  }
+
+  async retentionStats(): Promise<PpoRetentionStats> {
+    const requestId = this.nextRequestId++;
+    const response = await this.request({ type: "retentionStats", requestId });
+    if (response.type !== "retentionStats" || response.requestId !== requestId) {
+      throw new Error("Unexpected PPO retention-stats response");
+    }
+    const { type: _type, requestId: _requestId, ...stats } = response;
+    return stats;
+  }
+
+  async diagnostics() {
+    const requestId = this.nextRequestId++;
+    const response = await this.request({ type: "diagnostics", requestId });
+    if (response.type !== "diagnostics" || response.requestId !== requestId) {
+      throw new Error("Unexpected PPO diagnostics response");
+    }
+    const { type: _type, requestId: _requestId, ...diagnostics } = response;
+    return diagnostics;
   }
 
   async finishUpdate(completedEpisodes: number) {

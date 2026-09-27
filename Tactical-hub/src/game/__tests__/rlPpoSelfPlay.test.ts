@@ -14,6 +14,13 @@ const step = (teamId: string, value = 0): PpoTrajectoryStep => ({
 });
 
 function fakeClient() {
+  const retained = new Map<string, PackedBcBatch>();
+  let storedChunks = 0;
+  let storedSamples = 0;
+  let rawBytes = 0;
+  let compressedBytes = 0;
+  let peakRetainedBytes = 0;
+  let currentRetainedBytes = 0;
   return {
     start: vi.fn(async () => ({ type: "ready", selectedDevice: "cpu", updateCount: 0, episodeCount: 0 })),
     act: vi.fn(async (_observation: EncodedObservation, actions: EncodedLegalActionsV2) => ({
@@ -29,6 +36,60 @@ function fakeClient() {
       expect(scalars.every((sample) => Number.isFinite(sample.advantage) && Number.isFinite(sample.return))).toBe(true);
       return { acceptedSamples: base.batchSize };
     }),
+    retainPackedChunk: vi.fn(async (retentionId: string, base: PackedBcBatch) => {
+      if (retained.has(retentionId)) throw new Error("duplicate retention id");
+      retained.set(retentionId, base);
+      const compressed = Math.max(1, Math.floor(base.payload.byteLength / 16));
+      storedChunks += 1;
+      storedSamples += base.batchSize;
+      rawBytes += base.payload.byteLength;
+      compressedBytes += compressed;
+      currentRetainedBytes += compressed;
+      peakRetainedBytes = Math.max(peakRetainedBytes, currentRetainedBytes);
+      return {
+        retentionId,
+        batchSize: base.batchSize,
+        rawBytes: base.payload.byteLength,
+        compressedBytes: compressed,
+        rawSha256: "fake",
+        tensorSignature: "fake-tensors",
+      };
+    }),
+    accumulateRetained: vi.fn(async (retentionId: string, scalars: PpoUpdateScalarSample[]) => {
+      const base = retained.get(retentionId);
+      if (!base) throw new Error("unknown retention id");
+      expect(base.batchSize).toBe(scalars.length);
+      expect(scalars.every((sample) => Number.isFinite(sample.advantage) && Number.isFinite(sample.return))).toBe(true);
+      retained.delete(retentionId);
+      currentRetainedBytes -= Math.max(1, Math.floor(base.payload.byteLength / 16));
+      return { acceptedSamples: base.batchSize };
+    }),
+    discardRetained: vi.fn(async (retentionIds: string[]) => {
+      let discardedCount = 0;
+      for (const retentionId of retentionIds) {
+        const base = retained.get(retentionId);
+        if (!base) continue;
+        retained.delete(retentionId);
+        currentRetainedBytes -= Math.max(1, Math.floor(base.payload.byteLength / 16));
+        discardedCount += 1;
+      }
+      return { discardedCount };
+    }),
+    retentionStats: vi.fn(async () => ({
+      currentChunks: retained.size,
+      currentRetainedBytes,
+      peakRetainedBytes,
+      storedChunks,
+      storedSamples,
+      rawBytes,
+      compressedBytes,
+    })),
+    diagnostics: vi.fn(async () => ({
+      parameterHash: "parameter",
+      optimizerHash: "optimizer",
+      rngHash: "rng",
+      gradientHash: "gradient",
+    })),
     finishUpdate: vi.fn(async (episodeCount: number) => ({ episodeCount })),
     save: vi.fn(async (path: string, _metadata: Record<string, unknown>) => ({ path })),
     close: vi.fn(async () => {}),
@@ -103,6 +164,56 @@ describe("Phase 12B PPO self-play", () => {
       chunkCount: 3,
     });
     expect(result.trajectorySpoolStats!.fileBytes).toBeGreaterThan(0);
+  });
+
+  it("retains compressed rollout chunks in the PPO process and updates without replay regeneration", async () => {
+    const client = fakeClient();
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const result = await runPpoSelfPlaySmoke({
+      seed: 7,
+      initialCheckpoint: "unused",
+      outputCheckpoint: "latest",
+      safetyMaxActions: 8,
+      replayChunkSize: 3,
+      retainTrajectory: true,
+      client: client as unknown as PpoClientLike,
+    });
+    expect(result.replayedSamples).toBe(8);
+    expect(client.accumulatePacked).not.toHaveBeenCalled();
+    expect(client.accumulatePrepacked).not.toHaveBeenCalled();
+    expect(client.retainPackedChunk).toHaveBeenCalledTimes(3);
+    expect(client.accumulateRetained).toHaveBeenCalledTimes(3);
+    expect(client.discardRetained).not.toHaveBeenCalled();
+    expect(result.trajectoryRetentionStats).toMatchObject({
+      storedChunks: 3,
+      storedSamples: 8,
+      currentChunks: 0,
+      currentRetainedBytes: 0,
+    });
+    expect(result.trajectoryRetentionStats!.averageCompressedBytesPerSample).toBeGreaterThan(0);
+    expect(result.trajectoryRetentionStats!.compressionRatio).toBeGreaterThan(1);
+  });
+
+  it("discards retained chunks and never updates or saves an abnormal truncation", async () => {
+    const client = fakeClient();
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    vi.spyOn(RlEnvironmentV2.prototype, "getProgressHash").mockReturnValue("same");
+    await expect(runPpoSelfPlaySmoke({
+      seed: 7,
+      episodes: 1,
+      initialCheckpoint: "unused",
+      outputCheckpoint: "unused",
+      safetyMaxActions: 8,
+      replayChunkSize: 3,
+      retainTrajectory: true,
+      client: client as unknown as PpoClientLike,
+    })).rejects.toThrow("no learnable trajectory");
+    expect(client.retainPackedChunk).toHaveBeenCalledOnce();
+    expect(client.discardRetained).toHaveBeenCalledOnce();
+    expect(client.beginUpdate).not.toHaveBeenCalled();
+    expect(client.accumulateRetained).not.toHaveBeenCalled();
+    expect(client.finishUpdate).not.toHaveBeenCalled();
+    expect(client.save).not.toHaveBeenCalled();
   });
 
   it("emits coarse phase timings without enabling per-decision profiling", async () => {

@@ -6,6 +6,7 @@ const args = process.argv.slice(2);
 if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
 if (args.includes("--node-profile")) process.env.PPO_NODE_PROFILE = "1";
 if (args.includes("--phase-profile")) process.env.PPO_PHASE_PROFILE = "1";
+if (args.includes("--equivalence-diagnostics")) process.env.PPO_EQUIVALENCE_DIAGNOSTICS = "1";
 const value = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
 const numeric = (name: string, fallback: number) => {
   const parsed = Number(value(name) ?? fallback);
@@ -28,6 +29,7 @@ const result = await runPpoSelfPlaySmoke({
   replayChunkSize: positiveInteger("--replay-chunk-size", 8),
   memoryLogInterval: positiveInteger("--memory-log-interval", 500),
   spoolTrajectory: args.includes("--spool-trajectory"),
+  retainTrajectory: args.includes("--retain-trajectory"),
   fastRlMovement: args.includes("--fast-rl-movement"),
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4), gamma: numeric("--gamma", 0.99),

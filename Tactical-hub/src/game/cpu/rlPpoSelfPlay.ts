@@ -5,7 +5,12 @@ import { RlEnvironmentV2, type RlResult } from "./rlEnvironment";
 import { adjudicatePpoTimeLimit, isPpoTimeLimitReason, type PpoTeamAdjudication, type PpoTimeLimitReason } from "./rlPpoAdjudication";
 import { createRlFeatureSpecV2 } from "./rlFeatureSpec";
 import { createRlObservationEncoderCache, encodeRlObservationV2 } from "./rlObservationEncoder";
-import { PythonPpoClient, type PpoHyperparameters } from "./pythonPpoClient";
+import {
+  PythonPpoClient,
+  type PpoHyperparameters,
+  type PpoRetentionChunkStats,
+  type PpoRetentionStats,
+} from "./pythonPpoClient";
 import { PpoTimingProfiler } from "./rlPpoProfiler";
 import type { PpoEncodedSample, PpoUpdateScalarSample } from "./rlPpoPackedBatch";
 import { packBcEncodedSamples } from "./rlBcPackedBatch";
@@ -19,7 +24,14 @@ import type { GameState } from "../types";
 
 export type PpoClientLike =
   Pick<PythonPpoClient, "start" | "act" | "beginUpdate" | "accumulatePacked" | "finishUpdate" | "save" | "close">
-  & Partial<Pick<PythonPpoClient, "accumulatePrepacked">>;
+  & Partial<Pick<PythonPpoClient,
+    "accumulatePrepacked"
+    | "retainPackedChunk"
+    | "accumulateRetained"
+    | "discardRetained"
+    | "retentionStats"
+    | "diagnostics"
+  >>;
 
 export const DEFAULT_PPO_HYPERPARAMETERS: PpoHyperparameters = {
   learningRate: 3e-4, gamma: 0.99, gaeLambda: 0.95, clipEpsilon: 0.2,
@@ -55,6 +67,7 @@ export type PpoReplayRollout = {
   trajectory: PpoTrajectoryStep[];
   spoolPath?: string;
   spoolStats?: PpoTrajectorySpoolStats;
+  retentionChunks?: PpoRetentionChunkStats[];
 };
 
 type PpoEpisodeSummary = {
@@ -227,6 +240,104 @@ export async function replayPpoTrajectoryFromSpool(input: {
   return sentSamples;
 }
 
+export async function validatePpoTrajectoryReplay(input: {
+  rollout: PpoReplayRollout;
+  memoryLogInterval: number;
+  fastRlMovement?: boolean;
+  profiler?: PpoTimingProfiler;
+}) {
+  const { rollout } = input;
+  const profiler = input.profiler ?? new PpoTimingProfiler();
+  const environment = new RlEnvironmentV2(undefined, input.fastRlMovement ?? false);
+  environment.reset(rollout.seed, 4);
+  memorySnapshot("replay_validation_start", 0);
+
+  for (const expected of rollout.trajectory) {
+    const actorTeamId = environment.getCurrentActorTeamId();
+    const observation = actorTeamId
+      ? profiler.measure("replay_validation_observation", () => environment.getObservationForEncoding(actorTeamId))
+      : undefined;
+    const prefix = `PPO replay validation mismatch seed=${rollout.seed} decision=${expected.decisionIndex}`;
+    if (!actorTeamId || !observation) throw new Error(`${prefix}: no actor, expected team=${expected.teamId}`);
+    if (actorTeamId !== expected.teamId || observation.turnNumber !== expected.turnNumber || observation.phase !== expected.phase) {
+      throw new Error(`${prefix}: expected team/turn/phase=${expected.teamId}/${expected.turnNumber}/${expected.phase}, actual=${actorTeamId}/${observation.turnNumber}/${observation.phase}`);
+    }
+    const legalActions = profiler.measure(
+      "replay_validation_legal_actions",
+      () => environment.getLegalActionsForEncoding(actorTeamId),
+    );
+    const actualIndex = legalActions.findIndex((action) => action.actionKey === expected.selectedActionKey);
+    const actualKeyAtExpectedIndex = legalActions[expected.selectedActionIndex]?.actionKey;
+    if (actualIndex < 0 || actualIndex !== expected.selectedActionIndex || actualKeyAtExpectedIndex !== expected.selectedActionKey) {
+      throw new Error(`${prefix}: expected action index/key=${expected.selectedActionIndex}/${expected.selectedActionKey}, actual index/key=${actualIndex}/${actualKeyAtExpectedIndex ?? "missing"}`);
+    }
+    profiler.measure(
+      "replay_validation_game_step",
+      () => environment.stepWithoutObservation(expected.selectedActionKey),
+    );
+    if ((expected.decisionIndex + 1) % input.memoryLogInterval === 0) {
+      memorySnapshot("replay_validation_progress", expected.decisionIndex + 1);
+    }
+  }
+
+  const result = environment.getResult();
+  const finalStateHash = environment.getStateHash();
+  if (result.terminal !== rollout.terminal || result.endReason !== rollout.endReason || result.winnerTeamId !== rollout.winnerTeamId
+    || finalStateHash !== rollout.finalStateHash || JSON.stringify(result.loserTeamIds) !== JSON.stringify(rollout.loserTeamIds)) {
+    throw new Error(`PPO replay validation final mismatch seed=${rollout.seed}: expected winner/hash=${rollout.winnerTeamId}/${rollout.finalStateHash}, actual=${result.winnerTeamId ?? "none"}/${finalStateHash}`);
+  }
+  memorySnapshot("replay_validation_end", rollout.trajectory.length);
+  return rollout.trajectory.length;
+}
+
+export async function replayPpoTrajectoryFromRetention(input: {
+  rollout: PpoReplayRollout;
+  client: PpoClientLike;
+  memoryLogInterval: number;
+  profiler?: PpoTimingProfiler;
+  onConsumed?: (retentionId: string) => void;
+}) {
+  const { rollout, client } = input;
+  const chunks = rollout.retentionChunks;
+  if (!chunks?.length) throw new Error("PPO retained replay requires retention chunks");
+  if (!client.accumulateRetained) throw new Error("PPO client does not support retained replay");
+  const profiler = input.profiler ?? new PpoTimingProfiler();
+  let sentSamples = 0;
+  memorySnapshot("replay_retention_start", 0);
+
+  for (const retained of chunks) {
+    const start = sentSamples;
+    const end = start + retained.batchSize;
+    const steps = rollout.trajectory.slice(start, end);
+    if (steps.length !== retained.batchSize) {
+      throw new Error(`PPO retained sample count exceeds trajectory: ${end} > ${rollout.trajectory.length}`);
+    }
+    const scalars: PpoUpdateScalarSample[] = steps.map((step) => {
+      assertFiniteTrajectory(step);
+      return {
+        oldLogProbability: step.oldLogProbability,
+        advantage: step.advantage!,
+        return: step.return!,
+      };
+    });
+    await profiler.measureAsync(
+      "replay_retention_restore_accumulate",
+      () => client.accumulateRetained!(retained.retentionId, scalars),
+    );
+    input.onConsumed?.(retained.retentionId);
+    sentSamples = end;
+    if (sentSamples % input.memoryLogInterval === 0) {
+      memorySnapshot("replay_retention_progress", sentSamples);
+    }
+  }
+
+  if (sentSamples !== rollout.trajectory.length) {
+    throw new Error(`PPO retained sample count mismatch: ${sentSamples} != ${rollout.trajectory.length}`);
+  }
+  memorySnapshot("replay_retention_end", sentSamples);
+  return sentSamples;
+}
+
 export async function runPpoSelfPlaySmoke(input: {
   seed: number;
   episodes?: number;
@@ -240,6 +351,7 @@ export async function runPpoSelfPlaySmoke(input: {
   replayChunkSize?: number;
   memoryLogInterval?: number;
   spoolTrajectory?: boolean;
+  retainTrajectory?: boolean;
   fastRlMovement?: boolean;
   client?: PpoClientLike;
 }) {
@@ -260,10 +372,17 @@ export async function runPpoSelfPlaySmoke(input: {
   const first = probe.reset(input.seed, 4);
   const featureSpec = createRlFeatureSpecV2(first);
   const client = input.client ?? new PythonPpoClient();
+  if (input.spoolTrajectory && input.retainTrajectory) {
+    throw new Error("spoolTrajectory and retainTrajectory cannot be enabled together");
+  }
   if (input.spoolTrajectory && !client.accumulatePrepacked) {
     throw new Error("spoolTrajectory requires a PPO client with accumulatePrepacked");
   }
+  if (input.retainTrajectory && (!client.retainPackedChunk || !client.accumulateRetained || !client.discardRetained || !client.retentionStats)) {
+    throw new Error("retainTrajectory requires PPO retention client methods");
+  }
   const spoolPaths = new Set<string>();
+  const outstandingRetentionIds = new Set<string>();
   const clientStartPhase = phaseNow();
   const initialized = await profiler.measureAsync("client_start", () => client.start({ seed: input.seed, featureSpec, hyperparameters, initialCheckpoint: input.initialCheckpoint, resume: input.resume }));
   phaseRecord("clientStartMs", clientStartPhase);
@@ -295,6 +414,27 @@ export async function runPpoSelfPlaySmoke(input: {
           spoolWriter.write(packBcEncodedSamples(sending, featureSpec));
         });
       };
+      let retentionChunk: Array<Pick<PpoEncodedSample, "observation" | "actions" | "targetIndex">> = [];
+      const retentionChunks: PpoRetentionChunkStats[] = [];
+      const flushRetention = async () => {
+        if (!input.retainTrajectory || !retentionChunk.length) return;
+        const sending = retentionChunk;
+        retentionChunk = [];
+        const packed = profiler.measure(
+          "rollout_retention_pack",
+          () => packBcEncodedSamples(sending, featureSpec),
+        );
+        const retentionId = `episode-${seed}-chunk-${retentionChunks.length}`;
+        const stored = await profiler.measureAsync(
+          "rollout_retention_compress_store",
+          () => client.retainPackedChunk!(retentionId, packed),
+        );
+        if (stored.batchSize !== sending.length) {
+          throw new Error(`PPO retained chunk size mismatch ${stored.batchSize} != ${sending.length}`);
+        }
+        retentionChunks.push(stored);
+        outstandingRetentionIds.add(retentionId);
+      };
       let reason: string | undefined;
       memorySnapshot("rollout_start", 0);
       try {
@@ -325,6 +465,14 @@ export async function runPpoSelfPlaySmoke(input: {
             });
             if (spoolChunk.length >= replayChunkSize) flushSpool();
           }
+          if (input.retainTrajectory) {
+            retentionChunk.push({
+              observation: encodedObservation,
+              actions: encodedActions.actions,
+              targetIndex: selected.actionIndex,
+            });
+            if (retentionChunk.length >= replayChunkSize) await flushRetention();
+          }
           if (environment.getProgressHash() === before) { reason = "phase_stall"; break; }
           if (trajectory.length % memoryLogInterval === 0) memorySnapshot("rollout_progress", trajectory.length);
         }
@@ -343,6 +491,17 @@ export async function runPpoSelfPlaySmoke(input: {
           spoolWriter.discard();
           if (spoolPath) spoolPaths.delete(spoolPath);
           reason = `exception:PPO spool failure: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      if (input.retainTrajectory) {
+        try {
+          await flushRetention();
+          const retainedSamples = retentionChunks.reduce((sum, chunk) => sum + chunk.batchSize, 0);
+          if (retainedSamples !== trajectory.length) {
+            reason = `exception:PPO retention sample count mismatch ${retainedSamples} != ${trajectory.length}`;
+          }
+        } catch (error) {
+          reason = `exception:PPO retention failure: ${error instanceof Error ? error.message : String(error)}`;
         }
       }
       const result = environment.getResult();
@@ -379,14 +538,26 @@ export async function runPpoSelfPlaySmoke(input: {
           loserTeamIds: result.loserTeamIds, finalStateHash, trajectory,
           spoolPath: spoolPath && spoolStats ? spoolPath : undefined,
           spoolStats,
+          retentionChunks: input.retainTrajectory ? retentionChunks : undefined,
         });
-      } else if (spoolPath) {
-        deletePpoTrajectorySpool(spoolPath);
-        spoolPaths.delete(spoolPath);
+      } else {
+        if (spoolPath) {
+          deletePpoTrajectorySpool(spoolPath);
+          spoolPaths.delete(spoolPath);
+        }
+        if (retentionChunks.length) {
+          await client.discardRetained!(retentionChunks.map((chunk) => chunk.retentionId));
+          for (const chunk of retentionChunks) outstandingRetentionIds.delete(chunk.retentionId);
+        }
       }
       process.stderr.write(`[PPO episode] ${JSON.stringify({
         ...summary,
         spoolStats: summary.outcomeKind !== "abnormal_truncated" ? spoolStats : undefined,
+        retentionChunks: summary.outcomeKind !== "abnormal_truncated" && input.retainTrajectory
+          ? retentionChunks.map(({ retentionId, batchSize, rawBytes, compressedBytes, rawSha256 }) => ({
+            retentionId, batchSize, rawBytes, compressedBytes, rawSha256,
+          }))
+          : undefined,
       })}\n`);
     }
     phaseRecord("rolloutMs", rolloutPhaseStart);
@@ -395,12 +566,33 @@ export async function runPpoSelfPlaySmoke(input: {
     const beginUpdatePhaseStart = phaseNow();
     await profiler.measureAsync("begin_update", () => client.beginUpdate(totalSamples));
     phaseRecord("beginUpdateMs", beginUpdatePhaseStart);
+    const retentionBeforeUpdate: PpoRetentionStats | undefined = input.retainTrajectory
+      ? await client.retentionStats!()
+      : undefined;
     let replayedSamples = 0;
+    let validatedSamples = 0;
     const replayPhaseStart = phaseNow();
     for (const rollout of learnableRollouts) {
-      replayedSamples += rollout.spoolPath
-        ? await replayPpoTrajectoryFromSpool({ rollout, client, memoryLogInterval, profiler })
-        : await replayPpoTrajectory({
+      if (rollout.retentionChunks?.length) {
+        validatedSamples += await validatePpoTrajectoryReplay({
+          rollout,
+          memoryLogInterval,
+          fastRlMovement: input.fastRlMovement,
+          profiler,
+        });
+        replayedSamples += await replayPpoTrajectoryFromRetention({
+          rollout,
+          client,
+          memoryLogInterval,
+          profiler,
+          onConsumed: (retentionId) => outstandingRetentionIds.delete(retentionId),
+        });
+      } else if (rollout.spoolPath) {
+        replayedSamples += await replayPpoTrajectoryFromSpool({ rollout, client, memoryLogInterval, profiler });
+        deletePpoTrajectorySpool(rollout.spoolPath);
+        spoolPaths.delete(rollout.spoolPath);
+      } else {
+        const replayed = await replayPpoTrajectory({
           rollout,
           client,
           chunkSize: replayChunkSize,
@@ -408,12 +600,17 @@ export async function runPpoSelfPlaySmoke(input: {
           fastRlMovement: input.fastRlMovement,
           profiler,
         });
-      if (rollout.spoolPath) {
-        deletePpoTrajectorySpool(rollout.spoolPath);
-        spoolPaths.delete(rollout.spoolPath);
+        replayedSamples += replayed;
+        validatedSamples += replayed;
       }
     }
     phaseRecord("replayMs", replayPhaseStart);
+    const retentionAfterReplay: PpoRetentionStats | undefined = input.retainTrajectory
+      ? await client.retentionStats!()
+      : undefined;
+    if (retentionAfterReplay && (retentionAfterReplay.currentChunks !== 0 || retentionAfterReplay.currentRetainedBytes !== 0)) {
+      throw new Error(`PPO retention leak after replay: chunks=${retentionAfterReplay.currentChunks} bytes=${retentionAfterReplay.currentRetainedBytes}`);
+    }
     if (replayedSamples !== totalSamples) throw new Error(`PPO replay total mismatch: ${replayedSamples} != ${totalSamples}`);
     const finishUpdatePhaseStart = phaseNow();
     const update = await profiler.measureAsync("finish_update", () => client.finishUpdate(learnableRollouts.length));
@@ -425,20 +622,35 @@ export async function runPpoSelfPlaySmoke(input: {
     const saved = await profiler.measureAsync("checkpoint_save", () => client.save(input.outputCheckpoint, metadata));
     const bestSaved = input.bestCheckpoint ? await profiler.measureAsync("checkpoint_best_save", () => client.save(input.bestCheckpoint!, { ...metadata, checkpointRole: "best" })) : undefined;
     phaseRecord("checkpointSaveMs", checkpointSavePhaseStart);
+    const retentionStats = input.retainTrajectory ? await client.retentionStats!() : undefined;
+    let phaseProfile: Record<string, unknown> | undefined;
     if (phaseProfileEnabled) {
       const totalMs = performance.now() - totalPhaseStart;
       const measuredMs = Object.values(phaseTimings).reduce((sum, value) => sum + value, 0);
-      process.stderr.write(`[PPO phase profile] ${JSON.stringify({
+      const otherMs = Math.max(0, totalMs - measuredMs);
+      const rolloutMs = phaseTimings.rolloutMs ?? 0;
+      const replayMs = phaseTimings.replayMs ?? 0;
+      phaseProfile = {
         totalMs: Math.round(totalMs * 100) / 100,
         stages: Object.fromEntries(Object.entries(phaseTimings).map(([name, value]) => [name, Math.round(value * 100) / 100])),
-        otherMs: Math.round(Math.max(0, totalMs - measuredMs) * 100) / 100,
+        otherMs: Math.round(otherMs * 100) / 100,
+        startupMs: Math.round((phaseTimings.clientStartMs ?? 0) * 100) / 100,
+        decisionDependentMs: Math.round((rolloutMs + replayMs) * 100) / 100,
+        nonRolloutReplayMs: Math.round(Math.max(0, totalMs - rolloutMs - replayMs) * 100) / 100,
         rolloutDecisions: totalSamples,
         replaySamples: replayedSamples,
-        rolloutMsPerDecision: Math.round((phaseTimings.rolloutMs / totalSamples) * 1000) / 1000,
-        replayMsPerSample: Math.round((phaseTimings.replayMs / replayedSamples) * 1000) / 1000,
-        replayMode: input.spoolTrajectory ? "prepacked_spool" : "resimulate",
+        validatedSamples,
+        rolloutMsPerDecision: Math.round((rolloutMs / totalSamples) * 1000) / 1000,
+        replayMsPerSample: Math.round((replayMs / replayedSamples) * 1000) / 1000,
+        replayMode: input.retainTrajectory
+          ? "python_retention"
+          : input.spoolTrajectory
+            ? "prepacked_spool"
+            : "resimulate",
         trajectorySpoolBytes: learnableRollouts.reduce((sum, rollout) => sum + (rollout.spoolStats?.fileBytes ?? 0), 0),
-      })}\n`);
+        trajectoryRetentionBytes: retentionBeforeUpdate?.currentRetainedBytes ?? 0,
+      };
+      process.stderr.write(`[PPO phase profile] ${JSON.stringify(phaseProfile)}\n`);
     }
     const trajectorySpoolStats = input.spoolTrajectory
       ? learnableRollouts.reduce<PpoTrajectorySpoolStats>(
@@ -451,14 +663,35 @@ export async function runPpoSelfPlaySmoke(input: {
         { chunkCount: 0, sampleCount: 0, payloadBytes: 0, fileBytes: 0 },
       )
       : undefined;
+    const trajectoryRetentionStats = retentionStats
+      ? {
+        ...retentionStats,
+        averageRawBytesPerSample: retentionStats.storedSamples
+          ? retentionStats.rawBytes / retentionStats.storedSamples
+          : 0,
+        averageCompressedBytesPerSample: retentionStats.storedSamples
+          ? retentionStats.compressedBytes / retentionStats.storedSamples
+          : 0,
+        compressionRatio: retentionStats.compressedBytes
+          ? retentionStats.rawBytes / retentionStats.compressedBytes
+          : 0,
+      }
+      : undefined;
     return {
       featureSpec,
       completed, adjudicated, truncated, ...episodeCounts,
-      mergeLegalActionCount, replayedSamples, trajectorySpoolStats,
+      mergeLegalActionCount, replayedSamples, trajectorySpoolStats, trajectoryRetentionStats, phaseProfile,
       update, saved, bestSaved, selectedDevice: initialized.selectedDevice,
     };
   } finally {
     for (const path of spoolPaths) deletePpoTrajectorySpool(path);
+    if (outstandingRetentionIds.size && client.discardRetained) {
+      try {
+        await client.discardRetained([...outstandingRetentionIds]);
+      } catch {
+        // The process is about to close; cleanup failure must not replace the original PPO error.
+      }
+    }
     await client.close();
     profiler.report("smoke_final");
   }

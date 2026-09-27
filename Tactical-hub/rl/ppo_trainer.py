@@ -283,6 +283,8 @@ class PpoTrainer:
         )
         if not torch.isfinite(gradient_norm):
             raise FloatingPointError("PPO gradient norm is NaN or Inf")
+        equivalence_diagnostics = os.environ.get("PPO_EQUIVALENCE_DIAGNOSTICS") == "1"
+        gradient_hash = self.gradient_hash() if equivalence_diagnostics else None
         self.optimizer.step()
         self.update_count += 1
         total = state["totalSamples"]
@@ -301,8 +303,42 @@ class PpoTrainer:
             "valueParametersChanged": state["valueBefore"] != self.parameter_hash(include_prefix="value_head."),
             "updateCount": self.update_count,
         }
+        if equivalence_diagnostics:
+            result["diagnostics"] = {
+                "gradientHash": gradient_hash,
+                "parameterHash": self.parameter_hash(),
+                "optimizerHash": self.optimizer_hash(),
+                "rngHash": self.rng_hash(),
+            }
         self._accumulation = None
         return result
+
+    def gradient_hash(self) -> str:
+        digest = hashlib.sha256()
+        for name, parameter in sorted(self.model.named_parameters()):
+            digest.update(name.encode())
+            if parameter.grad is None:
+                digest.update(b"<none>")
+            else:
+                digest.update(parameter.grad.detach().cpu().contiguous().numpy().tobytes())
+        return digest.hexdigest()
+
+    def rng_hash(self) -> str:
+        digest = hashlib.sha256()
+        digest.update(torch.get_rng_state().cpu().contiguous().numpy().tobytes())
+        if torch.cuda.is_available():
+            for index, state in enumerate(torch.cuda.get_rng_state_all()):
+                digest.update(f"cuda:{index}".encode())
+                digest.update(state.cpu().contiguous().numpy().tobytes())
+        return digest.hexdigest()
+
+    def diagnostics(self) -> dict[str, str]:
+        return {
+            "parameterHash": self.parameter_hash(),
+            "optimizerHash": self.optimizer_hash(),
+            "rngHash": self.rng_hash(),
+            "gradientHash": self.gradient_hash(),
+        }
 
     def parameter_hash(self, include_prefix: str | None = None, exclude_prefix: str | None = None) -> str:
         digest = hashlib.sha256()
