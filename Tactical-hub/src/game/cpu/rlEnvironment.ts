@@ -7,7 +7,7 @@ import { getRewardPlacementCandidates } from "../engine/reward";
 import { getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
 import type { GameState, StrategistActionKind, StrategistRole, UnitPosition } from "../types";
 import { positionKey } from "../utils/position";
-import { advanceCpuOneStep, syncCpuContext } from "./cpuStep";
+import { advanceCpuOneStep, syncCpuContext, type CpuStepInstrumentation } from "./cpuStep";
 import { createHeadlessInitialState, getHeadlessProgressSignature } from "./headlessSimulation";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
 import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
@@ -77,6 +77,11 @@ export type RlResult = {
 };
 
 export type RlRewardFunction = (state: GameState, result: Omit<RlResult, "rewards">) => Record<string, number>;
+
+export type RlEnvironmentInstrumentation = {
+  cpuStep?: CpuStepInstrumentation;
+  onEnumerate?: (milliseconds: number, phase: GameState["phase"], decisionCount: number) => void;
+};
 
 export type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision };
 
@@ -282,6 +287,7 @@ export class RlEnvironment {
     private readonly schemaVersion: 1 | 2 = 1,
     private readonly movementSemantics: MovementSemantics = "current",
     private readonly rlInPlaceMovement = false,
+    private readonly instrumentation?: RlEnvironmentInstrumentation,
   ) { this.rewardFunction = rewardFunction; }
 
   reset(seed: number, participantCount: 3 | 4 = 4, initialState?: GameState) {
@@ -297,6 +303,7 @@ export class RlEnvironment {
       logMode: "none",
       movementSemantics: this.movementSemantics,
       rlInPlaceMovement: this.rlInPlaceMovement,
+      ...this.instrumentation?.cpuStep,
     });
     if (!result.applied) throw new Error("RL action was not applied");
     this.state = result.state;
@@ -306,9 +313,15 @@ export class RlEnvironment {
   private advanceAutomatic() {
     for (let guard = 0; guard < 100; guard += 1) {
       if (this.isTerminal()) { this.decisions = []; return; }
+      const enumerateStarted = this.instrumentation?.onEnumerate ? performance.now() : 0;
       this.decisions = this.schemaVersion === 1
         ? enumerateRlDecisions(this.state, this.runtime, () => true, this.movementSemantics)
         : enumerateRlDecisionsV2(this.state, this.runtime);
+      this.instrumentation?.onEnumerate?.(
+        performance.now() - enumerateStarted,
+        this.state.phase,
+        this.decisions.length,
+      );
       if (this.decisions.length !== 1 || !["resolve_production", "resolve_battle", "resolve_strategists"].includes(this.decisions[0].decision.kind)) return;
       this.apply(this.decisions[0].decision);
     }
@@ -420,8 +433,12 @@ export class RlEnvironment {
 }
 
 export class RlEnvironmentV2 extends RlEnvironment {
-  constructor(rewardFunction: RlRewardFunction = defaultRewards, rlInPlaceMovement = false) {
-    super(rewardFunction, 2, "current", rlInPlaceMovement);
+  constructor(
+    rewardFunction: RlRewardFunction = defaultRewards,
+    rlInPlaceMovement = false,
+    instrumentation?: RlEnvironmentInstrumentation,
+  ) {
+    super(rewardFunction, 2, "current", rlInPlaceMovement, instrumentation);
   }
 }
 

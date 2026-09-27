@@ -26,6 +26,7 @@ export type CpuStepInstrumentation = {
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
   onPolicy?: (milliseconds: number) => void;
+  onRuntimeClone?: (milliseconds: number) => void;
   onApply?: (milliseconds: number, decision: CpuDecision, phaseBefore: GameState["phase"], phaseAfter: GameState["phase"], turnBefore: number, turnAfter: number) => void;
   onLog?: (milliseconds: number) => void;
   onDecision?: (decision: CpuDecision) => void;
@@ -48,7 +49,9 @@ function injectedRng(runtime: CpuRuntime) {
 export type CpuStepResult = { state: GameState; runtime: CpuRuntime; applied: boolean; waitingForHuman?: boolean };
 
 export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, settings: CpuTeamSettings, policy: CpuPolicy = getRandomCpuDecision, instrumentation?: CpuStepInstrumentation): CpuStepResult {
+  const cloneStarted = instrumentation?.onRuntimeClone ? performance.now() : 0;
   const runtime = structuredClone(sourceRuntime) as CpuRuntime;
+  instrumentation?.onRuntimeClone?.(performance.now() - cloneStarted);
   syncCpuContext(runtime, state);
   if (runtime.stoppedReason) return { state, runtime, applied: false };
   if (runtime.appliedStepCount >= runtime.maxAppliedSteps) {
