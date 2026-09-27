@@ -251,6 +251,145 @@ class TacticalPolicyValueNetwork(nn.Module):
         action_rows, action_mask = padded_rows(action_rows_batch, self.feature_spec["actionFeatureWidth"], self.device)
         return self.action_encoder(action_rows), action_mask
 
+    def encode_prepared_state_batch_cached(
+        self,
+        prepared: dict[str, Any],
+        branch_fingerprints: dict[str, bytes],
+        cache: dict[str, tuple[Any, torch.Tensor]],
+    ) -> torch.Tensor:
+        if prepared["global"].shape[0] != 1:
+            raise ValueError("Cached PPO state encoding requires batch size one")
+
+        team_table, team_mask = prepared["masked"]["teams"]
+        unit_table, unit_mask = prepared["masked"]["units"]
+        base_table, base_mask = prepared["masked"]["bases"]
+        construction_table, construction_mask = prepared["masked"]["constructions"]
+        map_table, map_mask = prepared["map"]
+        nonempty = prepared.get("_nonempty")
+        valid_prefix_counts = prepared.get("_validPrefixCount")
+
+        def pooled(key: str, encoder: nn.Module, table: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            if nonempty is not None and nonempty.get(key) is False:
+                return torch.zeros(
+                    (table.shape[0], 64),
+                    dtype=table.dtype,
+                    device=table.device,
+                )
+            valid_count = None if valid_prefix_counts is None else valid_prefix_counts.get(key)
+            if valid_count is not None and valid_count < table.shape[1]:
+                if valid_count <= 0:
+                    return torch.zeros(
+                        (table.shape[0], 64),
+                        dtype=table.dtype,
+                        device=table.device,
+                    )
+                encoded_valid = encoder(table[:, :valid_count, :])
+                trailing = torch.zeros(
+                    (
+                        table.shape[0],
+                        table.shape[1] - valid_count,
+                        encoded_valid.shape[-1],
+                    ),
+                    dtype=encoded_valid.dtype,
+                    device=encoded_valid.device,
+                )
+                encoded = torch.cat((encoded_valid, trailing), dim=1)
+                return batched_masked_mean_pool(encoded, mask)
+            return batched_masked_mean_pool(encoder(table), mask)
+
+        branch_keys = [
+            "global",
+            "teams",
+            "units",
+            "map",
+            "bases",
+            "constructions",
+            "strategicGlobal",
+            *(f"strategic.{name}" for name in STRATEGIC_TABLES),
+        ]
+        missing = [key for key in branch_keys if key not in branch_fingerprints]
+        if missing:
+            raise ValueError(f"Missing PPO state branch fingerprints: {missing}")
+
+        state_fingerprint = tuple(branch_fingerprints[key] for key in branch_keys)
+        cached_state = cache.get("__state__")
+        if cached_state is not None and cached_state[0] == state_fingerprint:
+            return cached_state[1]
+
+        def cached(key: str, operation: Callable[[], torch.Tensor]) -> torch.Tensor:
+            fingerprint = branch_fingerprints[key]
+            existing = cache.get(key)
+            if existing is not None and existing[0] == fingerprint:
+                return existing[1]
+            value = operation()
+            cache[key] = (fingerprint, value)
+            return value
+
+        embeddings = [
+            cached("global", lambda: self.global_encoder(prepared["global"])),
+            cached("teams", lambda: pooled("teams", self.team_encoder, team_table, team_mask)),
+            cached("units", lambda: pooled("units", self.unit_encoder, unit_table, unit_mask)),
+            cached("map", lambda: pooled("map", self.map_encoder, map_table, map_mask)),
+            cached("bases", lambda: pooled("bases", self.base_encoder, base_table, base_mask)),
+            cached(
+                "constructions",
+                lambda: pooled(
+                    "constructions",
+                    self.construction_encoder,
+                    construction_table,
+                    construction_mask,
+                ),
+            ),
+            cached(
+                "strategicGlobal",
+                lambda: self.strategic_global_encoder(prepared["strategicGlobal"]),
+            ),
+        ]
+        for name in STRATEGIC_TABLES:
+            table, mask = prepared["strategic"][name]
+            key = f"strategic.{name}"
+            embeddings.append(
+                cached(
+                    key,
+                    lambda key=key, name=name, table=table, mask=mask: pooled(
+                        key,
+                        self.strategic_encoders[name],
+                        table,
+                        mask,
+                    ),
+                )
+            )
+
+        state_embedding = self.state_encoder(torch.cat(embeddings, dim=1))
+        cache["__state__"] = (state_fingerprint, state_embedding)
+        return state_embedding
+
+    def forward_prepared_batch_cached_state(
+        self,
+        prepared_observations: dict[str, Any],
+        prepared_action_rows: torch.Tensor,
+        action_mask: torch.Tensor,
+        branch_fingerprints: dict[str, bytes],
+        cache: dict[str, tuple[Any, torch.Tensor]],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        state_embeddings = self.encode_prepared_state_batch_cached(
+            prepared_observations,
+            branch_fingerprints,
+            cache,
+        )
+        action_embeddings = self.action_encoder(prepared_action_rows)
+        repeated_states = state_embeddings.unsqueeze(1).expand(
+            -1,
+            action_embeddings.shape[1],
+            -1,
+        )
+        logits = self.score_head(
+            torch.cat((repeated_states, action_embeddings), dim=2)
+        ).squeeze(-1)
+        logits = logits.masked_fill(~action_mask, float("-inf"))
+        values = self.value_head(state_embeddings).squeeze(-1)
+        return logits, values, state_embeddings, action_embeddings, action_mask
+
     def forward_prepared_batch(
         self,
         prepared_observations: dict[str, Any],

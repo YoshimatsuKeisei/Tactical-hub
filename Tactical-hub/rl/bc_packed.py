@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
+import json
 
 import numpy as np
 import torch
@@ -50,6 +52,62 @@ _VARIABLE_ROW_MASKS = {
     "strategicMask.movementIntents", "strategicMask.attackIntents",
     "strategicMask.strategistActionIntents", "strategicMask.teleportIntents",
 }
+
+
+_STATE_BRANCH_TENSORS = {
+    "global": ("global",),
+    "teams": ("teams", "teamMask"),
+    "units": ("units", "unitMask"),
+    "map": ("map", "mapMask"),
+    "bases": ("bases", "baseMask"),
+    "constructions": ("constructions", "constructionMask"),
+    "strategicGlobal": ("strategicGlobal",),
+    "strategic.siegeStates": ("strategic.siegeStates", "strategicMask.siegeStates"),
+    "strategic.kingCampaignStates": ("strategic.kingCampaignStates", "strategicMask.kingCampaignStates"),
+    "strategic.rewardPlacementRequests": ("strategic.rewardPlacementRequests", "strategicMask.rewardPlacementRequests"),
+    "strategic.strategistCooldowns": ("strategic.strategistCooldowns", "strategicMask.strategistCooldowns"),
+    "strategic.teleportCooldowns": ("strategic.teleportCooldowns", "strategicMask.teleportCooldowns"),
+    "strategic.productionIntents": ("strategic.productionIntents", "strategicMask.productionIntents"),
+    "strategic.movementIntents": ("strategic.movementIntents", "strategicMask.movementIntents"),
+    "strategic.attackIntents": ("strategic.attackIntents", "strategicMask.attackIntents"),
+    "strategic.strategistActionIntents": ("strategic.strategistActionIntents", "strategicMask.strategistActionIntents"),
+    "strategic.teleportIntents": ("strategic.teleportIntents", "strategicMask.teleportIntents"),
+}
+
+
+def packed_state_branch_fingerprints(
+    header: dict[str, Any],
+    payload: bytes | bytearray | memoryview,
+) -> dict[str, bytes]:
+    descriptors = {
+        descriptor["name"]: descriptor
+        for descriptor in header["tensors"]
+    }
+    raw = memoryview(payload)
+    fingerprints: dict[str, bytes] = {}
+
+    for branch, tensor_names in _STATE_BRANCH_TENSORS.items():
+        digest = hashlib.sha256()
+        for name in tensor_names:
+            descriptor = descriptors.get(name)
+            if descriptor is None:
+                raise ValueError(f"Missing packed state tensor for fingerprint: {name}")
+            offset = int(descriptor["byteOffset"])
+            length = int(descriptor["byteLength"])
+            end = offset + length
+            if offset < 0 or end > len(raw):
+                raise ValueError(f"Packed state tensor is outside payload: {name}")
+            digest.update(name.encode())
+            digest.update(
+                json.dumps(
+                    descriptor["shape"],
+                    separators=(",", ":"),
+                ).encode()
+            )
+            digest.update(raw[offset:end])
+        fingerprints[branch] = digest.digest()
+
+    return fingerprints
 
 
 def combine_single_sample_packed_views(

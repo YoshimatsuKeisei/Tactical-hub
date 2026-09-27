@@ -42,6 +42,7 @@ class PpoTrainer:
         self.episode_count = 0
         self._accumulation: dict[str, Any] | None = None
         self._act_streams: list[torch.cuda.Stream] = []
+        self._act_state_branch_cache: dict[str, tuple[Any, torch.Tensor]] = {}
 
     def load_initial_model(self, path: str) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -50,6 +51,7 @@ class PpoTrainer:
         if checkpoint.get("featureSpec") != self.feature_spec:
             raise ValueError("PPO initial checkpoint Feature Spec mismatch")
         self.model.load_state_dict(checkpoint.get("modelStateDict"), strict=True)
+        self._act_state_branch_cache.clear()
 
     def act(self, observation: dict[str, Any], actions: list[list[float]]) -> dict[str, float | int]:
         if not actions:
@@ -69,6 +71,7 @@ class PpoTrainer:
     def update(self, samples: list[dict[str, Any]]) -> dict[str, Any]:
         if not samples:
             raise ValueError("PPO update requires at least one sample")
+        self._act_state_branch_cache.clear()
         self.model.train(True)
         actions = [sample["actions"] for sample in samples]
         selected = torch.tensor([int(sample["selectedActionIndex"]) for sample in samples], dtype=torch.long, device=self.device)
@@ -121,6 +124,7 @@ class PpoTrainer:
         profile_stage: Callable[[str, float], None] | None = None,
         fast_guard_mode: bool = False,
         manual_categorical_mode: bool = False,
+        state_branch_fingerprints: dict[str, bytes] | None = None,
     ) -> dict[str, float | int]:
         if prepared_actions.shape[0] != 1:
             raise ValueError("Packed PPO act requires exactly one sample")
@@ -143,14 +147,23 @@ class PpoTrainer:
 
         self.model.eval()
         with torch.no_grad():
-            forward_operation = (
-                (lambda: self._act_forward(prepared_observations, prepared_actions, action_mask))
-                if profile_stage is None
-                else (lambda: self.model.forward_prepared_batch(
-                    prepared_observations, prepared_actions, action_mask,
-                    profile_stage=profile_stage,
-                ))
-            )
+            if state_branch_fingerprints is not None:
+                forward_operation = lambda: self.model.forward_prepared_batch_cached_state(
+                    prepared_observations,
+                    prepared_actions,
+                    action_mask,
+                    state_branch_fingerprints,
+                    self._act_state_branch_cache,
+                )
+            else:
+                forward_operation = (
+                    (lambda: self._act_forward(prepared_observations, prepared_actions, action_mask))
+                    if profile_stage is None
+                    else (lambda: self.model.forward_prepared_batch(
+                        prepared_observations, prepared_actions, action_mask,
+                        profile_stage=profile_stage,
+                    ))
+                )
             logits, values, _, _, returned_mask = timed(
                 "act_model_forward",
                 forward_operation,
@@ -334,6 +347,7 @@ class PpoTrainer:
     def begin_accumulated_update(self, total_samples: int) -> dict[str, int]:
         if self._accumulation is not None:
             raise RuntimeError("A PPO accumulated update is already active")
+        self._act_state_branch_cache.clear()
         if not isinstance(total_samples, int) or isinstance(total_samples, bool) or total_samples <= 0:
             raise ValueError("PPO total sample count must be a positive integer")
         self.model.train(True)
@@ -545,6 +559,7 @@ class PpoTrainer:
                 raise ValueError(f"PPO checkpoint is missing {field}")
         self.model.load_state_dict(checkpoint["modelStateDict"], strict=True)
         self.optimizer.load_state_dict(checkpoint["optimizerStateDict"])
+        self._act_state_branch_cache.clear()
         self.update_count = int(checkpoint.get("updateCount", -1))
         self.episode_count = int(checkpoint.get("episodeCount", -1))
         if self.update_count < 0 or self.episode_count < 0:
