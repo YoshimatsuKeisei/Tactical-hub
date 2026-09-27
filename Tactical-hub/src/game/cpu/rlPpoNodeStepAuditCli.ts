@@ -33,6 +33,7 @@ const gameSeed = positiveInteger("--game-seed", 9);
 const decisions = positiveInteger("--decisions", 10_000);
 const windowSize = positiveInteger("--window-size", 1_000);
 const python = value("--python") ?? "python";
+const inPlacePhases = args.includes("--in-place-phases");
 
 type Metric = {
   count: number;
@@ -90,6 +91,7 @@ const both = (selector: (value: Bucket) => Metric, milliseconds: number) => {
 
 const instrumentation: RlEnvironmentInstrumentation = {
   cpuStep: {
+    rlInPlacePhaseTransitions: inPlacePhases,
     onRuntimeClone(milliseconds) {
       both((entry) => entry.runtimeClone, milliseconds);
     },
@@ -256,6 +258,7 @@ console.log(JSON.stringify({
   gameSeed,
   requestedDecisions: decisions,
   completedDecisions,
+  inPlacePhases,
   wallMs: Number(wallMs.toFixed(3)),
   finalStateHash,
   environmentResult: result,
@@ -264,6 +267,9 @@ console.log(JSON.stringify({
   notes: [
     "The rollout uses the current integrated policy path: grouped H2D + skip-empty + manual categorical.",
     "RL in-place movement is enabled to match the current 50k baseline condition.",
+    inPlacePhases
+      ? "RL-only submit_movement and submit_strategist GameState in-place paths are enabled."
+      : "RL-only submit_movement and submit_strategist GameState in-place paths are disabled.",
     "runtimeClone measures structuredClone(sourceRuntime) inside advanceCpuOneStep.",
     "apply measures engine action application excluding runtime clone, policy callback, and logging.",
     "enumerate measures enumerateRlDecisionsV2 calls inside advanceAutomatic.",

@@ -627,8 +627,9 @@ function resolveCurrentTeamMovement(
   teamId: string,
   rng: () => number,
   applySavedIntents: boolean,
+  inPlaceForRl = false,
 ): GameState {
-  const next = structuredClone(state) as GameState;
+  const next = inPlaceForRl ? state : structuredClone(state) as GameState;
   resolveTeamTeleports(next, teamId);
   resetInactiveSieges(next);
   const defendedBaseIdsAtStart = new Set(next.movementDefendedBaseIdsAtTeamStart ?? getDefendedBaseIds(next));
@@ -750,6 +751,36 @@ export function submitMovement(state: GameState, teamId: string, rng: () => numb
     productionCompletedTeamIdsThisTurn: [...new Set([...state.productionCompletedTeamIdsThisTurn, teamId])],
   };
   return resolveCurrentTeamMovement(skipped, teamId, rng, false);
+}
+
+/**
+ * RL-only hot path. The RL environment owns its GameState exclusively, so the
+ * current-team submission can mutate that owned state instead of cloning the
+ * entire, growing GameState (including logs) before every submission.
+ */
+export function submitMovementInPlaceForRl(
+  state: GameState,
+  teamId: string,
+  rng: () => number = Math.random,
+): GameState {
+  if (!canSubmitMovement(state, teamId)) return state;
+  if (state.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+    state.phase = "reward_placement";
+    state.phaseAfterRewards = "movement_input";
+    state.turnState.phase = "reward_placement";
+    return state;
+  }
+  if (!isTeamProductionPending(state, teamId)) {
+    return resolveCurrentTeamMovement(state, teamId, rng, false, true);
+  }
+  const hasSavedProduction = state.turnState.actionIntents.some(
+    (intent) => intent.teamId === teamId && intent.productionChoices.length > 0,
+  );
+  if (hasSavedProduction) return state;
+  state.productionCompletedTeamIdsThisTurn = [
+    ...new Set([...state.productionCompletedTeamIdsThisTurn, teamId]),
+  ];
+  return resolveCurrentTeamMovement(state, teamId, rng, false, true);
 }
 
 /** Legacy replay-only batched movement semantics. */

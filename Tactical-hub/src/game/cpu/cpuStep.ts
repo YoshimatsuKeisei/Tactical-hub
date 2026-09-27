@@ -1,6 +1,6 @@
 import { resolveBattle, saveAttackIntent } from "../engine/battle";
-import { resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../engine/construction";
-import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, type MovementSemantics } from "../engine/movement";
+import { resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
+import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, submitMovementInPlaceForRl, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
 import { placeRewardUnit } from "../engine/reward";
 import { saveTeleportIntent } from "../engine/teleport";
@@ -23,6 +23,7 @@ export function syncCpuContext(runtime: CpuRuntime, state: GameState) {
 export type CpuStepInstrumentation = {
   movementSemantics?: MovementSemantics;
   rlInPlaceMovement?: boolean;
+  rlInPlacePhaseTransitions?: boolean;
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
   onPolicy?: (milliseconds: number) => void;
@@ -65,6 +66,8 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
   if (!decision) return { state, runtime, applied: false, waitingForHuman: true };
   instrumentation?.onDecision?.(decision);
   const applyStarted = instrumentation?.onApply ? performance.now() : 0;
+  const phaseBefore = state.phase;
+  const turnBefore = state.turnNumber;
   let actionLogMs = 0;
   const measuresApplication = Boolean(instrumentation?.onApply);
   const actionInstrumentation = measuresApplication
@@ -107,7 +110,9 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     case "submit_movement":
       next = instrumentation?.movementSemantics === "legacy_batched"
         ? submitLegacyMovement(state, decision.teamId, injectedRng(runtime))
-        : submitMovement(state, decision.teamId, injectedRng(runtime));
+        : instrumentation?.rlInPlacePhaseTransitions
+          ? submitMovementInPlaceForRl(state, decision.teamId, injectedRng(runtime))
+          : submitMovement(state, decision.teamId, injectedRng(runtime));
       writeLog(decision.teamId, "confirm movement");
       break;
     case "attack":
@@ -129,10 +134,15 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       runtime.processedKeys.push(decision.actorKey);
       writeLog(decision.teamId, decision.intent.action, decision.intent.constructionId ?? decision.intent.tiles?.map((cell) => `${cell.x},${cell.y}`).join("/") ?? decision.intent.strategistUnitId);
       break;
-    case "submit_strategist": next = submitStrategistActions(state, decision.teamId); writeLog(decision.teamId, "confirm strategist actions"); break;
+    case "submit_strategist":
+      next = instrumentation?.rlInPlacePhaseTransitions
+        ? submitStrategistActionsInPlaceForRl(state, decision.teamId)
+        : submitStrategistActions(state, decision.teamId);
+      writeLog(decision.teamId, "confirm strategist actions");
+      break;
     case "resolve_strategists": next = resolveStrategistActions(state, injectedRng(runtime)); writeLog(undefined, "resolve strategist actions"); break;
   }
-  instrumentation?.onApply?.(Math.max(0, performance.now() - applyStarted - actionLogMs), decision, state.phase, next.phase, state.turnNumber, next.turnNumber);
+  instrumentation?.onApply?.(Math.max(0, performance.now() - applyStarted - actionLogMs), decision, phaseBefore, next.phase, turnBefore, next.turnNumber);
   runtime.appliedStepCount += 1;
   return { state: next, runtime, applied: true };
 }

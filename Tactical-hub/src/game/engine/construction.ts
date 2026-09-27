@@ -229,6 +229,32 @@ export function submitStrategistActions(state: GameState, teamId: string) {
   return next;
 }
 
+/**
+ * RL-only hot path. The RL environment owns its state and does not expose this
+ * mutable object to UI callers, so strategist submission can avoid cloning the
+ * entire growing GameState.
+ */
+export function submitStrategistActionsInPlaceForRl(state: GameState, teamId: string) {
+  if (state.phase !== "strategist_action_input" || state.teams.find((team) => team.id === teamId)?.status !== "active") return state;
+  for (const unit of getBuilderUnits(state, teamId)) {
+    if (!state.strategistActionIntents.some((intent) => intent.strategistUnitId === unit.id)) {
+      state.strategistActionIntents.push({ teamId, strategistUnitId: unit.id, action: "pass" });
+    }
+  }
+  state.strategistSubmittedTeamIds = [...new Set([...state.strategistSubmittedTeamIds, teamId])];
+  state.logs.push({
+    id: `log-strategist-submit-${state.logs.length}`,
+    turnNumber: state.turnNumber,
+    type: "construction",
+    message: `${teamId} submitted strategist actions.`,
+    relatedIds: [teamId],
+  });
+  if (state.teams.filter((team) => team.status === "active").every((team) => state.strategistSubmittedTeamIds.includes(team.id))) {
+    state.phase = state.turnState.phase = "strategist_action_resolution";
+  }
+  return state;
+}
+
 function conflictGroups(intents: StrategistActionIntent[]) {
   const conflicts = new Set<string>();
   for (let a = 0; a < intents.length; a++) for (let b = a + 1; b < intents.length; b++) {
