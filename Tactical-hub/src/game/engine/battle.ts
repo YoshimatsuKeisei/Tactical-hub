@@ -13,7 +13,7 @@ import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositi
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
 import { getMovementCandidates } from "./movement";
-import { beginStrategistActionPhase } from "./construction";
+import { beginStrategistActionPhase, beginStrategistActionPhaseInPlaceForRl } from "./construction";
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
@@ -538,11 +538,12 @@ function battleLog(
   logs.push({ message, relatedIds });
 }
 
-export function resolveBattle(
+function resolveBattleInternal(
   state: GameState,
-  rng: () => number = Math.random,
+  rng: () => number,
+  inPlaceForRl: boolean,
 ): GameState {
-  const next = structuredClone(state) as GameState;
+  const next = inPlaceForRl ? state : structuredClone(state) as GameState;
   const neutralIntents: AttackIntent[] = next.units
     .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed" && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "neutral")
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -770,5 +771,23 @@ export function resolveBattle(
     next.phase = "reward_placement";
   } else next.phase = "strategist_action_input";
   next.turnState.phase = next.phase;
-  return next.phase === "strategist_action_input" ? beginStrategistActionPhase(next) : next;
+  if (next.phase !== "strategist_action_input") return next;
+  return inPlaceForRl
+    ? beginStrategistActionPhaseInPlaceForRl(next)
+    : beginStrategistActionPhase(next);
+}
+
+export function resolveBattle(
+  state: GameState,
+  rng: () => number = Math.random,
+): GameState {
+  return resolveBattleInternal(state, rng, false);
+}
+
+/** RL-only owned-state battle resolution without whole-state phase clones. */
+export function resolveBattleInPlaceForRl(
+  state: GameState,
+  rng: () => number = Math.random,
+): GameState {
+  return resolveBattleInternal(state, rng, true);
 }

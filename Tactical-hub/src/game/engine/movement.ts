@@ -70,8 +70,8 @@ function getRotatedActiveMovementOrder(state: GameState, startIndex = state.move
   return [...seats.slice(normalizedStart), ...seats.slice(0, normalizedStart)].filter((teamId) => active.has(teamId));
 }
 
-export function beginMovementPhase(state: GameState): GameState {
-  const next = structuredClone(state) as GameState;
+function beginMovementPhaseInternal(state: GameState, inPlaceForRl: boolean): GameState {
+  const next = inPlaceForRl ? state : structuredClone(state) as GameState;
   next.movementOrderTeamIds = getRotatedActiveMovementOrder(next);
   next.movementCompletedTeamIds = [];
   next.productionCompletedTeamIdsThisTurn = [];
@@ -82,6 +82,15 @@ export function beginMovementPhase(state: GameState): GameState {
   next.ninjaRevealStates = [];
   next.phase = next.turnState.phase = "movement_input";
   return next;
+}
+
+export function beginMovementPhase(state: GameState): GameState {
+  return beginMovementPhaseInternal(state, false);
+}
+
+/** RL-only owned-state phase transition without cloning the entire GameState. */
+export function beginMovementPhaseInPlaceForRl(state: GameState): GameState {
+  return beginMovementPhaseInternal(state, true);
 }
 
 export function getNextMovementTeamId(state: GameState) {

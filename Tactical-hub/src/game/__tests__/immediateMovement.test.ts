@@ -156,6 +156,36 @@ describe("immediate movement semantics", () => {
     expect(fast.getResult()).toEqual(standard.getResult());
   });
 
+  it("keeps RL in-place phase submissions and resolutions state-identical across a long deterministic sequence", () => {
+    const baseline = new RlEnvironmentV2(undefined, true);
+    const phaseFast = new RlEnvironmentV2(undefined, true, {
+      cpuStep: { rlInPlacePhaseTransitions: true },
+    });
+    baseline.reset(9, 4);
+    phaseFast.reset(9, 4);
+
+    for (let index = 0; index < 1000 && !baseline.isTerminal(); index += 1) {
+      expect(phaseFast.getStateHash()).toBe(baseline.getStateHash());
+      const actor = baseline.getCurrentActorTeamId();
+      expect(actor).toBeTruthy();
+      expect(phaseFast.getCurrentActorTeamId()).toBe(actor);
+
+      const baselineActions = baseline.getLegalActionsForEncoding(actor!);
+      const fastActions = phaseFast.getLegalActionsForEncoding(actor!);
+      expect(fastActions.map((action) => action.actionKey)).toEqual(
+        baselineActions.map((action) => action.actionKey),
+      );
+
+      const actionKey = baselineActions[0]?.actionKey;
+      expect(actionKey).toBeTruthy();
+      baseline.stepWithoutObservation(actionKey!);
+      phaseFast.stepWithoutObservation(actionKey!);
+    }
+
+    expect(phaseFast.getStateHash()).toBe(baseline.getStateHash());
+    expect(phaseFast.getResult()).toEqual(baseline.getResult());
+  });
+
   it.each([
     ["v1", () => new RlEnvironment()],
     ["v2", () => new RlEnvironmentV2()],

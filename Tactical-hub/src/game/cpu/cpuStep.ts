@@ -1,5 +1,5 @@
-import { resolveBattle, saveAttackIntent } from "../engine/battle";
-import { resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
+import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent } from "../engine/battle";
+import { resolveStrategistActions, resolveStrategistActionsInPlaceForRl, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
 import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, submitMovementInPlaceForRl, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
 import { placeRewardUnit } from "../engine/reward";
@@ -124,7 +124,9 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     case "resolve_battle": {
       for (const intent of runtime.hiddenAttackIntents) writeLog(intent.teamId, intent.pass ? "attack pass" : "attack", `${intent.attackerUnitId}${intent.target ? ` -> ${intent.target.unitId}` : ""}`);
       next = runtime.hiddenAttackIntents.reduce((current, intent) => saveAttackIntent(current, intent), state);
-      next = resolveBattle(next, injectedRng(runtime));
+      next = instrumentation?.rlInPlacePhaseTransitions
+        ? resolveBattleInPlaceForRl(next, injectedRng(runtime))
+        : resolveBattle(next, injectedRng(runtime));
       writeLog(undefined, "resolve simultaneous battle");
       break;
     }
@@ -140,7 +142,12 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
         : submitStrategistActions(state, decision.teamId);
       writeLog(decision.teamId, "confirm strategist actions");
       break;
-    case "resolve_strategists": next = resolveStrategistActions(state, injectedRng(runtime)); writeLog(undefined, "resolve strategist actions"); break;
+    case "resolve_strategists":
+      next = instrumentation?.rlInPlacePhaseTransitions
+        ? resolveStrategistActionsInPlaceForRl(state, injectedRng(runtime))
+        : resolveStrategistActions(state, injectedRng(runtime));
+      writeLog(undefined, "resolve strategist actions");
+      break;
   }
   instrumentation?.onApply?.(Math.max(0, performance.now() - applyStarted - actionLogMs), decision, phaseBefore, next.phase, turnBefore, next.turnNumber);
   runtime.appliedStepCount += 1;
