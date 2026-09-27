@@ -41,6 +41,7 @@ class PpoTrainer:
         self.update_count = 0
         self.episode_count = 0
         self._accumulation: dict[str, Any] | None = None
+        self._act_streams: list[torch.cuda.Stream] = []
 
     def load_initial_model(self, path: str) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -253,6 +254,81 @@ class PpoTrainer:
             "actionIndices": [int(value) for value in selected.tolist()],
             "logProbabilities": [float(value) for value in log_probabilities.tolist()],
             "values": [float(value) for value in values.tolist()],
+        }
+
+    def act_prepared_stream_batch(
+        self,
+        samples: list[tuple[dict[str, Any], torch.Tensor, torch.Tensor]],
+    ) -> dict[str, list[float] | list[int]]:
+        if self.device.type != "cuda":
+            raise ValueError("Packed PPO stream-batch act requires CUDA")
+        if not samples:
+            raise ValueError("Packed PPO stream-batch act requires samples")
+
+        for prepared_observations, prepared_actions, action_mask in samples:
+            if prepared_actions.shape[0] != 1 or action_mask.shape[0] != 1:
+                raise ValueError("Each PPO stream-batch sample must have batch size one")
+
+        while len(self._act_streams) < len(samples):
+            self._act_streams.append(torch.cuda.Stream(device=self.device))
+
+        self.model.eval()
+        outputs: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        with torch.no_grad():
+            for index, (prepared_observations, prepared_actions, action_mask) in enumerate(samples):
+                stream = self._act_streams[index]
+                with torch.cuda.stream(stream):
+                    logits, values, _, _, returned_mask = self._act_forward(
+                        prepared_observations,
+                        prepared_actions,
+                        action_mask,
+                    )
+                    outputs.append((logits, values, returned_mask))
+
+            # All batch-1 forwards are now queued. Wait once before preserving
+            # the original serial sampling/RNG order below.
+            for stream in self._act_streams[:len(samples)]:
+                stream.synchronize()
+
+            action_indices: list[int] = []
+            log_probabilities: list[float] = []
+            values_out: list[float] = []
+
+            for sample_index, ((_, _, action_mask), (logits, values, returned_mask)) in enumerate(zip(samples, outputs)):
+                if not bool(action_mask[0].any()):
+                    raise ValueError(
+                        f"Packed PPO stream-batch sample {sample_index} has no legal actions"
+                    )
+                if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
+                    raise FloatingPointError(
+                        f"Packed PPO stream-batch sample {sample_index} contains NaN or Inf"
+                    )
+
+                normalized_logits = logits[0] - logits[0].logsumexp(
+                    dim=-1,
+                    keepdim=True,
+                )
+                probabilities = normalized_logits.softmax(dim=-1)
+                selected = torch.multinomial(
+                    probabilities.reshape(-1, probabilities.shape[-1]),
+                    1,
+                    replacement=True,
+                ).T.reshape(())
+                log_probability = normalized_logits.gather(
+                    -1,
+                    selected.long().unsqueeze(-1),
+                ).squeeze(-1)
+
+                # Keep host extraction in serial sample order as an additional
+                # equivalence guard against changing RNG/launch ordering.
+                action_indices.append(int(selected.item()))
+                log_probabilities.append(float(log_probability.item()))
+                values_out.append(float(values[0].item()))
+
+        return {
+            "actionIndices": action_indices,
+            "logProbabilities": log_probabilities,
+            "values": values_out,
         }
 
     def begin_accumulated_update(self, total_samples: int) -> dict[str, int]:

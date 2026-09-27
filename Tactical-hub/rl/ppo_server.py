@@ -327,6 +327,54 @@ def main():
                 send({"type": "retentionStats", "requestId": message["requestId"], **retention_stats()})
             elif kind == "diagnostics":
                 send({"type": "diagnostics", "requestId": message["requestId"], **trainer.diagnostics()})
+            elif kind == "packedActStreamBatch":
+                if packed_prepare_mode != "grouped_h2d_skip_empty_manual_categorical":
+                    raise ValueError(
+                        "packedActStreamBatch requires "
+                        "PPO_PACKED_PREPARE_MODE=grouped_h2d_skip_empty_manual_categorical"
+                    )
+                if trainer.device.type != "cuda":
+                    raise ValueError("packedActStreamBatch requires CUDA")
+                sample_headers = message.get("samples")
+                if not isinstance(sample_headers, list) or not sample_headers:
+                    raise ValueError("packedActStreamBatch requires sample headers")
+                if int(message.get("sampleCount", 0)) != len(sample_headers):
+                    raise ValueError("packedActStreamBatch sampleCount mismatch")
+                payload = read_binary(int(message["byteLength"]))
+                cursor = 0
+                prepared_samples = []
+                for sample_index, sample_header in enumerate(sample_headers):
+                    sample_byte_length = int(sample_header.get("byteLength", -1))
+                    if sample_byte_length < 0 or cursor + sample_byte_length > len(payload):
+                        raise ValueError(
+                            f"packedActStreamBatch invalid byte length for sample {sample_index}"
+                        )
+                    sample_payload = payload[cursor:cursor + sample_byte_length]
+                    cursor += sample_byte_length
+                    header = {
+                        "batchSize": int(sample_header.get("batchSize", 0)),
+                        "tensors": sample_header.get("tensors"),
+                    }
+                    prepared, actions, action_mask, _ = prepare_packed_tensors_grouped_h2d(
+                        header,
+                        sample_payload,
+                        trainer.device,
+                        include_targets=False,
+                        workspace=None,
+                        include_nonempty_metadata=True,
+                    )
+                    prepared_samples.append((prepared, actions, action_mask))
+                if cursor != len(payload):
+                    raise ValueError(
+                        f"packedActStreamBatch payload mismatch: consumed={cursor} total={len(payload)}"
+                    )
+
+                # Preparation uses the default stream. Complete those H2D copies
+                # once, then the trainer overlaps only the independent batch-1
+                # forwards and preserves serial sampling order.
+                torch.cuda.synchronize(trainer.device)
+                actions_result = trainer.act_prepared_stream_batch(prepared_samples)
+                send({"type": "actions", "requestId": message["requestId"], **actions_result})
             elif kind in ("packedAct", "packedActBatch", "packedUpdateChunk"):
                 if profile:
                     prepare_start = time.perf_counter()

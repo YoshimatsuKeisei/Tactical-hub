@@ -178,6 +178,67 @@ export class PythonPpoClient {
     });
   }
 
+  /**
+   * Experimental strict-equivalence bulk path.
+   * Each sample stays as an independent batch-1 packed payload; Python may
+   * overlap only the CUDA forwards, then samples actions in original order.
+   */
+  async actStreamBatch(samples: Array<{ observation: EncodedObservation; legalActions: EncodedLegalActionsV2 }>) {
+    if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
+    if (!samples.length) throw new Error("PPO stream batch cannot be empty");
+    if (!this.process?.stdin.writable) throw new Error("Python PPO process is not running");
+
+    const packed = samples.map(({ observation, legalActions }) =>
+      packPpoActInput(observation, legalActions.actions, this.featureSpec!),
+    );
+    const requestId = this.nextRequestId++;
+    const responsePromise = this.wait();
+    const totalByteLength = packed.reduce((sum, entry) => sum + entry.payload.byteLength, 0);
+
+    this.process.stdin.write(`${JSON.stringify({
+      type: "packedActStreamBatch",
+      requestId,
+      encoding: "packed-v1-stream-batch",
+      byteLength: totalByteLength,
+      sampleCount: packed.length,
+      samples: packed.map((entry) => ({
+        byteLength: entry.payload.byteLength,
+        batchSize: entry.batchSize,
+        tensors: entry.tensors,
+      })),
+    })}\n`);
+    for (const entry of packed) this.process.stdin.write(entry.payload);
+
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (response.type !== "actions" || response.requestId !== requestId) {
+      throw new Error("Unexpected PPO stream-batch action response");
+    }
+    if (
+      response.actionIndices.length !== samples.length
+      || response.logProbabilities.length !== samples.length
+      || response.values.length !== samples.length
+    ) throw new Error("PPO returned a stream-action batch with the wrong length");
+
+    return samples.map((sample, index) => {
+      const actionIndex = response.actionIndices[index];
+      const logProbability = response.logProbabilities[index];
+      const value = response.values[index];
+      if (!Number.isInteger(actionIndex) || actionIndex < 0 || actionIndex >= sample.legalActions.actionKeys.length) {
+        throw new Error("PPO returned an illegal stream-batched action index");
+      }
+      if (![logProbability, value].every(Number.isFinite)) {
+        throw new Error("PPO returned NaN or Inf in stream-batched action output");
+      }
+      return {
+        actionIndex,
+        logProbability,
+        value,
+        actionKey: sample.legalActions.actionKeys[actionIndex],
+      };
+    });
+  }
+
   async beginUpdate(totalSamples: number) {
     if (!Number.isInteger(totalSamples) || totalSamples <= 0) throw new Error("PPO totalSamples must be a positive integer");
     const requestId = this.nextRequestId++;
