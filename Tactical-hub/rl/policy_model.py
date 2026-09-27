@@ -193,18 +193,34 @@ class TacticalPolicyValueNetwork(nn.Module):
         base_table, base_mask = prepared["masked"]["bases"]
         construction_table, construction_mask = prepared["masked"]["constructions"]
         map_table, map_mask = prepared["map"]
+        nonempty = prepared.get("_nonempty")
+
+        def pooled(key: str, encoder: nn.Module, table: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            if nonempty is not None and nonempty.get(key) is False:
+                return torch.zeros(
+                    (table.shape[0], 64),
+                    dtype=table.dtype,
+                    device=table.device,
+                )
+            return batched_masked_mean_pool(encoder(table), mask)
+
         embeddings = [
             self.global_encoder(prepared["global"]),
-            batched_masked_mean_pool(self.team_encoder(team_table), team_mask),
-            batched_masked_mean_pool(self.unit_encoder(unit_table), unit_mask),
-            batched_masked_mean_pool(self.map_encoder(map_table), map_mask),
-            batched_masked_mean_pool(self.base_encoder(base_table), base_mask),
-            batched_masked_mean_pool(self.construction_encoder(construction_table), construction_mask),
+            pooled("teams", self.team_encoder, team_table, team_mask),
+            pooled("units", self.unit_encoder, unit_table, unit_mask),
+            pooled("map", self.map_encoder, map_table, map_mask),
+            pooled("bases", self.base_encoder, base_table, base_mask),
+            pooled("constructions", self.construction_encoder, construction_table, construction_mask),
             self.strategic_global_encoder(prepared["strategicGlobal"]),
         ]
         for name in STRATEGIC_TABLES:
             table, mask = prepared["strategic"][name]
-            embeddings.append(batched_masked_mean_pool(self.strategic_encoders[name](table), mask))
+            embeddings.append(pooled(
+                f"strategic.{name}",
+                self.strategic_encoders[name],
+                table,
+                mask,
+            ))
         return self.state_encoder(torch.cat(embeddings, dim=1))
 
     def encode_actions_batch(

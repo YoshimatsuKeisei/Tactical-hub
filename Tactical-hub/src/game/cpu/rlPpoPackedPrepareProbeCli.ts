@@ -26,7 +26,7 @@ const warmup = positiveInteger("--warmup", 50);
 const trainerSeed = positiveInteger("--trainer-seed", 7);
 const gameSeed = positiveInteger("--game-seed", 9);
 const candidateMode = value("--candidate-mode") ?? "grouped_h2d";
-if (!["grouped_h2d", "grouped_h2d_persistent"].includes(candidateMode)) {
+if (!["grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty"].includes(candidateMode)) {
   throw new Error(`Unsupported --candidate-mode: ${candidateMode}`);
 }
 if (warmup >= decisions) throw new Error("--warmup must be smaller than --decisions");
@@ -72,7 +72,8 @@ const summarize = (values: number[]) => {
 };
 
 const python = value("--python") ?? "python";
-const makeClient = (mode: "default" | "grouped_h2d" | "grouped_h2d_persistent") => new PythonPpoClient({
+type CandidateMode = "grouped_h2d" | "grouped_h2d_persistent" | "grouped_h2d_skip_empty";
+const makeClient = (mode: "default" | CandidateMode) => new PythonPpoClient({
   command: python,
   cwd: process.cwd(),
   device: "cuda",
@@ -156,7 +157,7 @@ try {
   await oracle.close();
 }
 const finalStateHash = environment.getStateHash();
-const grouped = makeClient(candidateMode as "grouped_h2d" | "grouped_h2d_persistent");
+const grouped = makeClient(candidateMode as CandidateMode);
 const groupedStartupStarted = performance.now();
 const groupedReady = await grouped.start({
   seed: trainerSeed,

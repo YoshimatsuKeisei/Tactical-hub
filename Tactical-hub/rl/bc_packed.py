@@ -189,6 +189,7 @@ def prepare_packed_tensors_grouped_h2d(
     *,
     include_targets: bool = True,
     workspace: PackedH2dWorkspace | None = None,
+    include_nonempty_metadata: bool = False,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
@@ -271,6 +272,27 @@ def prepare_packed_tensors_grouped_h2d(
             for name in strategic_names
         },
     }
+    if include_nonempty_metadata:
+        def mask_has_any(name: str) -> bool:
+            descriptor = by_name[name]
+            return bool(np.frombuffer(
+                payload,
+                dtype=_DTYPES["uint8"],
+                count=int(descriptor["byteLength"]),
+                offset=int(descriptor["byteOffset"]),
+            ).any())
+
+        prepared["_nonempty"] = {
+            "teams": mask_has_any("teamMask"),
+            "units": mask_has_any("unitMask"),
+            "bases": mask_has_any("baseMask"),
+            "constructions": mask_has_any("constructionMask"),
+            "map": mask_has_any("mapMask"),
+            **{
+                f"strategic.{name}": mask_has_any(f"strategicMask.{name}")
+                for name in strategic_names
+            },
+        }
     targets = (
         view("targets", targets_flat, int_start, int_itemsize)
         if include_targets and targets_flat is not None
