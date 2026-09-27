@@ -191,6 +191,7 @@ def prepare_packed_tensors_grouped_h2d(
     workspace: PackedH2dWorkspace | None = None,
     include_nonempty_metadata: bool = False,
     include_valid_prefix_metadata: bool = False,
+    validate_action_mask_cpu: bool = False,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
@@ -319,6 +320,17 @@ def prepare_packed_tensors_grouped_h2d(
                 key: valid_prefix_count(mask_name)
                 for key, mask_name in table_masks.items()
             }
+    if validate_action_mask_cpu:
+        descriptor = by_name["actionMask"]
+        action_mask_cpu = np.frombuffer(
+            payload,
+            dtype=_DTYPES["uint8"],
+            count=int(descriptor["byteLength"]),
+            offset=int(descriptor["byteOffset"]),
+        )
+        if not bool(action_mask_cpu.any()):
+            raise ValueError("Packed PPO act requires legal actions")
+
     targets = (
         view("targets", targets_flat, int_start, int_itemsize)
         if include_targets and targets_flat is not None

@@ -118,9 +118,12 @@ class PpoTrainer:
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
         profile_stage: Callable[[str, float], None] | None = None,
+        fast_guard_mode: bool = False,
     ) -> dict[str, float | int]:
-        if prepared_actions.shape[0] != 1 or not bool(action_mask[0].any()):
-            raise ValueError("Packed PPO act requires exactly one sample with legal actions")
+        if prepared_actions.shape[0] != 1:
+            raise ValueError("Packed PPO act requires exactly one sample")
+        if not fast_guard_mode and not bool(action_mask[0].any()):
+            raise ValueError("Packed PPO act requires legal actions")
 
         def timed(stage: str, operation: Callable[[], Any]) -> Any:
             if profile_stage is None:
@@ -151,11 +154,19 @@ class PpoTrainer:
                 forward_operation,
             )
 
-            def validate_outputs() -> None:
-                if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
-                    raise FloatingPointError("Packed PPO action calculation contains NaN or Inf")
+            finite_flag = None
+            if fast_guard_mode:
+                finite_flag = torch.logical_and(
+                    torch.isfinite(logits[returned_mask]).all(),
+                    torch.isfinite(values).all(),
+                )
+            else:
+                def validate_outputs() -> None:
+                    if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
+                        raise FloatingPointError("Packed PPO action calculation contains NaN or Inf")
 
-            timed("act_finite_checks", validate_outputs)
+                timed("act_finite_checks", validate_outputs)
+
             distribution = timed(
                 "act_distribution_init",
                 lambda: torch.distributions.Categorical(logits=logits[0]),
@@ -164,6 +175,25 @@ class PpoTrainer:
             log_probability = timed(
                 "act_log_probability", lambda: distribution.log_prob(selected)
             )
+
+        if fast_guard_mode:
+            host_values = timed(
+                "act_host_scalars",
+                lambda: torch.stack((
+                    selected.to(dtype=torch.float32),
+                    log_probability,
+                    values[0],
+                    finite_flag.to(dtype=torch.float32),
+                )).tolist(),
+            )
+            if not bool(host_values[3]):
+                raise FloatingPointError("Packed PPO action calculation contains NaN or Inf")
+            return {
+                "actionIndex": int(host_values[0]),
+                "logProbability": float(host_values[1]),
+                "value": float(host_values[2]),
+            }
+
         return timed("act_host_scalars", lambda: {
             "actionIndex": int(selected.item()),
             "logProbability": float(log_probability.item()),
