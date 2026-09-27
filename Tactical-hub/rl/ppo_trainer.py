@@ -119,6 +119,7 @@ class PpoTrainer:
         action_mask: torch.Tensor,
         profile_stage: Callable[[str, float], None] | None = None,
         fast_guard_mode: bool = False,
+        manual_categorical_mode: bool = False,
     ) -> dict[str, float | int]:
         if prepared_actions.shape[0] != 1:
             raise ValueError("Packed PPO act requires exactly one sample")
@@ -167,14 +168,39 @@ class PpoTrainer:
 
                 timed("act_finite_checks", validate_outputs)
 
-            distribution = timed(
-                "act_distribution_init",
-                lambda: torch.distributions.Categorical(logits=logits[0]),
-            )
-            selected = timed("act_sampling", distribution.sample)
-            log_probability = timed(
-                "act_log_probability", lambda: distribution.log_prob(selected)
-            )
+            if manual_categorical_mode:
+                normalized_logits = timed(
+                    "act_distribution_init",
+                    lambda: logits[0] - logits[0].logsumexp(dim=-1, keepdim=True),
+                )
+                probabilities = normalized_logits.softmax(dim=-1)
+
+                def sample_manual() -> torch.Tensor:
+                    samples_2d = torch.multinomial(
+                        probabilities.reshape(-1, probabilities.shape[-1]),
+                        1,
+                        replacement=True,
+                    ).T
+                    return samples_2d.reshape(())
+
+                selected = timed("act_sampling", sample_manual)
+
+                def log_prob_manual() -> torch.Tensor:
+                    return normalized_logits.gather(
+                        -1,
+                        selected.long().unsqueeze(-1),
+                    ).squeeze(-1)
+
+                log_probability = timed("act_log_probability", log_prob_manual)
+            else:
+                distribution = timed(
+                    "act_distribution_init",
+                    lambda: torch.distributions.Categorical(logits=logits[0]),
+                )
+                selected = timed("act_sampling", distribution.sample)
+                log_probability = timed(
+                    "act_log_probability", lambda: distribution.log_prob(selected)
+                )
 
         if fast_guard_mode:
             host_values = timed(

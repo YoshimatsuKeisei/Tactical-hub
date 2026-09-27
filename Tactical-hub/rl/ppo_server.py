@@ -34,7 +34,7 @@ def main():
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
-    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards"):
+    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     packed_h2d_workspace = None
     timings = {}
@@ -332,14 +332,14 @@ def main():
                     prepare_start = time.perf_counter()
                 payload = read_binary(int(message["byteLength"]))
                 views = None
-                if kind == "packedAct" and packed_prepare_mode in ("grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards"):
+                if kind == "packedAct" and packed_prepare_mode in ("grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical"):
                     prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
                         message,
                         payload,
                         trainer.device,
                         include_targets=False,
                         workspace=packed_h2d_workspace,
-                        include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards"),
+                        include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
                     )
@@ -363,6 +363,7 @@ def main():
                         prepared, actions, action_mask,
                         profile_stage=record if profile else None,
                         fast_guard_mode=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
+                        manual_categorical_mode=packed_prepare_mode == "grouped_h2d_skip_empty_manual_categorical",
                     )
                     if profile:
                         sync_device()
