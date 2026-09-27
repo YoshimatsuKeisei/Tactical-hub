@@ -194,6 +194,7 @@ class TacticalPolicyValueNetwork(nn.Module):
         construction_table, construction_mask = prepared["masked"]["constructions"]
         map_table, map_mask = prepared["map"]
         nonempty = prepared.get("_nonempty")
+        valid_prefix_counts = prepared.get("_validPrefixCount")
 
         def pooled(key: str, encoder: nn.Module, table: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
             if nonempty is not None and nonempty.get(key) is False:
@@ -202,6 +203,26 @@ class TacticalPolicyValueNetwork(nn.Module):
                     dtype=table.dtype,
                     device=table.device,
                 )
+            valid_count = None if valid_prefix_counts is None else valid_prefix_counts.get(key)
+            if valid_count is not None and valid_count < table.shape[1]:
+                if valid_count <= 0:
+                    return torch.zeros(
+                        (table.shape[0], 64),
+                        dtype=table.dtype,
+                        device=table.device,
+                    )
+                encoded_valid = encoder(table[:, :valid_count, :])
+                trailing = torch.zeros(
+                    (
+                        table.shape[0],
+                        table.shape[1] - valid_count,
+                        encoded_valid.shape[-1],
+                    ),
+                    dtype=encoded_valid.dtype,
+                    device=encoded_valid.device,
+                )
+                encoded = torch.cat((encoded_valid, trailing), dim=1)
+                return batched_masked_mean_pool(encoded, mask)
             return batched_masked_mean_pool(encoder(table), mask)
 
         embeddings = [

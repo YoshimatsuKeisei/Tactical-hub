@@ -26,7 +26,7 @@ const warmup = positiveInteger("--warmup", 50);
 const trainerSeed = positiveInteger("--trainer-seed", 7);
 const gameSeed = positiveInteger("--game-seed", 9);
 const candidateMode = value("--candidate-mode") ?? "grouped_h2d";
-if (!["grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty"].includes(candidateMode)) {
+if (!["grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix"].includes(candidateMode)) {
   throw new Error(`Unsupported --candidate-mode: ${candidateMode}`);
 }
 if (warmup >= decisions) throw new Error("--warmup must be smaller than --decisions");
@@ -72,7 +72,7 @@ const summarize = (values: number[]) => {
 };
 
 const python = value("--python") ?? "python";
-type CandidateMode = "grouped_h2d" | "grouped_h2d_persistent" | "grouped_h2d_skip_empty";
+type CandidateMode = "grouped_h2d" | "grouped_h2d_persistent" | "grouped_h2d_skip_empty" | "grouped_h2d_valid_prefix";
 const makeClient = (mode: "default" | CandidateMode) => new PythonPpoClient({
   command: python,
   cwd: process.cwd(),
