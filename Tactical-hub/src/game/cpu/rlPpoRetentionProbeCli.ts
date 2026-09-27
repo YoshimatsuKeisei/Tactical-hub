@@ -60,17 +60,13 @@ const sha256 = (value: Uint8Array) => createHash("sha256").update(value).digest(
 const auditPackedBase = (base: PackedBcBatch) => ({
   batchSize: base.batchSize,
   rawBytes: base.payload.byteLength,
-  payloadSha256: sha256(base.payload),
-  tensors: base.tensors.map((descriptor) => ({
+  rawSha256: sha256(base.payload),
+  tensorSignature: sha256(Buffer.from(JSON.stringify(base.tensors.map((descriptor) => ({
     name: descriptor.name,
     dtype: descriptor.dtype,
     shape: descriptor.shape,
     byteLength: descriptor.byteLength,
-    sha256: sha256(base.payload.subarray(
-      descriptor.byteOffset,
-      descriptor.byteOffset + descriptor.byteLength,
-    )),
-  })),
+  }))))),
 });
 
 const auditScalars = (samples: PpoUpdateScalarSample[]) => {
@@ -110,24 +106,31 @@ class AuditedPpoClient extends PythonPpoClient {
     return super.accumulatePacked(samples);
   }
 
-  async retainPackedChunk(
-    retentionId: string,
-    base: PackedBcBatch,
-    options: { corruptCompressedByteForTest?: boolean } = {},
-  ) {
-    this.featureAudits.push(auditPackedBase(base));
-    return super.retainPackedChunk(retentionId, base, options);
-  }
-
-  async accumulateRetained(retentionId: string, scalars: PpoUpdateScalarSample[]) {
+  async accumulateRetained(retentionIds: string | string[], scalars: PpoUpdateScalarSample[]) {
     this.scalarAudits.push(auditScalars(scalars));
-    return super.accumulateRetained(retentionId, scalars);
+    const response = await super.accumulateRetained(retentionIds, scalars);
+    if (!response.featureAudit) {
+      throw new Error("Retention feature audit was not returned");
+    }
+    this.featureAudits.push(response.featureAudit);
+    return response;
   }
 }
 
-const makeClient = (audit = false) => audit
-  ? new AuditedPpoClient(clientOptions)
-  : new PythonPpoClient(clientOptions);
+const makeClient = (audit = false) => {
+  const options = audit
+    ? {
+      ...clientOptions,
+      env: {
+        ...clientOptions.env,
+        PPO_RETENTION_EQUIVALENCE: "1",
+      },
+    }
+    : clientOptions;
+  return audit
+    ? new AuditedPpoClient(options)
+    : new PythonPpoClient(options);
+};
 
 const comparableSummary = (result: Awaited<ReturnType<typeof runPpoSelfPlaySmoke>>) => {
   const episode = result.adjudicated[0] ?? result.completed[0];

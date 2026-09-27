@@ -33,6 +33,103 @@ def decode_packed_views(header: dict[str, Any], payload: bytearray) -> dict[str,
     return views
 
 
+_VARIABLE_ROW_TENSORS = {
+    "teams", "units", "bases", "constructions", "map", "actions",
+    "strategic.siegeStates", "strategic.kingCampaignStates",
+    "strategic.rewardPlacementRequests", "strategic.strategistCooldowns",
+    "strategic.teleportCooldowns", "strategic.productionIntents",
+    "strategic.movementIntents", "strategic.attackIntents",
+    "strategic.strategistActionIntents", "strategic.teleportIntents",
+}
+
+_VARIABLE_ROW_MASKS = {
+    "teamMask", "unitMask", "baseMask", "constructionMask", "mapMask", "actionMask",
+    "strategicMask.siegeStates", "strategicMask.kingCampaignStates",
+    "strategicMask.rewardPlacementRequests", "strategicMask.strategistCooldowns",
+    "strategicMask.teleportCooldowns", "strategicMask.productionIntents",
+    "strategicMask.movementIntents", "strategicMask.attackIntents",
+    "strategicMask.strategistActionIntents", "strategicMask.teleportIntents",
+}
+
+
+def combine_single_sample_packed_views(
+    records: list[dict[str, np.ndarray]],
+    selected_action_indices: list[int],
+) -> dict[str, np.ndarray]:
+    if not records or len(records) != len(selected_action_indices):
+        raise ValueError("Retained PPO records and selected-action indices must be non-empty and aligned")
+    names = list(records[0].keys())
+    if any(list(record.keys()) != names for record in records):
+        raise ValueError("Retained PPO tensor names/order mismatch")
+    batch_size = len(records)
+    combined: dict[str, np.ndarray] = {}
+    for name in names:
+        if name == "targets":
+            continue
+        arrays = [record[name] for record in records]
+        if any(array.shape[0] != 1 for array in arrays):
+            raise ValueError(f"Retained PPO tensor is not a single-sample batch: {name}")
+        if name in _VARIABLE_ROW_TENSORS:
+            if any(array.ndim != 3 for array in arrays):
+                raise ValueError(f"Retained PPO row tensor rank mismatch: {name}")
+            width = arrays[0].shape[2]
+            if any(array.shape[2] != width for array in arrays):
+                raise ValueError(f"Retained PPO row tensor width mismatch: {name}")
+            max_rows = max(array.shape[1] for array in arrays)
+            output = np.zeros((batch_size, max_rows, width), dtype=arrays[0].dtype)
+            for index, array in enumerate(arrays):
+                output[index, : array.shape[1], :] = array[0]
+            combined[name] = output
+        elif name in _VARIABLE_ROW_MASKS:
+            if any(array.ndim != 2 for array in arrays):
+                raise ValueError(f"Retained PPO mask tensor rank mismatch: {name}")
+            max_rows = max(array.shape[1] for array in arrays)
+            output = np.zeros((batch_size, max_rows), dtype=arrays[0].dtype)
+            for index, array in enumerate(arrays):
+                output[index, : array.shape[1]] = array[0]
+            combined[name] = output
+        else:
+            shapes = [array.shape[1:] for array in arrays]
+            if any(shape != shapes[0] for shape in shapes):
+                raise ValueError(f"Retained PPO fixed tensor shape mismatch: {name}")
+            combined[name] = np.concatenate(arrays, axis=0)
+    combined["targets"] = np.asarray(selected_action_indices, dtype=np.dtype("<i4"))
+    return combined
+
+
+def packed_views_audit(
+    views: dict[str, np.ndarray],
+    template_descriptors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    import hashlib
+    import json
+
+    digest = hashlib.sha256()
+    descriptors: list[dict[str, Any]] = []
+    raw_bytes = 0
+    for template in template_descriptors:
+        name = template["name"]
+        array = np.ascontiguousarray(views[name])
+        payload = array.tobytes(order="C")
+        digest.update(payload)
+        descriptors.append({
+            "name": name,
+            "dtype": template["dtype"],
+            "shape": list(array.shape),
+            "byteLength": len(payload),
+        })
+        raw_bytes += len(payload)
+    signature = hashlib.sha256(
+        json.dumps(descriptors, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "batchSize": int(views["targets"].shape[0]),
+        "rawBytes": raw_bytes,
+        "rawSha256": digest.hexdigest(),
+        "tensorSignature": signature,
+    }
+
+
 def prepare_packed_tensors(
     views: dict[str, np.ndarray], device: torch.device
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:

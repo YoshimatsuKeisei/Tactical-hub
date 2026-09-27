@@ -14,18 +14,35 @@ const step = (teamId: string, value = 0): PpoTrajectoryStep => ({
 });
 
 function fakeClient() {
-  const retained = new Map<string, PackedBcBatch>();
+  const retained = new Map<string, { batchSize: number; rawBytes: number; compressedBytes: number }>();
   let storedChunks = 0;
   let storedSamples = 0;
   let rawBytes = 0;
   let compressedBytes = 0;
   let peakRetainedBytes = 0;
   let currentRetainedBytes = 0;
+  const storeRetained = (retentionId: string, batchSize: number, raw: number, compressed: number) => {
+    if (retained.has(retentionId)) throw new Error("duplicate retention id");
+    retained.set(retentionId, { batchSize, rawBytes: raw, compressedBytes: compressed });
+    storedChunks += batchSize;
+    storedSamples += batchSize;
+    rawBytes += raw;
+    compressedBytes += compressed;
+    currentRetainedBytes += compressed;
+    peakRetainedBytes = Math.max(peakRetainedBytes, currentRetainedBytes);
+  };
   return {
     start: vi.fn(async () => ({ type: "ready", selectedDevice: "cpu", updateCount: 0, episodeCount: 0 })),
-    act: vi.fn(async (_observation: EncodedObservation, actions: EncodedLegalActionsV2) => ({
-      type: "action", requestId: 1, actionIndex: 0, actionKey: actions.actionKeys[0], logProbability: -0.5, value: 0.1,
-    })),
+    act: vi.fn(async (
+      _observation: EncodedObservation,
+      actions: EncodedLegalActionsV2,
+      options?: { retentionId?: string },
+    ) => {
+      if (options?.retentionId) storeRetained(options.retentionId, 1, 160, 10);
+      return {
+        type: "action", requestId: 1, actionIndex: 0, actionKey: actions.actionKeys[0], logProbability: -0.5, value: 0.1,
+      };
+    }),
     beginUpdate: vi.fn(async (totalSamples: number) => ({ totalSamples })),
     accumulatePacked: vi.fn(async (samples: PpoEncodedSample[]) => {
       expect(samples.every((sample) => Number.isFinite(sample.advantage) && Number.isFinite(sample.return))).toBe(true);
@@ -37,15 +54,8 @@ function fakeClient() {
       return { acceptedSamples: base.batchSize };
     }),
     retainPackedChunk: vi.fn(async (retentionId: string, base: PackedBcBatch) => {
-      if (retained.has(retentionId)) throw new Error("duplicate retention id");
-      retained.set(retentionId, base);
       const compressed = Math.max(1, Math.floor(base.payload.byteLength / 16));
-      storedChunks += 1;
-      storedSamples += base.batchSize;
-      rawBytes += base.payload.byteLength;
-      compressedBytes += compressed;
-      currentRetainedBytes += compressed;
-      peakRetainedBytes = Math.max(peakRetainedBytes, currentRetainedBytes);
+      storeRetained(retentionId, base.batchSize, base.payload.byteLength, compressed);
       return {
         retentionId,
         batchSize: base.batchSize,
@@ -55,14 +65,17 @@ function fakeClient() {
         tensorSignature: "fake-tensors",
       };
     }),
-    accumulateRetained: vi.fn(async (retentionId: string, scalars: PpoUpdateScalarSample[]) => {
-      const base = retained.get(retentionId);
-      if (!base) throw new Error("unknown retention id");
-      expect(base.batchSize).toBe(scalars.length);
+    accumulateRetained: vi.fn(async (retentionIds: string | string[], scalars: PpoUpdateScalarSample[]) => {
+      const ids = Array.isArray(retentionIds) ? retentionIds : [retentionIds];
+      expect(ids).toHaveLength(scalars.length);
       expect(scalars.every((sample) => Number.isFinite(sample.advantage) && Number.isFinite(sample.return))).toBe(true);
-      retained.delete(retentionId);
-      currentRetainedBytes -= Math.max(1, Math.floor(base.payload.byteLength / 16));
-      return { acceptedSamples: base.batchSize };
+      for (const retentionId of ids) {
+        const record = retained.get(retentionId);
+        if (!record) throw new Error("unknown retention id");
+        retained.delete(retentionId);
+        currentRetainedBytes -= record.compressedBytes;
+      }
+      return { acceptedSamples: scalars.length };
     }),
     discardRetained: vi.fn(async (retentionIds: string[]) => {
       let discardedCount = 0;
@@ -70,7 +83,7 @@ function fakeClient() {
         const base = retained.get(retentionId);
         if (!base) continue;
         retained.delete(retentionId);
-        currentRetainedBytes -= Math.max(1, Math.floor(base.payload.byteLength / 16));
+        currentRetainedBytes -= base.compressedBytes;
         discardedCount += 1;
       }
       return { discardedCount };
@@ -166,7 +179,7 @@ describe("Phase 12B PPO self-play", () => {
     expect(result.trajectorySpoolStats!.fileBytes).toBeGreaterThan(0);
   });
 
-  it("retains compressed rollout chunks in the PPO process and updates without replay regeneration", async () => {
+  it("retains packed act payloads in the PPO process and updates without replay regeneration", async () => {
     const client = fakeClient();
     vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const result = await runPpoSelfPlaySmoke({
@@ -181,11 +194,12 @@ describe("Phase 12B PPO self-play", () => {
     expect(result.replayedSamples).toBe(8);
     expect(client.accumulatePacked).not.toHaveBeenCalled();
     expect(client.accumulatePrepacked).not.toHaveBeenCalled();
-    expect(client.retainPackedChunk).toHaveBeenCalledTimes(3);
+    expect(client.retainPackedChunk).not.toHaveBeenCalled();
+    expect(client.act.mock.calls.every(([, , options]) => Boolean(options?.retentionId))).toBe(true);
     expect(client.accumulateRetained).toHaveBeenCalledTimes(3);
     expect(client.discardRetained).not.toHaveBeenCalled();
     expect(result.trajectoryRetentionStats).toMatchObject({
-      storedChunks: 3,
+      storedChunks: 8,
       storedSamples: 8,
       currentChunks: 0,
       currentRetainedBytes: 0,
@@ -208,7 +222,8 @@ describe("Phase 12B PPO self-play", () => {
       retainTrajectory: true,
       client: client as unknown as PpoClientLike,
     })).rejects.toThrow("no learnable trajectory");
-    expect(client.retainPackedChunk).toHaveBeenCalledOnce();
+    expect(client.retainPackedChunk).not.toHaveBeenCalled();
+    expect(client.act.mock.calls[0]?.[2]?.retentionId).toBeTruthy();
     expect(client.discardRetained).toHaveBeenCalledOnce();
     expect(client.beginUpdate).not.toHaveBeenCalled();
     expect(client.accumulateRetained).not.toHaveBeenCalled();

@@ -39,8 +39,11 @@ export type PpoRetentionChunkStats = {
 
 export type PpoRetentionStats = {
   currentChunks: number;
+  pendingChunks?: number;
   currentRetainedBytes: number;
   peakRetainedBytes: number;
+  pendingRawBytes?: number;
+  peakPendingRawBytes?: number;
   storedChunks: number;
   storedSamples: number;
   rawBytes: number;
@@ -52,10 +55,10 @@ type Response =
   | { type: "action"; requestId: number; actionIndex: number; logProbability: number; value: number }
   | { type: "actions"; requestId: number; actionIndices: number[]; logProbabilities: number[]; values: number[] }
   | { type: "updateBegun"; requestId: number; totalSamples: number }
-  | { type: "updateChunkAccepted"; requestId: number; acceptedSamples: number; accumulatedSamples: number }
+  | { type: "updateChunkAccepted"; requestId: number; acceptedSamples: number; accumulatedSamples: number; featureAudit?: { batchSize: number; rawBytes: number; rawSha256: string; tensorSignature: string } }
   | { type: "retainedChunkStored"; requestId: number; retentionId: string; batchSize: number; rawBytes: number; compressedBytes: number; rawSha256: string }
   | { type: "retentionDiscarded"; requestId: number; discardedCount: number }
-  | { type: "retentionStats"; requestId: number; currentChunks: number; currentRetainedBytes: number; peakRetainedBytes: number; storedChunks: number; storedSamples: number; rawBytes: number; compressedBytes: number }
+  | { type: "retentionStats"; requestId: number; currentChunks: number; pendingChunks?: number; currentRetainedBytes: number; peakRetainedBytes: number; pendingRawBytes?: number; peakPendingRawBytes?: number; storedChunks: number; storedSamples: number; rawBytes: number; compressedBytes: number }
   | { type: "diagnostics"; requestId: number; parameterHash: string; optimizerHash: string; rngHash: string; gradientHash: string }
   | { type: "updateResult"; requestId: number; sampleCount: number; loss: number; policyLoss: number; valueLoss: number; entropy: number; gradientNorm: number; policyParametersChanged: boolean; valueParametersChanged: boolean; updateCount: number; episodeCount: number; diagnostics?: { gradientHash: string; parameterHash: string; optimizerHash: string; rngHash: string } }
   | { type: "saved"; requestId: number; path: string; updateCount: number; episodeCount: number }
@@ -118,12 +121,16 @@ export class PythonPpoClient {
     return response;
   }
 
-  async act(observation: EncodedObservation, legalActions: EncodedLegalActionsV2) {
+  async act(
+    observation: EncodedObservation,
+    legalActions: EncodedLegalActionsV2,
+    options: { retentionId?: string } = {},
+  ) {
     if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
     const requestId = this.nextRequestId++;
     const responsePromise = this.wait();
     this.sendPreparedPacked(
-      { type: "packedAct", requestId },
+      { type: "packedAct", requestId, ...(options.retentionId ? { retentionId: options.retentionId } : {}) },
       packPpoActInput(observation, legalActions.actions, this.featureSpec),
     );
     const response = await responsePromise;
@@ -260,7 +267,7 @@ export class PythonPpoClient {
   }
 
   async accumulateRetained(
-    retentionId: string,
+    retentionIds: string | string[],
     scalars: PpoUpdateScalarSample[],
   ) {
     if (!this.process?.stdin.writable) throw new Error("Python PPO process is not running");
@@ -268,7 +275,9 @@ export class PythonPpoClient {
     if (!scalars.every((sample) => [sample.oldLogProbability, sample.advantage, sample.return].every(Number.isFinite))) {
       throw new Error("PPO retained scalars contain NaN or Inf");
     }
+    const ids = Array.isArray(retentionIds) ? retentionIds : [retentionIds];
     const batchSize = scalars.length;
+    if (ids.length !== batchSize) throw new Error("PPO retained IDs must match scalar batch size");
     const old = Float32Array.from(scalars.map((sample) => sample.oldLogProbability));
     const advantages = Float32Array.from(scalars.map((sample) => sample.advantage));
     const returns = Float32Array.from(scalars.map((sample) => sample.return));
@@ -282,7 +291,7 @@ export class PythonPpoClient {
     this.process.stdin.write(`${JSON.stringify({
       type: "retainedUpdateChunk",
       requestId,
-      retentionId,
+      retentionIds: ids,
       encoding: "ppo-retained-scalars-v1",
       byteLength: payload.byteLength,
       batchSize,

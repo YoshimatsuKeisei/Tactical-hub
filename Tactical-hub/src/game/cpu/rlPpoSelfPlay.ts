@@ -8,7 +8,6 @@ import { createRlObservationEncoderCache, encodeRlObservationV2 } from "./rlObse
 import {
   PythonPpoClient,
   type PpoHyperparameters,
-  type PpoRetentionChunkStats,
   type PpoRetentionStats,
 } from "./pythonPpoClient";
 import { PpoTimingProfiler } from "./rlPpoProfiler";
@@ -67,7 +66,7 @@ export type PpoReplayRollout = {
   trajectory: PpoTrajectoryStep[];
   spoolPath?: string;
   spoolStats?: PpoTrajectorySpoolStats;
-  retentionChunks?: PpoRetentionChunkStats[];
+  retentionIds?: string[];
 };
 
 type PpoEpisodeSummary = {
@@ -293,25 +292,26 @@ export async function validatePpoTrajectoryReplay(input: {
 export async function replayPpoTrajectoryFromRetention(input: {
   rollout: PpoReplayRollout;
   client: PpoClientLike;
+  chunkSize: number;
   memoryLogInterval: number;
   profiler?: PpoTimingProfiler;
   onConsumed?: (retentionId: string) => void;
 }) {
   const { rollout, client } = input;
-  const chunks = rollout.retentionChunks;
-  if (!chunks?.length) throw new Error("PPO retained replay requires retention chunks");
+  const retentionIds = rollout.retentionIds;
+  if (!retentionIds?.length) throw new Error("PPO retained replay requires retention IDs");
+  if (retentionIds.length !== rollout.trajectory.length) {
+    throw new Error(`PPO retained ID count mismatch: ${retentionIds.length} != ${rollout.trajectory.length}`);
+  }
   if (!client.accumulateRetained) throw new Error("PPO client does not support retained replay");
   const profiler = input.profiler ?? new PpoTimingProfiler();
   let sentSamples = 0;
   memorySnapshot("replay_retention_start", 0);
 
-  for (const retained of chunks) {
-    const start = sentSamples;
-    const end = start + retained.batchSize;
-    const steps = rollout.trajectory.slice(start, end);
-    if (steps.length !== retained.batchSize) {
-      throw new Error(`PPO retained sample count exceeds trajectory: ${end} > ${rollout.trajectory.length}`);
-    }
+  while (sentSamples < rollout.trajectory.length) {
+    const end = Math.min(sentSamples + input.chunkSize, rollout.trajectory.length);
+    const ids = retentionIds.slice(sentSamples, end);
+    const steps = rollout.trajectory.slice(sentSamples, end);
     const scalars: PpoUpdateScalarSample[] = steps.map((step) => {
       assertFiniteTrajectory(step);
       return {
@@ -322,18 +322,15 @@ export async function replayPpoTrajectoryFromRetention(input: {
     });
     await profiler.measureAsync(
       "replay_retention_restore_accumulate",
-      () => client.accumulateRetained!(retained.retentionId, scalars),
+      () => client.accumulateRetained!(ids, scalars),
     );
-    input.onConsumed?.(retained.retentionId);
+    for (const retentionId of ids) input.onConsumed?.(retentionId);
     sentSamples = end;
-    if (sentSamples % input.memoryLogInterval === 0) {
+    if (sentSamples % input.memoryLogInterval === 0 || sentSamples === rollout.trajectory.length) {
       memorySnapshot("replay_retention_progress", sentSamples);
     }
   }
 
-  if (sentSamples !== rollout.trajectory.length) {
-    throw new Error(`PPO retained sample count mismatch: ${sentSamples} != ${rollout.trajectory.length}`);
-  }
   memorySnapshot("replay_retention_end", sentSamples);
   return sentSamples;
 }
@@ -378,7 +375,7 @@ export async function runPpoSelfPlaySmoke(input: {
   if (input.spoolTrajectory && !client.accumulatePrepacked) {
     throw new Error("spoolTrajectory requires a PPO client with accumulatePrepacked");
   }
-  if (input.retainTrajectory && (!client.retainPackedChunk || !client.accumulateRetained || !client.discardRetained || !client.retentionStats)) {
+  if (input.retainTrajectory && (!client.accumulateRetained || !client.discardRetained || !client.retentionStats)) {
     throw new Error("retainTrajectory requires PPO retention client methods");
   }
   const spoolPaths = new Set<string>();
@@ -414,27 +411,7 @@ export async function runPpoSelfPlaySmoke(input: {
           spoolWriter.write(packBcEncodedSamples(sending, featureSpec));
         });
       };
-      let retentionChunk: Array<Pick<PpoEncodedSample, "observation" | "actions" | "targetIndex">> = [];
-      const retentionChunks: PpoRetentionChunkStats[] = [];
-      const flushRetention = async () => {
-        if (!input.retainTrajectory || !retentionChunk.length) return;
-        const sending = retentionChunk;
-        retentionChunk = [];
-        const packed = profiler.measure(
-          "rollout_retention_pack",
-          () => packBcEncodedSamples(sending, featureSpec),
-        );
-        const retentionId = `episode-${seed}-chunk-${retentionChunks.length}`;
-        const stored = await profiler.measureAsync(
-          "rollout_retention_compress_store",
-          () => client.retainPackedChunk!(retentionId, packed),
-        );
-        if (stored.batchSize !== sending.length) {
-          throw new Error(`PPO retained chunk size mismatch ${stored.batchSize} != ${sending.length}`);
-        }
-        retentionChunks.push(stored);
-        outstandingRetentionIds.add(retentionId);
-      };
+      const retentionIds: string[] = [];
       let reason: string | undefined;
       memorySnapshot("rollout_start", 0);
       try {
@@ -449,7 +426,21 @@ export async function runPpoSelfPlaySmoke(input: {
           const encodedObservation = profiler.measure("rollout_encode_observation", () => encodeRlObservationV2(observation, encoderCache));
           const encodedActions = profiler.measure("rollout_encode_actions", () => encodeRlLegalActionsV2(observation, legal));
           mergeLegalActionCount += legal.filter((action) => action.actionType === "merge_infantry").length;
-          const selected = await profiler.measureAsync("rollout_pack_ipc_python_act", () => client.act(encodedObservation, encodedActions));
+          const retentionId = input.retainTrajectory
+            ? `episode-${seed}-decision-${trajectory.length}`
+            : undefined;
+          const selected = await profiler.measureAsync(
+            "rollout_pack_ipc_python_act",
+            () => client.act(
+              encodedObservation,
+              encodedActions,
+              retentionId ? { retentionId } : undefined,
+            ),
+          );
+          if (retentionId) {
+            retentionIds.push(retentionId);
+            outstandingRetentionIds.add(retentionId);
+          }
           const before = environment.getProgressHash();
           profiler.measure("rollout_game_step", () => environment.stepWithoutObservation(selected.actionKey));
           trajectory.push({
@@ -464,14 +455,6 @@ export async function runPpoSelfPlaySmoke(input: {
               targetIndex: selected.actionIndex,
             });
             if (spoolChunk.length >= replayChunkSize) flushSpool();
-          }
-          if (input.retainTrajectory) {
-            retentionChunk.push({
-              observation: encodedObservation,
-              actions: encodedActions.actions,
-              targetIndex: selected.actionIndex,
-            });
-            if (retentionChunk.length >= replayChunkSize) await flushRetention();
           }
           if (environment.getProgressHash() === before) { reason = "phase_stall"; break; }
           if (trajectory.length % memoryLogInterval === 0) memorySnapshot("rollout_progress", trajectory.length);
@@ -493,16 +476,8 @@ export async function runPpoSelfPlaySmoke(input: {
           reason = `exception:PPO spool failure: ${error instanceof Error ? error.message : String(error)}`;
         }
       }
-      if (input.retainTrajectory) {
-        try {
-          await flushRetention();
-          const retainedSamples = retentionChunks.reduce((sum, chunk) => sum + chunk.batchSize, 0);
-          if (retainedSamples !== trajectory.length) {
-            reason = `exception:PPO retention sample count mismatch ${retainedSamples} != ${trajectory.length}`;
-          }
-        } catch (error) {
-          reason = `exception:PPO retention failure: ${error instanceof Error ? error.message : String(error)}`;
-        }
+      if (input.retainTrajectory && retentionIds.length !== trajectory.length) {
+        reason = `exception:PPO retention sample count mismatch ${retentionIds.length} != ${trajectory.length}`;
       }
       const result = environment.getResult();
       if (result.endReason === "stopped" && (!reason || isPpoTimeLimitReason(reason))) reason = "stopped";
@@ -538,25 +513,23 @@ export async function runPpoSelfPlaySmoke(input: {
           loserTeamIds: result.loserTeamIds, finalStateHash, trajectory,
           spoolPath: spoolPath && spoolStats ? spoolPath : undefined,
           spoolStats,
-          retentionChunks: input.retainTrajectory ? retentionChunks : undefined,
+          retentionIds: input.retainTrajectory ? retentionIds : undefined,
         });
       } else {
         if (spoolPath) {
           deletePpoTrajectorySpool(spoolPath);
           spoolPaths.delete(spoolPath);
         }
-        if (retentionChunks.length) {
-          await client.discardRetained!(retentionChunks.map((chunk) => chunk.retentionId));
-          for (const chunk of retentionChunks) outstandingRetentionIds.delete(chunk.retentionId);
+        if (retentionIds.length) {
+          await client.discardRetained!(retentionIds);
+          for (const retentionId of retentionIds) outstandingRetentionIds.delete(retentionId);
         }
       }
       process.stderr.write(`[PPO episode] ${JSON.stringify({
         ...summary,
         spoolStats: summary.outcomeKind !== "abnormal_truncated" ? spoolStats : undefined,
-        retentionChunks: summary.outcomeKind !== "abnormal_truncated" && input.retainTrajectory
-          ? retentionChunks.map(({ retentionId, batchSize, rawBytes, compressedBytes, rawSha256 }) => ({
-            retentionId, batchSize, rawBytes, compressedBytes, rawSha256,
-          }))
+        retainedDecisionCount: summary.outcomeKind !== "abnormal_truncated" && input.retainTrajectory
+          ? retentionIds.length
           : undefined,
       })}\n`);
     }
@@ -573,7 +546,7 @@ export async function runPpoSelfPlaySmoke(input: {
     let validatedSamples = 0;
     const replayPhaseStart = phaseNow();
     for (const rollout of learnableRollouts) {
-      if (rollout.retentionChunks?.length) {
+      if (rollout.retentionIds?.length) {
         validatedSamples += await validatePpoTrajectoryReplay({
           rollout,
           memoryLogInterval,
@@ -583,6 +556,7 @@ export async function runPpoSelfPlaySmoke(input: {
         replayedSamples += await replayPpoTrajectoryFromRetention({
           rollout,
           client,
+          chunkSize: replayChunkSize,
           memoryLogInterval,
           profiler,
           onConsumed: (retentionId) => outstandingRetentionIds.delete(retentionId),

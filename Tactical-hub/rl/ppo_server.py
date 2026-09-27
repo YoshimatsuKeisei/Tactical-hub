@@ -3,14 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import sys
+import threading
 import time
 import zlib
 
 import numpy as np
 import torch
 
-from rl.bc_packed import decode_packed_views, prepare_packed_tensors
+from rl.bc_packed import (
+    combine_single_sample_packed_views,
+    decode_packed_views,
+    packed_views_audit,
+    prepare_packed_tensors,
+)
 from rl.device import report_torch_device, resolve_torch_device
 from rl.ppo_trainer import PpoTrainer
 
@@ -35,7 +42,107 @@ def main():
         "compressedBytes": 0,
         "currentRetainedBytes": 0,
         "peakRetainedBytes": 0,
+        "pendingRawBytes": 0,
+        "peakPendingRawBytes": 0,
     }
+    retention_lock = threading.Lock()
+    pending_retention_ids = set()
+    retention_worker_error = [None]
+    retention_queue = queue.Queue(
+        maxsize=max(1, int(os.environ.get("PPO_RETENTION_QUEUE_MAX", "64")))
+    )
+
+    def deflate_raw(payload):
+        compressor = zlib.compressobj(level=1, wbits=-zlib.MAX_WBITS)
+        return compressor.compress(payload) + compressor.flush()
+
+    def check_retention_worker_error():
+        error = retention_worker_error[0]
+        if error is not None:
+            raise RuntimeError(f"PPO retention worker failed: {type(error).__name__}: {error}")
+
+    def retention_worker():
+        while True:
+            task = retention_queue.get()
+            try:
+                if task is None:
+                    return
+                retention_id = task["retentionId"]
+                raw = task["payload"]
+                compressed = deflate_raw(raw)
+                raw_sha256 = hashlib.sha256(raw).hexdigest()
+                with retention_lock:
+                    retained_chunks[retention_id] = {
+                        "header": task["header"],
+                        "compressed": compressed,
+                        "rawByteLength": len(raw),
+                        "rawSha256": raw_sha256,
+                        "batchSize": 1,
+                        "selectedActionIndex": task["selectedActionIndex"],
+                    }
+                    pending_retention_ids.discard(retention_id)
+                    retention_totals["storedChunks"] += 1
+                    retention_totals["storedSamples"] += 1
+                    retention_totals["rawBytes"] += len(raw)
+                    retention_totals["compressedBytes"] += len(compressed)
+                    retention_totals["pendingRawBytes"] -= len(raw)
+                    retention_totals["currentRetainedBytes"] += len(compressed)
+                    retention_totals["peakRetainedBytes"] = max(
+                        retention_totals["peakRetainedBytes"],
+                        retention_totals["currentRetainedBytes"],
+                    )
+            except Exception as error:
+                with retention_lock:
+                    if task is not None:
+                        pending_retention_ids.discard(task.get("retentionId", ""))
+                        retention_totals["pendingRawBytes"] = max(
+                            0,
+                            retention_totals["pendingRawBytes"] - len(task.get("payload", b"")),
+                        )
+                    if retention_worker_error[0] is None:
+                        retention_worker_error[0] = error
+            finally:
+                retention_queue.task_done()
+
+    retention_thread = threading.Thread(
+        target=retention_worker,
+        name="ppo-retention-compressor",
+        daemon=True,
+    )
+    retention_thread.start()
+
+    def reserve_retention_id(retention_id):
+        if not retention_id:
+            raise ValueError("PPO retentionId must not be empty")
+        with retention_lock:
+            if (
+                retention_id in retained_chunks
+                or retention_id in pending_retention_ids
+                or retention_id in consumed_retention_ids
+            ):
+                raise ValueError(f"Duplicate PPO retentionId: {retention_id}")
+            pending_retention_ids.add(retention_id)
+
+    def enqueue_retained_act(retention_id, message, payload, selected_action_index):
+        with retention_lock:
+            retention_totals["pendingRawBytes"] += len(payload)
+            retention_totals["peakPendingRawBytes"] = max(
+                retention_totals["peakPendingRawBytes"],
+                retention_totals["pendingRawBytes"],
+            )
+        retention_queue.put({
+            "retentionId": retention_id,
+            "header": {
+                "tensors": message["tensors"],
+                "batchSize": 1,
+            },
+            "payload": payload,
+            "selectedActionIndex": int(selected_action_index),
+        })
+
+    def flush_retention_worker():
+        retention_queue.join()
+        check_retention_worker_error()
 
     def record(stage, elapsed):
         if not profile:
@@ -60,10 +167,12 @@ def main():
         return payload
 
     def retention_stats():
-        return {
-            "currentChunks": len(retained_chunks),
-            **retention_totals,
-        }
+        with retention_lock:
+            return {
+                "currentChunks": len(retained_chunks),
+                "pendingChunks": len(pending_retention_ids),
+                **retention_totals,
+            }
 
     while True:
         line = stream.readline()
@@ -136,25 +245,42 @@ def main():
                     "rawSha256": raw_sha256,
                 })
             elif kind == "retainedUpdateChunk":
-                retention_id = str(message.get("retentionId", ""))
+                retention_ids = [str(value) for value in message.get("retentionIds", [])]
                 scalar_payload = read_binary(int(message["byteLength"]))
-                if retention_id in consumed_retention_ids:
-                    raise ValueError(f"PPO retentionId already consumed: {retention_id}")
-                record = retained_chunks.get(retention_id)
-                if record is None:
-                    raise ValueError(f"Unknown PPO retentionId: {retention_id}")
+                if not retention_ids:
+                    legacy_id = str(message.get("retentionId", ""))
+                    if legacy_id:
+                        retention_ids = [legacy_id]
+                if not retention_ids:
+                    raise ValueError("PPO retained update requires retentionIds")
+                if any(retention_id in consumed_retention_ids for retention_id in retention_ids):
+                    raise ValueError("PPO retentionId already consumed")
+                records = [retained_chunks.get(retention_id) for retention_id in retention_ids]
+                missing = [retention_id for retention_id, record in zip(retention_ids, records) if record is None]
+                if missing:
+                    raise ValueError(f"Unknown PPO retentionId: {missing[0]}")
                 if message.get("encoding") != "ppo-retained-scalars-v1":
                     raise ValueError("Unsupported PPO retained scalar encoding")
                 batch_size = int(message["batchSize"])
-                if batch_size != record["batchSize"]:
+                if batch_size != len(retention_ids):
                     raise ValueError("PPO retained scalar batch size mismatch")
                 expected_scalar_bytes = batch_size * 3 * 4
                 if len(scalar_payload) != expected_scalar_bytes:
                     raise ValueError("PPO retained scalar byte length mismatch")
-                raw = bytearray(zlib.decompress(record["compressed"], wbits=-zlib.MAX_WBITS))
-                if len(raw) != record["rawByteLength"] or hashlib.sha256(raw).hexdigest() != record["rawSha256"]:
-                    raise ValueError("PPO retained payload integrity mismatch")
-                views = decode_packed_views(record["header"], raw)
+
+                decoded_records = []
+                selected_action_indices = []
+                template_descriptors = records[0]["header"]["tensors"]
+                for record in records:
+                    if record["batchSize"] != 1:
+                        raise ValueError("PPO retained act record must have batchSize=1")
+                    raw = bytearray(zlib.decompress(record["compressed"], wbits=-zlib.MAX_WBITS))
+                    if len(raw) != record["rawByteLength"] or hashlib.sha256(raw).hexdigest() != record["rawSha256"]:
+                        raise ValueError("PPO retained payload integrity mismatch")
+                    decoded_records.append(decode_packed_views(record["header"], raw))
+                    selected_action_indices.append(int(record["selectedActionIndex"]))
+
+                views = combine_single_sample_packed_views(decoded_records, selected_action_indices)
                 prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
                 scalar_values = np.frombuffer(scalar_payload, dtype=np.dtype("<f4"))
                 old = torch.from_numpy(scalar_values[:batch_size]).to(device=trainer.device, dtype=torch.float32)
@@ -163,18 +289,31 @@ def main():
                 result = trainer.accumulate_prepared_chunk(
                     prepared, actions, action_mask, targets, old, advantages, returns,
                 )
-                retained_chunks.pop(retention_id)
-                consumed_retention_ids.add(retention_id)
-                retention_totals["currentRetainedBytes"] -= len(record["compressed"])
-                send({"type": "updateChunkAccepted", "requestId": message["requestId"], **result})
+                feature_audit = (
+                    packed_views_audit(views, template_descriptors)
+                    if os.environ.get("PPO_RETENTION_EQUIVALENCE") == "1"
+                    else None
+                )
+                with retention_lock:
+                    for retention_id, record in zip(retention_ids, records):
+                        retained_chunks.pop(retention_id, None)
+                        consumed_retention_ids.add(retention_id)
+                        retention_totals["currentRetainedBytes"] -= len(record["compressed"])
+                response = {"type": "updateChunkAccepted", "requestId": message["requestId"], **result}
+                if feature_audit is not None:
+                    response["featureAudit"] = feature_audit
+                send(response)
             elif kind == "discardRetained":
+                flush_retention_worker()
                 retention_ids = [str(value) for value in message.get("retentionIds", [])]
                 discarded_count = 0
-                for retention_id in retention_ids:
-                    record = retained_chunks.pop(retention_id, None)
-                    if record is not None:
-                        retention_totals["currentRetainedBytes"] -= len(record["compressed"])
-                        discarded_count += 1
+                with retention_lock:
+                    for retention_id in retention_ids:
+                        record = retained_chunks.pop(retention_id, None)
+                        pending_retention_ids.discard(retention_id)
+                        if record is not None:
+                            retention_totals["currentRetainedBytes"] -= len(record["compressed"])
+                            discarded_count += 1
                 send({"type": "retentionDiscarded", "requestId": message["requestId"], "discardedCount": discarded_count})
             elif kind == "retentionStats":
                 send({"type": "retentionStats", "requestId": message["requestId"], **retention_stats()})
@@ -190,6 +329,10 @@ def main():
                     sync_device()
                     record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
                 if kind == "packedAct":
+                    check_retention_worker_error()
+                    retention_id = message.get("retentionId")
+                    if retention_id is not None:
+                        reserve_retention_id(str(retention_id))
                     if profile:
                         # Packed action requests have a single sample, with no action padding.
                         legal_action_counts.append(int(action_mask.shape[1]))
@@ -203,6 +346,13 @@ def main():
                         sync_device()
                         record("act_inference", time.perf_counter() - inference_start)
                     send({"type": "action", "requestId": message["requestId"], **action})
+                    if retention_id is not None:
+                        enqueue_retained_act(
+                            str(retention_id),
+                            message,
+                            payload,
+                            action["actionIndex"],
+                        )
                 elif kind == "packedActBatch":
                     actions_result = trainer.act_prepared_batch(prepared, actions, action_mask)
                     send({"type": "actions", "requestId": message["requestId"], **actions_result})
@@ -222,6 +372,7 @@ def main():
             elif kind == "act":
                 send({"type": "action", "requestId": message["requestId"], **trainer.act(message["observation"], message["actions"])})
             elif kind == "beginUpdate":
+                flush_retention_worker()
                 result = trainer.begin_accumulated_update(int(message["totalSamples"]))
                 send({"type": "updateBegun", "requestId": message["requestId"], **result})
             elif kind == "finishUpdate":
@@ -242,6 +393,10 @@ def main():
                 trainer.save(message["path"], message.get("metadata"))
                 send({"type": "saved", "requestId": message["requestId"], "path": message["path"], "updateCount": trainer.update_count, "episodeCount": trainer.episode_count})
             elif kind == "close":
+                flush_retention_worker()
+                retention_queue.put(None)
+                retention_queue.join()
+                retention_thread.join(timeout=5)
                 if profile:
                     summary = {name: {"count": item["count"], "totalMs": round(item["totalMs"], 2), "avgMs": round(item["totalMs"] / item["count"], 3)} for name, item in timings.items()}
                     legal_summary = {
