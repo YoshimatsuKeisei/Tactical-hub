@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from rl.bc_packed import (
+    PackedH2dWorkspace,
     combine_single_sample_packed_views,
     decode_packed_views,
     packed_views_audit,
@@ -33,8 +34,9 @@ def main():
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
-    if packed_prepare_mode not in ("default", "grouped_h2d"):
+    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
+    packed_h2d_workspace = None
     timings = {}
     legal_action_counts = []
     retained_chunks = {}
@@ -189,6 +191,8 @@ def main():
                 device = resolve_torch_device(message.get("device", "auto"))
                 report_torch_device(message.get("device", "auto"), device)
                 trainer = PpoTrainer(message["featureSpec"], message["hyperparameters"], int(message["seed"]), device)
+                if packed_prepare_mode == "grouped_h2d_persistent":
+                    packed_h2d_workspace = PackedH2dWorkspace(device)
                 if message.get("resume"):
                     state = trainer.resume(message["resume"])
                 else:
@@ -328,12 +332,13 @@ def main():
                     prepare_start = time.perf_counter()
                 payload = read_binary(int(message["byteLength"]))
                 views = None
-                if kind == "packedAct" and packed_prepare_mode == "grouped_h2d":
+                if kind == "packedAct" and packed_prepare_mode in ("grouped_h2d", "grouped_h2d_persistent"):
                     prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
                         message,
                         payload,
                         trainer.device,
                         include_targets=False,
+                        workspace=packed_h2d_workspace,
                     )
                 else:
                     views = decode_packed_views(message, payload)

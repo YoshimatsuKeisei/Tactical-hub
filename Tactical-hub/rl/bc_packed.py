@@ -130,12 +130,65 @@ def packed_views_audit(
     }
 
 
+class PackedH2dWorkspace:
+    def __init__(self, device: torch.device):
+        self.device = device
+        self._float_buffer: torch.Tensor | None = None
+        self._mask_buffer: torch.Tensor | None = None
+        self._int_buffer: torch.Tensor | None = None
+
+    @staticmethod
+    def _capacity(required: int) -> int:
+        if required <= 0:
+            return 0
+        return 1 << (required - 1).bit_length()
+
+    def _ensure(
+        self,
+        current: torch.Tensor | None,
+        required: int,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if current is None or current.numel() < required:
+            return torch.empty(
+                self._capacity(required),
+                dtype=dtype,
+                device=self.device,
+            )
+        return current
+
+    def copy_float32(self, cpu: torch.Tensor) -> torch.Tensor:
+        self._float_buffer = self._ensure(
+            self._float_buffer, cpu.numel(), torch.float32
+        )
+        target = self._float_buffer.narrow(0, 0, cpu.numel())
+        target.copy_(cpu)
+        return target
+
+    def copy_mask(self, cpu: torch.Tensor) -> torch.Tensor:
+        self._mask_buffer = self._ensure(
+            self._mask_buffer, cpu.numel(), torch.bool
+        )
+        target = self._mask_buffer.narrow(0, 0, cpu.numel())
+        target.copy_(cpu)
+        return target
+
+    def copy_int64(self, cpu: torch.Tensor) -> torch.Tensor:
+        self._int_buffer = self._ensure(
+            self._int_buffer, cpu.numel(), torch.long
+        )
+        target = self._int_buffer.narrow(0, 0, cpu.numel())
+        target.copy_(cpu)
+        return target
+
+
 def prepare_packed_tensors_grouped_h2d(
     header: dict[str, Any],
     payload: bytearray,
     device: torch.device,
     *,
     include_targets: bool = True,
+    workspace: PackedH2dWorkspace | None = None,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
@@ -158,7 +211,18 @@ def prepare_packed_tensors_grouped_h2d(
             count=(end - start) // itemsize,
             offset=start,
         )
-        return torch.from_numpy(cpu).to(device=device, dtype=torch_dtype), start, itemsize
+        cpu_tensor = torch.from_numpy(cpu)
+        if workspace is None:
+            device_tensor = cpu_tensor.to(device=device, dtype=torch_dtype)
+        elif dtype_name == "float32":
+            device_tensor = workspace.copy_float32(cpu_tensor)
+        elif dtype_name == "uint8":
+            device_tensor = workspace.copy_mask(cpu_tensor)
+        elif dtype_name == "int32":
+            device_tensor = workspace.copy_int64(cpu_tensor)
+        else:
+            raise ValueError(f"Unsupported grouped dtype: {dtype_name}")
+        return device_tensor, start, itemsize
 
     floats, float_start, float_itemsize = grouped("float32", torch.float32)
     masks, mask_start, mask_itemsize = grouped("uint8", torch.bool)

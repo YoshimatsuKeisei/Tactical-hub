@@ -25,6 +25,10 @@ const decisions = positiveInteger("--decisions", 1000);
 const warmup = positiveInteger("--warmup", 50);
 const trainerSeed = positiveInteger("--trainer-seed", 7);
 const gameSeed = positiveInteger("--game-seed", 9);
+const candidateMode = value("--candidate-mode") ?? "grouped_h2d";
+if (!["grouped_h2d", "grouped_h2d_persistent"].includes(candidateMode)) {
+  throw new Error(`Unsupported --candidate-mode: ${candidateMode}`);
+}
 if (warmup >= decisions) throw new Error("--warmup must be smaller than --decisions");
 const hyperparameters = {
   learningRate: 3e-4,
@@ -68,11 +72,11 @@ const summarize = (values: number[]) => {
 };
 
 const python = value("--python") ?? "python";
-const makeClient = (mode: "default" | "grouped_h2d") => new PythonPpoClient({
+const makeClient = (mode: "default" | "grouped_h2d" | "grouped_h2d_persistent") => new PythonPpoClient({
   command: python,
   cwd: process.cwd(),
   device: "cuda",
-  env: mode === "grouped_h2d" ? { PPO_PACKED_PREPARE_MODE: mode } : undefined,
+  env: mode === "default" ? undefined : { PPO_PACKED_PREPARE_MODE: mode },
 });
 
 const environment = new RlEnvironmentV2(undefined, true);
@@ -152,7 +156,7 @@ try {
   await oracle.close();
 }
 const finalStateHash = environment.getStateHash();
-const grouped = makeClient("grouped_h2d");
+const grouped = makeClient(candidateMode as "grouped_h2d" | "grouped_h2d_persistent");
 const groupedStartupStarted = performance.now();
 const groupedReady = await grouped.start({
   seed: trainerSeed,
@@ -197,6 +201,7 @@ const groupedAct = summarize(actGroupedMs);
 const nodeEncodeStep = summarize(nodeCombinedMs);
 const result = {
   probe: "ppo_packed_prepare_grouped_h2d",
+  candidateMode,
   status: actionMismatchCount === 0 && logProbabilityMismatchCount === 0 && valueMismatchCount === 0
     ? "passed"
     : "mismatch",
@@ -217,17 +222,17 @@ const result = {
   },
   startup: {
     oracleMs: Number(oracleStartupMs.toFixed(3)),
-    groupedH2dMs: Number(groupedStartupMs.toFixed(3)),
+    candidateMs: Number(groupedStartupMs.toFixed(3)),
   },
   timings: {
     oracleAct,
-    groupedH2dAct: groupedAct,
-    groupedH2dSpeedup: Number((oracleAct.meanMs / groupedAct.meanMs).toFixed(3)),
+    candidateAct: groupedAct,
+    candidateSpeedup: Number((oracleAct.meanMs / groupedAct.meanMs).toFixed(3)),
     encodeObservation: summarize(encodeObservationMs),
     encodeActions: summarize(encodeActionsMs),
     gameStep: summarize(gameStepMs),
     nodeEncodePlusStep: nodeEncodeStep,
-    groupedSequentialMeanMs: Number((groupedAct.meanMs + nodeEncodeStep.meanMs).toFixed(4)),
+    candidateSequentialMeanMs: Number((groupedAct.meanMs + nodeEncodeStep.meanMs).toFixed(4)),
   },
   traceShape: {
     legalActions: {
