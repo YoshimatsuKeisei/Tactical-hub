@@ -31,6 +31,7 @@ const result = await runPpoSelfPlaySmoke({
   spoolTrajectory: args.includes("--spool-trajectory"),
   retainTrajectory: args.includes("--retain-trajectory"),
   fastRlMovement: args.includes("--fast-rl-movement"),
+  fastRlPhaseTransitions: args.includes("--fast-rl-phases"),
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4), gamma: numeric("--gamma", 0.99),
     gaeLambda: numeric("--gae-lambda", 0.95), clipEpsilon: numeric("--clip-epsilon", 0.2),

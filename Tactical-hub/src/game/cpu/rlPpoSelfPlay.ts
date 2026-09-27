@@ -137,11 +137,18 @@ export async function replayPpoTrajectory(input: {
   chunkSize: number;
   memoryLogInterval: number;
   fastRlMovement?: boolean;
+  fastRlPhaseTransitions?: boolean;
   profiler?: PpoTimingProfiler;
 }) {
   const { rollout, client } = input;
   const profiler = input.profiler ?? new PpoTimingProfiler();
-  const environment = new RlEnvironmentV2(undefined, input.fastRlMovement ?? false);
+  const environment = new RlEnvironmentV2(
+    undefined,
+    input.fastRlMovement ?? false,
+    input.fastRlPhaseTransitions
+      ? { cpuStep: { rlInPlacePhaseTransitions: true } }
+      : undefined,
+  );
   environment.reset(rollout.seed, 4);
   const encoderCache = createRlObservationEncoderCache();
   let chunk: PpoEncodedSample[] = [];
@@ -243,11 +250,18 @@ export async function validatePpoTrajectoryReplay(input: {
   rollout: PpoReplayRollout;
   memoryLogInterval: number;
   fastRlMovement?: boolean;
+  fastRlPhaseTransitions?: boolean;
   profiler?: PpoTimingProfiler;
 }) {
   const { rollout } = input;
   const profiler = input.profiler ?? new PpoTimingProfiler();
-  const environment = new RlEnvironmentV2(undefined, input.fastRlMovement ?? false);
+  const environment = new RlEnvironmentV2(
+    undefined,
+    input.fastRlMovement ?? false,
+    input.fastRlPhaseTransitions
+      ? { cpuStep: { rlInPlacePhaseTransitions: true } }
+      : undefined,
+  );
   environment.reset(rollout.seed, 4);
   memorySnapshot("replay_validation_start", 0);
 
@@ -350,6 +364,7 @@ export async function runPpoSelfPlaySmoke(input: {
   spoolTrajectory?: boolean;
   retainTrajectory?: boolean;
   fastRlMovement?: boolean;
+  fastRlPhaseTransitions?: boolean;
   client?: PpoClientLike;
 }) {
   const hyperparameters = { ...DEFAULT_PPO_HYPERPARAMETERS, ...input.hyperparameters };
@@ -392,7 +407,13 @@ export async function runPpoSelfPlaySmoke(input: {
     const rolloutPhaseStart = phaseNow();
     for (let episodeIndex = 0; episodeIndex < (input.episodes ?? 1); episodeIndex += 1) {
       const seed = input.seed + initialized.episodeCount + episodeIndex;
-      const environment = new RlEnvironmentV2(undefined, input.fastRlMovement ?? false);
+      const environment = new RlEnvironmentV2(
+        undefined,
+        input.fastRlMovement ?? false,
+        input.fastRlPhaseTransitions
+          ? { cpuStep: { rlInPlacePhaseTransitions: true } }
+          : undefined,
+      );
       environment.reset(seed, 4);
       const encoderCache = createRlObservationEncoderCache();
       const trajectory: PpoTrajectoryStep[] = [];
@@ -551,6 +572,7 @@ export async function runPpoSelfPlaySmoke(input: {
           rollout,
           memoryLogInterval,
           fastRlMovement: input.fastRlMovement,
+          fastRlPhaseTransitions: input.fastRlPhaseTransitions,
           profiler,
         });
         replayedSamples += await replayPpoTrajectoryFromRetention({
@@ -572,6 +594,7 @@ export async function runPpoSelfPlaySmoke(input: {
           chunkSize: replayChunkSize,
           memoryLogInterval,
           fastRlMovement: input.fastRlMovement,
+          fastRlPhaseTransitions: input.fastRlPhaseTransitions,
           profiler,
         });
         replayedSamples += replayed;
