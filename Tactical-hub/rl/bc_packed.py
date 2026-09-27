@@ -130,6 +130,91 @@ def packed_views_audit(
     }
 
 
+def prepare_packed_tensors_grouped_h2d(
+    header: dict[str, Any],
+    payload: bytearray,
+    device: torch.device,
+    *,
+    include_targets: bool = True,
+) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    descriptors = header["tensors"]
+    by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
+
+    def grouped(dtype_name: str, torch_dtype: torch.dtype) -> tuple[torch.Tensor, int, int]:
+        selected = [descriptor for descriptor in descriptors if descriptor["dtype"] == dtype_name]
+        if not selected:
+            return torch.empty(0, dtype=torch_dtype, device=device), 0, 1
+        itemsize = _DTYPES[dtype_name].itemsize
+        start = int(selected[0]["byteOffset"])
+        end = int(selected[-1]["byteOffset"]) + int(selected[-1]["byteLength"])
+        cursor = start
+        for descriptor in selected:
+            if int(descriptor["byteOffset"]) != cursor:
+                raise ValueError(f"Packed {dtype_name} tensors are not contiguous")
+            cursor += int(descriptor["byteLength"])
+        cpu = np.frombuffer(
+            payload,
+            dtype=_DTYPES[dtype_name],
+            count=(end - start) // itemsize,
+            offset=start,
+        )
+        return torch.from_numpy(cpu).to(device=device, dtype=torch_dtype), start, itemsize
+
+    floats, float_start, float_itemsize = grouped("float32", torch.float32)
+    masks, mask_start, mask_itemsize = grouped("uint8", torch.bool)
+    targets_flat: torch.Tensor | None = None
+    int_start = 0
+    int_itemsize = _DTYPES["int32"].itemsize
+    if include_targets:
+        targets_flat, int_start, int_itemsize = grouped("int32", torch.long)
+
+    def view(name: str, source: torch.Tensor, group_start: int, itemsize: int) -> torch.Tensor:
+        descriptor = by_name[name]
+        offset_bytes = int(descriptor["byteOffset"]) - group_start
+        if offset_bytes < 0 or offset_bytes % itemsize:
+            raise ValueError(f"Packed tensor alignment mismatch: {name}")
+        shape = tuple(int(value) for value in descriptor["shape"])
+        count = int(np.prod(shape, dtype=np.int64))
+        return source.narrow(0, offset_bytes // itemsize, count).view(shape)
+
+    def floating(name: str) -> torch.Tensor:
+        return view(name, floats, float_start, float_itemsize)
+
+    def mask(name: str) -> torch.Tensor:
+        return view(name, masks, mask_start, mask_itemsize)
+
+    strategic_names = (
+        "siegeStates", "kingCampaignStates", "rewardPlacementRequests",
+        "strategistCooldowns", "teleportCooldowns", "productionIntents",
+        "movementIntents", "attackIntents", "strategistActionIntents",
+        "teleportIntents",
+    )
+    prepared = {
+        "global": floating("global"),
+        "strategicGlobal": floating("strategicGlobal"),
+        "masked": {
+            name: (floating(name), mask(mask_name))
+            for name, mask_name in (
+                ("teams", "teamMask"),
+                ("units", "unitMask"),
+                ("bases", "baseMask"),
+                ("constructions", "constructionMask"),
+            )
+        },
+        "map": (floating("map"), mask("mapMask")),
+        "strategic": {
+            name: (floating(f"strategic.{name}"), mask(f"strategicMask.{name}"))
+            for name in strategic_names
+        },
+    }
+    targets = (
+        view("targets", targets_flat, int_start, int_itemsize)
+        if include_targets and targets_flat is not None
+        else None
+    )
+    return prepared, floating("actions"), mask("actionMask"), targets
+
+
 def prepare_packed_tensors(
     views: dict[str, np.ndarray], device: torch.device
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:

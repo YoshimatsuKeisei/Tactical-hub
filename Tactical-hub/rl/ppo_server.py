@@ -17,6 +17,7 @@ from rl.bc_packed import (
     decode_packed_views,
     packed_views_audit,
     prepare_packed_tensors,
+    prepare_packed_tensors_grouped_h2d,
 )
 from rl.device import report_torch_device, resolve_torch_device
 from rl.ppo_trainer import PpoTrainer
@@ -31,6 +32,9 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
+    if packed_prepare_mode not in ("default", "grouped_h2d"):
+        raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     timings = {}
     legal_action_counts = []
     retained_chunks = {}
@@ -323,8 +327,17 @@ def main():
                 if profile:
                     prepare_start = time.perf_counter()
                 payload = read_binary(int(message["byteLength"]))
-                views = decode_packed_views(message, payload)
-                prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                views = None
+                if kind == "packedAct" and packed_prepare_mode == "grouped_h2d":
+                    prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
+                        message,
+                        payload,
+                        trainer.device,
+                        include_targets=False,
+                    )
+                else:
+                    views = decode_packed_views(message, payload)
+                    prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
                 if profile:
                     sync_device()
                     record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
