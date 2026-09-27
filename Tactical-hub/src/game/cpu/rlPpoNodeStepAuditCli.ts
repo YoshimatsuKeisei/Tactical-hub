@@ -80,7 +80,7 @@ const addNamed = (map: Map<string, Metric>, key: string, milliseconds: number) =
   add(target, milliseconds);
 };
 
-const overall = bucket();
+let overall = bucket();
 let currentWindow = bucket();
 
 const both = (selector: (value: Bucket) => Metric, milliseconds: number) => {
@@ -186,6 +186,10 @@ const ready = await client.start({
 });
 
 if (ready.selectedDevice !== "cuda") throw new Error("CUDA is required");
+
+// Exclude reset()/startup automatic work from rollout step accounting.
+overall = bucket();
+currentWindow = bucket();
 
 const windows: Array<Record<string, unknown>> = [];
 const wallStarted = performance.now();
