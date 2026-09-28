@@ -509,3 +509,36 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Preserve model input information/shape/value/stride, replay chunk size, sample order,
    PPO objective, RNG, gradient accumulation order and checkpoint schema.
 6. If the microprobe cannot preserve exact gradients, close training CUDA Graph immediately.
+
+
+## V6-N replay CUDA Graph microprobe — PASS
+- Diagnostic branch: experiment/ppo-fast-batch-v6n-replay-cudagraph-microprobe
+- Diagnostic commit: 1badecf09b39ea4effae4c88e696b2a366d96d00
+- Workload: V6-N baseline vs microprobe candidate, 8 env x 125 decisions = 1,000 decisions.
+- Production path remained exact after inserting the isolated probe:
+  semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Probe used a repeated exact replay signature at hit 3:
+  batchSize=32, maxActions=1, actionWidth=3955.
+- Eager vs torch.cuda.make_graphed_callables on cloned models:
+  logits/value/log-prob/entropy/clipped objective/squared errors/loss all bit-exact.
+- grad None/not-None state exact.
+- Gradient values exact; gradient hashes exact:
+  f8de4184d989408a64a5b92603a0798477efe1d3450e2f414f1fa600e7d400d1
+  on both eager and graphed paths.
+- Capture cost: 67.494 ms for the probed signature.
+- 12-repeat timing: eager 215.846 ms vs graphed 158.347 ms.
+- Per iteration: 17.987 ms -> 13.196 ms, 1.3631x microprobe speedup.
+- PyTorch emitted an AccumulateGrad stream-mismatch warning during the isolated probe;
+  production integration must remain conservative and exact-checked.
+- Conclusion: controlled production replay graphed-callable work is justified.
+
+## Next steps after replay CUDA Graph microprobe
+1. Keep V6-N as the production baseline until a production replay-graph candidate passes.
+2. Build V6-O with exact-shape replay graphed-callable cache only for hot signatures.
+3. Start conservatively: minHits=3 and maxEntries=4 to limit capture cost and GPU memory.
+4. Keep replay chunk size=32, sample order, tensor shape/value/stride, objective math,
+   finite checks, gradient accumulation order, RNG and checkpoint schema unchanged.
+5. Graph only the model callable via make_graphed_callables; keep PPO objective construction
+   and production accumulation semantics unchanged.
+6. Run a small paired exactness test before any larger timing run.
+7. Close the route immediately if grad None/value/hash, model, optimizer, RNG or counters differ.
