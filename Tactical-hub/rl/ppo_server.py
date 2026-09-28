@@ -735,11 +735,6 @@ def main():
                     old,
                     advantages,
                     returns,
-                    profile_stage=(
-                        record_replay_phase
-                        if replay_phase_profile
-                        else None
-                    ),
                 )
                 replay_phase_sync()
                 record_replay_phase(
