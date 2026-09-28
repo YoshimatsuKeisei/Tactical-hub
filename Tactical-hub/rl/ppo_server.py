@@ -41,6 +41,9 @@ def main():
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
     )
+    persistent_act_h2d = (
+        os.environ.get("PPO_PERSISTENT_ACT_H2D") == "1"
+    )
     if retention_storage_mode not in ("deflate", "raw"):
         raise ValueError(
             f"Unsupported PPO_RETENTION_STORAGE_MODE: {retention_storage_mode}"
@@ -399,7 +402,10 @@ def main():
                 device = resolve_torch_device(message.get("device", "auto"))
                 report_torch_device(message.get("device", "auto"), device)
                 trainer = PpoTrainer(message["featureSpec"], message["hyperparameters"], int(message["seed"]), device)
-                if packed_prepare_mode == "grouped_h2d_persistent":
+                if (
+                    packed_prepare_mode == "grouped_h2d_persistent"
+                    or persistent_act_h2d
+                ):
                     packed_h2d_workspace = PackedH2dWorkspace(device)
                 if message.get("resume"):
                     state = trainer.resume(message["resume"])
