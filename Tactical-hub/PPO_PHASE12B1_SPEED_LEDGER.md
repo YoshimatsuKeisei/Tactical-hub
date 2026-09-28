@@ -302,3 +302,28 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Keep sampling, RNG consumption, finite checks, host-scalar behavior, model input
    shape/value/stride and PPO math unchanged.
 6. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+
+
+## V6-I exact act-shape reuse audit — verified diagnostic
+- Diagnostic commit: d6f177ab7ae5de9b9eac03068a59d1c84240b003
+- Workload: 8 env x 500 decisions = 4,000 decisions / 500 actBatch calls.
+- Training semantics remained V6-I; this was diagnostic-only.
+- Exact prepared shape/stride/dtype/nonempty signatures: 42 unique.
+- Exact reuse hits after first occurrence: 458 / 500 = 91.6%.
+- Singleton signatures: 10.
+- Repeated signatures: 32.
+- Calls on repeated signatures: 490 / 500 = 98.0%.
+- Unique Action shapes: 11.
+- Top exact signature count: 115 calls.
+- Conclusion: exact-shape reuse is high enough to justify CUDA Graph exploration.
+
+## Next steps after shape audit
+1. Keep V6-I as the verified baseline.
+2. Before CUDA Graph capture, stabilize remaining full-shape Observation tensor addresses:
+   units/bases/constructions are still rebuilt each round by logical-row zero-padding + torch.cat.
+3. Reuse full logical-row restore buffers while preserving the exact full tensor
+   shape/value/stride seen by the model.
+4. Exact-compare this representation-preserving change against V6-I.
+5. Only after those addresses are stable, test exact-shape CUDA Graph for model forward only.
+6. Keep sampling/RNG/finite checks/host scalars outside the graph and do not change PPO math.
+7. Do not run 50k until the remaining gap to the 20x target is materially reduced.
