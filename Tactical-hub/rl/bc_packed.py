@@ -146,6 +146,11 @@ def split_packed_batch_samples(
             "header": {
                 "batchSize": 1,
                 "tensors": descriptors,
+                **(
+                    {"rowCompaction": dict(header["rowCompaction"])}
+                    if header.get("rowCompaction")
+                    else {}
+                ),
             },
             "payload": bytearray(b"".join(buffers)),
         })
@@ -349,6 +354,34 @@ class PackedH2dWorkspace:
         return target
 
 
+def _apply_logical_row_counts(
+    prepared: dict[str, Any],
+    logical_row_counts: dict[str, Any] | None,
+) -> None:
+    if not logical_row_counts:
+        return
+
+    normalized: dict[str, int] = {}
+    for key in ("units", "bases", "constructions"):
+        if key not in logical_row_counts:
+            continue
+        logical_rows = int(logical_row_counts[key])
+        table, mask = prepared["masked"][key]
+        if logical_rows < int(table.shape[1]):
+            raise ValueError(
+                f"Packed logical row count is smaller than transferred rows: "
+                f"{key} {logical_rows} < {int(table.shape[1])}"
+            )
+        if int(mask.shape[1]) != int(table.shape[1]):
+            raise ValueError(
+                f"Packed compact table/mask shape mismatch: {key}"
+            )
+        normalized[key] = logical_rows
+
+    if normalized:
+        prepared["_logicalRowCount"] = normalized
+
+
 def prepare_packed_tensors_grouped_h2d(
     header: dict[str, Any],
     payload: bytearray,
@@ -441,6 +474,10 @@ def prepare_packed_tensors_grouped_h2d(
             for name in strategic_names
         },
     }
+    _apply_logical_row_counts(
+        prepared,
+        header.get("rowCompaction"),
+    )
     if include_nonempty_metadata or include_valid_prefix_metadata:
         def mask_values(name: str) -> np.ndarray:
             descriptor = by_name[name]
@@ -507,7 +544,10 @@ def prepare_packed_tensors_grouped_h2d(
 
 
 def prepare_packed_tensors(
-    views: dict[str, np.ndarray], device: torch.device
+    views: dict[str, np.ndarray],
+    device: torch.device,
+    *,
+    logical_row_counts: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
     def floating(name: str) -> torch.Tensor:
         return torch.from_numpy(views[name]).to(device=device, dtype=torch.float32)
@@ -539,6 +579,10 @@ def prepare_packed_tensors(
             for name in strategic_names
         },
     }
+    _apply_logical_row_counts(
+        prepared,
+        logical_row_counts,
+    )
     return (
         prepared,
         floating("actions"),
