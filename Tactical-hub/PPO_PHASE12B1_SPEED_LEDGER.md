@@ -165,12 +165,55 @@ Updated: 2026-09-28
 - External wall: 54.619 sec -> 40.395 sec (1.3521x paired diagnostic).
 - V6-D is the current fastest verified baseline under exact semantics.
 
+## Python internal profile — verified diagnostic
+- Diagnostic candidate: 9cf510348dd81f42d9fa0dea3ae16d76b7efdb81
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; model/optimizer/CPU RNG/CUDA RNG/retention bytes all exact.
+- Packed read binary: 97.33 ms.
+- Packed prepare H2D/restore: 265.72 ms.
+- Act model forward: 630.19 ms.
+- Act finite/distribution/sampling/log-prob/host-scalar work: ~274 ms combined.
+- Retention compress: 527.67 ms.
+- Retained batch decompress/decode: 898.66 ms.
+- Retained batch prepare H2D/restore: 102.53 ms.
+- Replay model forward: 300.27 ms.
+- Replay objective: 165.49 ms.
+- Replay backward: 470.07 ms.
+- Update finish: 138.76 ms.
+- The profiler requires CUDA synchronization and is diagnostic only, not a speed benchmark.
+
+## V6-E compact model rows — CLOSED
+- Candidate: 7b097baaa8490e0901a29ba2ea2e6e4ade27960c
+- Workload: 4,000 decisions.
+- Wall 33.296 -> 25.403 sec; batchAct 7.113 -> 6.076 sec; replay 6.170 -> 5.799 sec.
+- retention bytes/counters/RNG remained exact, but modelExact=false and optimizerExact=false.
+- semanticDiffKeys were update and diagnostics.
+- Conclusion: changing model input tensor shapes changes floating-point execution enough to break
+  the project's bit-exact requirement. Do not adopt this route without a new exact-preserving method.
+
+## V6-F raw retention — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-raw-retention
+- Candidate: c376f55a67ba5f473192f395bf64d20b2e907bd4
+- Baseline: V6-D 5d5c5d13e7ebc846d5fd785ea2d91ea32d04006f
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- Same raw retained payload: 340,830,768 bytes.
+- Deflate storage 23,168,575 bytes -> raw storage 340,830,768 bytes.
+- Peak retained storage 23,168,575 -> 340,830,768 bytes.
+- Kaggle host RAM: 33,659,383,808 bytes.
+- 50k raw-retention linear projection: ~4.260 GB (~12.7% of host RAM).
+- External wall 28.521 -> 20.790 sec (1.3719x paired diagnostic).
+- Internal total 27.014 -> 19.325 sec.
+- Rollout 12.027 -> 11.167 sec.
+- Replay 5.311 -> 4.473 sec.
+- batchAct 5.807 -> 5.239 sec.
+- V6-F is the current fastest exact-verified baseline for continued optimization.
+
 ## Next steps
-1. Keep V6-D as the current baseline.
-2. Fix the existing Python PPO profiler name-shadowing bug without changing training semantics.
-3. Use Python stage profiling to split the remaining batchAct/replay cost into decode,
-   H2D/restore, model forward, retention decode/combine, and PPO accumulate/update work.
-4. Choose the next structural optimization from measured Python-stage cost; do not guess.
+1. Keep V6-F as the current baseline; do not adopt V6-E.
+2. Target transport/H2D and other representation-preserving overhead before changing model math.
+3. Inspect current PackedH2dWorkspace / CPU memory path for pinned-memory and avoidable copies.
+4. Preserve the exact tensor shapes and values seen by the model.
 5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
