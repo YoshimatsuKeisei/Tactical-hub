@@ -101,11 +101,46 @@ export type PpoFastBatchInput = {
   client?: PythonPpoClient;
 };
 
-function createFastEnvironment() {
+function createFastEnvironment(profiler?: PpoTimingProfiler) {
+  const instrumentation = profiler
+    ? {
+        cpuStep: {
+          rlInPlacePhaseTransitions: true,
+          onRuntimeClone(milliseconds: number) {
+            profiler.record("fast_rollout_game_runtime_clone", milliseconds);
+          },
+          onPolicy(milliseconds: number) {
+            profiler.record("fast_rollout_game_policy", milliseconds);
+          },
+          onApply(milliseconds: number, decision: { kind: string }, phaseBefore: string) {
+            profiler.record("fast_rollout_game_apply", milliseconds);
+            profiler.record(
+              `fast_rollout_game_apply_kind.${decision.kind}`,
+              milliseconds,
+            );
+            profiler.record(
+              `fast_rollout_game_apply_phase.${phaseBefore}`,
+              milliseconds,
+            );
+          },
+          onLog(milliseconds: number) {
+            profiler.record("fast_rollout_game_log", milliseconds);
+          },
+        },
+        onEnumerate(milliseconds: number, phase: string) {
+          profiler.record("fast_rollout_game_enumerate", milliseconds);
+          profiler.record(
+            `fast_rollout_game_enumerate_phase.${phase}`,
+            milliseconds,
+          );
+        },
+      }
+    : { cpuStep: { rlInPlacePhaseTransitions: true } };
+
   return new RlEnvironmentV2(
     undefined,
     true,
-    { cpuStep: { rlInPlacePhaseTransitions: true } },
+    instrumentation,
   );
 }
 
@@ -192,7 +227,9 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   const slots: FastBatchSlot[] = Array.from(
     { length: environmentCount },
     (_, environmentIndex) => {
-      const environment = createFastEnvironment();
+      const environment = createFastEnvironment(
+        profiler.enabled ? profiler : undefined,
+      );
       const seed = firstGameSeed + environmentIndex;
       environment.reset(seed, 4);
       return {
