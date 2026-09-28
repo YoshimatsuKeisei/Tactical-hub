@@ -96,7 +96,8 @@ export type RlObservationFeatureSpec = {
 
 type StaticMapCell = {
   baseId?: string;
-  features: number[];
+  template: number[];
+  dynamicOffset: number;
 };
 
 type StaticBaseGeometry = {
@@ -113,6 +114,7 @@ type StaticBaseGeometry = {
  */
 export type RlObservationEncoderCache = {
   staticMap?: StaticMapCell[][];
+  staticMapTeamWidth?: number;
   baseGeometry?: Map<string, StaticBaseGeometry>;
   zeroRows?: Map<number, number[]>;
 };
@@ -248,6 +250,8 @@ function encodeUnit(context: Context, unit: Unit, schemaVersion: 1 | 2) {
 function buildStaticMap(context: Context): StaticMapCell[][] {
   const width = context.observation.map.width;
   const height = context.observation.map.height;
+  const teamWidth = context.teams.length + 1;
+  const rowWidth = RL_OBSERVATION_SCHEMA.mapBase.length + teamWidth * 3;
   const indexOf = (x: number, y: number) => y * width + x;
   const tileByCoord = new Map<number, RlObservation["map"]["tiles"][number]>();
   for (const tile of context.observation.map.tiles) tileByCoord.set(indexOf(tile.x, tile.y), tile);
@@ -258,16 +262,22 @@ function buildStaticMap(context: Context): StaticMapCell[][] {
   return Array.from({ length: height }, (_, y) =>
     Array.from({ length: width }, (_, x) => {
       const tile = tileByCoord.get(indexOf(x, y));
-      return {
-        baseId: tile?.baseId,
-        features: [
+      const staticFeatures = [
         normalized(x, width),
         normalized(y, height),
         ...oneHot(tile?.terrain, TERRAIN_TYPES),
         Number(Boolean(tile?.baseId)),
         Number(Boolean(tile?.roadSectionId)),
         ...directions.map(([dx, dy]) => Number(Boolean(tile?.roadSectionId) && tileAt(x + dx, y + dy)?.roadSectionId === tile?.roadSectionId)),
-        ],
+      ];
+      const template = Array(rowWidth).fill(0);
+      for (let index = 0; index < staticFeatures.length; index += 1) {
+        template[index] = staticFeatures[index];
+      }
+      return {
+        baseId: tile?.baseId,
+        template,
+        dynamicOffset: staticFeatures.length,
       };
     }),
   );
@@ -275,8 +285,19 @@ function buildStaticMap(context: Context): StaticMapCell[][] {
 
 function encodeMap(context: Context) {
   const width = context.observation.map.width;
-  const staticMap = context.encoderCache?.staticMap ?? buildStaticMap(context);
-  if (context.encoderCache && !context.encoderCache.staticMap) context.encoderCache.staticMap = staticMap;
+  const teamWidth = context.teams.length + 1;
+  const cachedStaticMap = context.encoderCache?.staticMap;
+  const canReuseStaticMap = Boolean(
+    cachedStaticMap
+    && context.encoderCache?.staticMapTeamWidth === teamWidth,
+  );
+  const staticMap = canReuseStaticMap
+    ? cachedStaticMap!
+    : buildStaticMap(context);
+  if (context.encoderCache && !canReuseStaticMap) {
+    context.encoderCache.staticMap = staticMap;
+    context.encoderCache.staticMapTeamWidth = teamWidth;
+  }
   const constructionAt = new Map<number, { bridge?: Construction; obstacle?: Construction }>();
   for (const construction of context.observation.constructions) {
     if (!construction.active) continue;
@@ -291,14 +312,11 @@ function encodeMap(context: Context) {
       else if (construction.kind === "obstacle" && !entry.obstacle) entry.obstacle = construction;
     }
   }
-  const teamWidth = context.teams.length + 1;
-  const rowWidth = RL_OBSERVATION_SCHEMA.mapBase.length + teamWidth * 3;
   return staticMap.map((row, y) => row.map((cell, x) => {
     const dynamic = constructionAt.get(y * width + x);
     const base = cell.baseId ? context.baseById.get(cell.baseId) : undefined;
-    const result = Array(rowWidth).fill(0);
-    for (let index = 0; index < cell.features.length; index += 1) result[index] = cell.features[index];
-    let offset = cell.features.length;
+    const result = cell.template.slice();
+    let offset = cell.dynamicOffset;
     result[offset++] = Number(Boolean(dynamic?.bridge));
     result[offset++] = Number(Boolean(dynamic?.obstacle));
     writeTeamVector(context, result, offset, base?.ownerTeamId);
