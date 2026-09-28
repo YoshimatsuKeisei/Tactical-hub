@@ -691,3 +691,36 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - External wall: 15.647 -> 10.019 sec, but batchAct/replay also moved materially and wall is not used as isolated evidence.
 - Decision: 1k gate passed strongly. Proceed to 4k paired exactness/performance gate before promotion.
 - 50k remains NOT RUN.
+
+
+## V6-T bounded attack-distance — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6t-bounded-attack-distance
+- Implementation commit: e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Baseline: V6-Q fdd9de2c65eec2a95be3a387d30eb36973fe4502
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Game step: 2,666.43 -> 1,986.34 ms = 1.3424x speedup (~25.5% reduction).
+- Observation encode: 1,094.09 -> 1,136.15 ms and Action encode: 845.44 -> 855.51 ms;
+  these paths are unchanged and differences are treated as run variability.
+- batchAct: 5,402.27 -> 5,193.18 ms; replay: 3,678.81 -> 3,593.25 ms;
+  these paths are unchanged and differences are treated as run variability.
+- External wall: 23.790 -> 18.511 sec; full wall difference is not attributed solely to V6-T.
+- Bounded BFS is used only for attack-candidate range legality.
+- It returns the exact shortest distance when reachable within the attacker's exact range;
+  otherwise Infinity is sufficient because the existing caller immediately rejects distance > range.
+- Unrestricted getRoadAttackDistance remains unchanged for other callers.
+- Only finite exact bounded distances are stored in the unrestricted pair-distance cache.
+- V6-T is promoted as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next steps after V6-T
+1. Keep V6-T as the production baseline.
+2. Re-profile game-step internals on V6-T before further game-rule-path changes.
+3. Confirm how much neutral attack-distance cost remains after bounded BFS.
+4. If game-step is no longer the dominant actionable Node-side stage, compare remaining
+   batchAct/replay/encoding structural costs before choosing the next route.
+5. Preserve exact legal-action sets/order, game transitions, RNG, rewards, trajectory semantics,
+   PPO math, replay chunk size, environment count 8 and checkpoint schema.
+6. Do not run 50k until another material structural gap is removed or the remaining gap is
+   sufficiently characterized.
