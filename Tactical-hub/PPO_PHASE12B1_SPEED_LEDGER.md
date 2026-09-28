@@ -397,3 +397,51 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Reject grouped replay H2D immediately if model/optimizer/gradient/RNG exactness fails.
 6. Do not reduce observation/action information or skip decisions.
 7. Do not run 50k until the remaining structural gap is materially reduced.
+
+
+## Replay phase profile before V6-N
+- V6-M diagnostic workload: 8 env x 125 decisions = 1,000 decisions.
+- Top-level retained replay profile:
+  - accumulate_total: 1,152.12 ms (60.01%)
+  - decode_records: 554.16 ms (28.86%)
+  - prepare_h2d: 130.49 ms (6.80%)
+  - combine_cpu: 75.80 ms (3.95%)
+  - scalar_h2d: 7.43 ms (0.39%)
+- decode_records detail:
+  - integrity_hash: 473.38 ms
+  - decode_views: 75.82 ms
+  - selected_actions: 0.32 ms
+- The replay-time SHA256 recheck alone accounted for about 85.4% of decode_records
+  and about 24.7% of the profiled replay total.
+
+## V6-N immutable verified raw retention — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6n-immutable-raw-retention
+- Candidate: 6b4052b5f9c9125568166c15dc8662fa34b7018a
+- Baseline: V6-M bb1e41a59cc2170efd21ac0f9a503819e6b4d8a8
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Raw retention bytes: 340,830,768 on both paths.
+- Raw retained payload is copied to immutable Python bytes in the retention worker,
+  hashed once after that immutable copy is created, and replay checks length/type while
+  skipping the redundant second SHA256 pass only for verified immutable raw records.
+- Deflate/non-immutable retention paths keep replay-time SHA256 verification.
+- Replay stage: 4,471.66 -> 3,518.28 ms (~21.3% reduction).
+- Internal replay: 4.490 -> 3.603 sec.
+- Internal total: 23.129 -> 18.608 sec.
+- External wall: 24.636 -> 20.127 sec (1.2241x paired diagnostic).
+- Observation encode/game step/batchAct differences are treated as run variability;
+  they are not attributed to V6-N.
+- V6-N is the current fastest exact-verified baseline.
+
+## Next steps after V6-N
+1. Keep V6-N as the current baseline.
+2. Re-profile V6-N retained replay after removing the redundant replay SHA256 pass.
+3. Target the largest newly measured remaining replay component only.
+4. If accumulate_total remains dominant, profile forward/objective/backward internally
+   before changing update math or kernel structure.
+5. Keep sample order, replay chunk size, tensor shape/value/stride, gradient accumulation
+   order, PPO math, RNG state and checkpoint schema unchanged.
+6. Do not reduce observation/action information or skip decisions.
+7. Do not run 50k until the remaining structural gap is materially reduced.
