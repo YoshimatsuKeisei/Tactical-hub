@@ -390,6 +390,8 @@ class PackedH2dWorkspace:
         self._int_buffer: torch.Tensor | None = None
         self._action_buffer: torch.Tensor | None = None
         self._action_index_buffer: torch.Tensor | None = None
+        self._logical_table_buffers: dict[str, torch.Tensor] = {}
+        self._logical_mask_buffers: dict[str, torch.Tensor] = {}
 
     @staticmethod
     def _capacity(required: int) -> int:
@@ -451,10 +453,64 @@ class PackedH2dWorkspace:
         target.copy_(cpu)
         return target
 
+    def restore_logical_rows(
+        self,
+        key: str,
+        table: torch.Tensor,
+        mask: torch.Tensor,
+        logical_rows: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size = int(table.shape[0])
+        transferred_rows = int(table.shape[1])
+        row_width = int(table.shape[2])
+        if logical_rows < transferred_rows:
+            raise ValueError(
+                f"Packed logical row count is smaller than transferred rows: "
+                f"{key} {logical_rows} < {transferred_rows}"
+            )
+        if int(mask.shape[0]) != batch_size or int(mask.shape[1]) != transferred_rows:
+            raise ValueError(
+                f"Packed compact table/mask shape mismatch: {key}"
+            )
+        if logical_rows == transferred_rows:
+            return table, mask
+
+        table_required = batch_size * logical_rows * row_width
+        table_buffer = self._ensure(
+            self._logical_table_buffers.get(key),
+            table_required,
+            table.dtype,
+        )
+        self._logical_table_buffers[key] = table_buffer
+        full_table = table_buffer.narrow(0, 0, table_required).view(
+            batch_size,
+            logical_rows,
+            row_width,
+        )
+        full_table.zero_()
+        full_table[:, :transferred_rows, :].copy_(table)
+
+        mask_required = batch_size * logical_rows
+        mask_buffer = self._ensure(
+            self._logical_mask_buffers.get(key),
+            mask_required,
+            mask.dtype,
+        )
+        self._logical_mask_buffers[key] = mask_buffer
+        full_mask = mask_buffer.narrow(0, 0, mask_required).view(
+            batch_size,
+            logical_rows,
+        )
+        full_mask.zero_()
+        full_mask[:, :transferred_rows].copy_(mask)
+        return full_table, full_mask
+
 
 def _apply_logical_row_counts(
     prepared: dict[str, Any],
     logical_row_counts: dict[str, Any] | None,
+    *,
+    workspace: PackedH2dWorkspace | None = None,
 ) -> None:
     if not logical_row_counts:
         return
@@ -475,6 +531,14 @@ def _apply_logical_row_counts(
                 f"Packed compact table/mask shape mismatch: {key}"
             )
         if logical_rows == transferred_rows:
+            continue
+        if workspace is not None:
+            prepared["masked"][key] = workspace.restore_logical_rows(
+                key,
+                table,
+                mask,
+                logical_rows,
+            )
             continue
 
         trailing_rows = logical_rows - transferred_rows
@@ -646,6 +710,7 @@ def prepare_packed_tensors_grouped_h2d(
     _apply_logical_row_counts(
         prepared,
         header.get("rowCompaction"),
+        workspace=workspace,
     )
     if include_nonempty_metadata or include_valid_prefix_metadata:
         def mask_values(name: str) -> np.ndarray:
