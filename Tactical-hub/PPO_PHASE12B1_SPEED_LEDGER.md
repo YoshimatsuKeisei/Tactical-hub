@@ -209,12 +209,29 @@ Updated: 2026-09-28
 - batchAct 5.807 -> 5.239 sec.
 - V6-F is the current fastest exact-verified baseline for continued optimization.
 
+## V6-G persistent act H2D — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-persistent-act-h2d
+- Candidate: 45d13c43a36de3e0e3e0b5d79f8669c1bfac8e01
+- Baseline: V6-F c376f55a67ba5f473192f395bf64d20b2e907bd4
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Raw retention: 340,830,768 bytes on both paths.
+- External wall 25.068 -> 20.749 sec (1.2082x paired diagnostic).
+- Internal total 23.565 -> 19.231 sec.
+- Rollout 11.666 -> 11.077 sec.
+- Replay 4.614 -> 4.518 sec.
+- batchAct 5,521.17 -> 5,107.68 ms (~7.5% reduction).
+- V6-G is the current fastest exact-verified baseline.
+
 ## Next steps
-1. Keep V6-F as the current baseline; do not adopt V6-E.
-2. Target transport/H2D and other representation-preserving overhead before changing model math.
-3. Inspect current PackedH2dWorkspace / CPU memory path for pinned-memory and avoidable copies.
-4. Preserve the exact tensor shapes and values seen by the model.
-5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+1. Keep V6-G as the current baseline.
+2. Inspect exact-shape CUDA Graph capture for act model forward only.
+3. Keep sampling, RNG consumption, finite checks and host-scalar behavior unchanged.
+4. Never pad to a new bucket shape just to enable capture; V6-E proved shape changes break bit-exactness.
+5. If exact-shape graph reuse is too sparse or capture overhead dominates, close the route quickly.
+6. After GPU forward work, return to Node observation/game-step structural cost.
+7. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
 - checkpointKind: ppo_self_play
