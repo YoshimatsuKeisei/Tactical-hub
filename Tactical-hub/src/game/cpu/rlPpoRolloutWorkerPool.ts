@@ -12,6 +12,13 @@ import type {
   PpoRolloutWorkerTiming,
 } from "./rlPpoRolloutWorkerMessages";
 
+type PpoRolloutWorkerRequestWithoutId =
+  PpoRolloutWorkerRequest extends infer Request
+    ? Request extends { requestId: number }
+      ? Omit<Request, "requestId">
+      : never
+    : never;
+
 type WorkerHandle = {
   workerId: number;
   worker: Worker;
@@ -245,10 +252,7 @@ export class PpoRolloutWorkerPool {
 
   private request(
     handle: WorkerHandle,
-    message: Omit<
-      PpoRolloutWorkerRequest,
-      "requestId"
-    >,
+    message: PpoRolloutWorkerRequestWithoutId,
   ): Promise<PpoRolloutWorkerResponse> {
     if (handle.pending) {
       throw new Error(
