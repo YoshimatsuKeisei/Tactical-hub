@@ -537,3 +537,29 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    action values, decision cadence, RNG, PPO math and checkpoint schema.
 5. Do not reduce information observed by the policy and do not skip decisions.
 6. Do not run 50k until another material structural gain is verified.
+
+
+## V6-N Observation encoder phase profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6n-observation-profile
+- Diagnostic commit: fac9d7ded5217b847ab7d72b85d1f56782441013
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- Top-level Observation encode: 676.53 ms.
+- Instrumented Observation encode: 670.291 ms.
+- Stage split:
+  - map: 275.807 ms (41.15%)
+  - bases: 194.694 ms (29.05%)
+  - units: 132.339 ms (19.74%)
+  - setup: 22.240 ms (3.32%)
+  - strategic: 15.753 ms (2.35%)
+  - positions: 14.600 ms (2.18%)
+  - teamsGlobal: 8.022 ms (1.20%)
+  - constructions: 4.687 ms (0.70%)
+  - compaction: 2.149 ms (0.32%)
+- Node profile on the same 1k diagnostic:
+  - game step: 709.91 ms
+  - Observation encode: 676.53 ms
+  - Action encode: 238.33 ms
+  - batchAct: 1,912.54 ms
+  - replay: 1,381.91 ms
+- Conclusion: map + bases account for about 70.2% of Observation encode.
+- Next: optimize map first with exact-value-preserving static row templates; keep bases separate.
