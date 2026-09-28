@@ -93,7 +93,8 @@ export type PpoFastBatchInput = {
     | "fast_batch_v6_persistent_act_h2d"
     | "fast_batch_v6_persistent_action_restore"
     | "fast_batch_v6_cuda_graph_hot"
-    | "fast_batch_v6_cuda_graph_32";
+    | "fast_batch_v6_cuda_graph_32"
+    | "fast_batch_v6_replay_h2d_workspace";
   client?: PythonPpoClient;
 };
 

@@ -390,6 +390,7 @@ class PackedH2dWorkspace:
         self._int_buffer: torch.Tensor | None = None
         self._action_buffer: torch.Tensor | None = None
         self._action_index_buffer: torch.Tensor | None = None
+        self._named_buffers: dict[tuple[str, torch.dtype], torch.Tensor] = {}
 
     @staticmethod
     def _capacity(required: int) -> int:
@@ -449,6 +450,42 @@ class PackedH2dWorkspace:
         )
         target = self._action_index_buffer.narrow(0, 0, cpu.numel())
         target.copy_(cpu)
+        return target
+
+    def copy_named(
+        self,
+        name: str,
+        cpu: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        key = (name, dtype)
+        buffer = self._ensure(
+            self._named_buffers.get(key),
+            cpu.numel(),
+            dtype,
+        )
+        self._named_buffers[key] = buffer
+        target = buffer.narrow(0, 0, cpu.numel()).view(
+            tuple(int(value) for value in cpu.shape)
+        )
+        target.copy_(cpu)
+        return target
+
+    def zero_named_float32(
+        self,
+        name: str,
+        shape: tuple[int, ...],
+    ) -> torch.Tensor:
+        required = int(np.prod(shape, dtype=np.int64))
+        key = (name, torch.float32)
+        buffer = self._ensure(
+            self._named_buffers.get(key),
+            required,
+            torch.float32,
+        )
+        self._named_buffers[key] = buffer
+        target = buffer.narrow(0, 0, required).view(shape)
+        target.zero_()
         return target
 
 
@@ -718,12 +755,26 @@ def prepare_packed_tensors(
     *,
     logical_row_counts: dict[str, Any] | None = None,
     action_sparse_shape: tuple[int, int, int] | None = None,
+    workspace: PackedH2dWorkspace | None = None,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
+    def transfer(
+        name: str,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        cpu = torch.from_numpy(views[name])
+        if workspace is None:
+            return cpu.to(device=device, dtype=dtype)
+        if not cpu.is_contiguous():
+            raise ValueError(
+                f"Replay H2D workspace requires contiguous tensor: {name}"
+            )
+        return workspace.copy_named(name, cpu, dtype)
+
     def floating(name: str) -> torch.Tensor:
-        return torch.from_numpy(views[name]).to(device=device, dtype=torch.float32)
+        return transfer(name, torch.float32)
 
     def mask(name: str) -> torch.Tensor:
-        return torch.from_numpy(views[name]).to(device=device, dtype=torch.bool)
+        return transfer(name, torch.bool)
 
     strategic_names = (
         "siegeStates", "kingCampaignStates", "rewardPlacementRequests",
@@ -771,17 +822,35 @@ def prepare_packed_tensors(
             or int(indices_cpu.max()) >= total
         ):
             raise ValueError("Sparse replay Action index out of range")
-        indices = torch.from_numpy(indices_cpu).to(
-            device=device, dtype=torch.long
-        )
-        values = torch.from_numpy(values_cpu).to(
-            device=device, dtype=torch.float32
-        )
-        actions = torch.zeros(
-            action_sparse_shape,
-            dtype=torch.float32,
-            device=device,
-        )
+        indices_tensor = torch.from_numpy(indices_cpu)
+        values_tensor = torch.from_numpy(values_cpu)
+        if workspace is None:
+            indices = indices_tensor.to(
+                device=device, dtype=torch.long
+            )
+            values = values_tensor.to(
+                device=device, dtype=torch.float32
+            )
+            actions = torch.zeros(
+                action_sparse_shape,
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            indices = workspace.copy_named(
+                "actionSparseIndices",
+                indices_tensor,
+                torch.long,
+            )
+            values = workspace.copy_named(
+                "actionSparseValues",
+                values_tensor,
+                torch.float32,
+            )
+            actions = workspace.zero_named_float32(
+                "replayActions",
+                action_sparse_shape,
+            )
         if indices.numel():
             actions.view(-1).index_copy_(0, indices, values)
 
@@ -789,5 +858,5 @@ def prepare_packed_tensors(
         prepared,
         actions,
         mask("actionMask"),
-        torch.from_numpy(views["targets"]).to(device=device, dtype=torch.long),
+        transfer("targets", torch.long),
     )

@@ -44,6 +44,9 @@ def main():
     persistent_act_h2d = (
         os.environ.get("PPO_PERSISTENT_ACT_H2D") == "1"
     )
+    persistent_replay_h2d = (
+        os.environ.get("PPO_PERSISTENT_REPLAY_H2D") == "1"
+    )
     if retention_storage_mode not in ("deflate", "raw"):
         raise ValueError(
             f"Unsupported PPO_RETENTION_STORAGE_MODE: {retention_storage_mode}"
@@ -52,6 +55,7 @@ def main():
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     packed_h2d_workspace = None
+    replay_h2d_workspace = None
     timings = {}
     legal_action_counts = []
     retained_chunks = {}
@@ -407,6 +411,8 @@ def main():
                     or persistent_act_h2d
                 ):
                     packed_h2d_workspace = PackedH2dWorkspace(device)
+                if persistent_replay_h2d:
+                    replay_h2d_workspace = PackedH2dWorkspace(device)
                 if message.get("resume"):
                     state = trainer.resume(message["resume"])
                 else:
@@ -587,6 +593,7 @@ def main():
                             trainer.device,
                             logical_row_counts=first_row_compaction,
                             action_sparse_shape=combined_sparse_shape,
+                            workspace=replay_h2d_workspace,
                         )
                     )
                 else:
@@ -599,31 +606,47 @@ def main():
                             views,
                             trainer.device,
                             logical_row_counts=first_row_compaction,
+                            workspace=replay_h2d_workspace,
                         )
                     )
                 scalar_values = np.frombuffer(
                     scalar_payload,
                     dtype=np.dtype("<f4"),
                 )
-                old = torch.from_numpy(
-                    scalar_values[:sample_count]
-                ).to(
-                    device=trainer.device,
-                    dtype=torch.float32,
+
+                def replay_scalar(
+                    name: str,
+                    values: np.ndarray,
+                ) -> torch.Tensor:
+                    cpu = torch.from_numpy(values)
+                    if replay_h2d_workspace is None:
+                        return cpu.to(
+                            device=trainer.device,
+                            dtype=torch.float32,
+                        )
+                    if not cpu.is_contiguous():
+                        raise ValueError(
+                            f"Replay H2D workspace requires contiguous scalar: {name}"
+                        )
+                    return replay_h2d_workspace.copy_named(
+                        name,
+                        cpu,
+                        torch.float32,
+                    )
+
+                old = replay_scalar(
+                    "oldLogProbabilities",
+                    scalar_values[:sample_count],
                 )
-                advantages = torch.from_numpy(
+                advantages = replay_scalar(
+                    "advantages",
                     scalar_values[
                         sample_count:sample_count * 2
-                    ]
-                ).to(
-                    device=trainer.device,
-                    dtype=torch.float32,
+                    ],
                 )
-                returns = torch.from_numpy(
-                    scalar_values[sample_count * 2:]
-                ).to(
-                    device=trainer.device,
-                    dtype=torch.float32,
+                returns = replay_scalar(
+                    "returns",
+                    scalar_values[sample_count * 2:],
                 )
                 result = trainer.accumulate_prepared_chunk(
                     prepared,
