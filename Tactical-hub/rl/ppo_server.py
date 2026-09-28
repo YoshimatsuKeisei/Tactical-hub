@@ -586,6 +586,7 @@ def main():
                             )
                         )
                     )
+                    replay_integrity_start = time.perf_counter()
                     immutable_verified_raw = bool(
                         record.get("storageMode") == "raw"
                         and record.get("rawImmutableVerified") is True
@@ -606,14 +607,30 @@ def main():
                         raise ValueError(
                             "PPO retained batch payload integrity mismatch"
                         )
+                    record_replay_phase(
+                        "integrity_hash",
+                        time.perf_counter() - replay_integrity_start,
+                    )
+
+                    replay_decode_views_start = time.perf_counter()
                     decoded_records.append(
                         decode_packed_views(record["header"], raw)
                     )
+                    record_replay_phase(
+                        "decode_views",
+                        time.perf_counter() - replay_decode_views_start,
+                    )
+
+                    replay_selected_start = time.perf_counter()
                     selected_action_groups.append(
                         [
                             int(value)
                             for value in record["selectedActionIndices"]
                         ]
+                    )
+                    record_replay_phase(
+                        "selected_actions",
+                        time.perf_counter() - replay_selected_start,
                     )
                 record_replay_phase(
                     "decode_records",
