@@ -147,11 +147,31 @@ Updated: 2026-09-28
 - Packed payload is byte-identical; the gain comes from avoiding padded zero-row
   allocation/copy before the already-existing packed-row compaction.
 
+## V6-D direct compact Observation — 8k verified result
+- Same implementation commit: 95010f5aa74ffe766fe66d2eab2b643e0df76c5b
+- Baseline: V6-C 1d7468a1015402932f42b82a1c1689b361850162
+- Workload: 8 env x 1,000 decisions = 8,000 decisions.
+- allExact=true; semanticExact=true; checkpointCoreExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/FeatureSpec/hyperparameters/seed all exact.
+- retention structure, drain state, raw bytes and compressed bytes all exact.
+- Retained raw bytes: 687,613,680 on both V6-C and V6-D.
+- Retained compressed bytes: 47,070,103 on both V6-C and V6-D.
+- Observation encode: 7,560.28 ms -> 5,186.57 ms (~31.4% reduction).
+- Action encode: 2,091.69 ms -> 1,773.67 ms.
+- batchAct: 14,532.36 ms -> 10,772.71 ms (~25.9% reduction).
+- Replay: 10,667.44 ms -> 10,080.44 ms.
+- Rollout: 31.644 sec -> 24.454 sec (~22.7% reduction).
+- Internal total: 52.909 sec -> 38.680 sec (~26.9% reduction).
+- External wall: 54.619 sec -> 40.395 sec (1.3521x paired diagnostic).
+- V6-D is the current fastest verified baseline under exact semantics.
+
 ## Next steps
-1. Run one 8k V6-C vs V6-D confirmation with Node profiling and full exactness.
-2. If exact and repeatable, make V6-D the current fastest verified baseline.
-3. Then target the remaining structural bottlenecks: batchAct, replay, and game step.
-4. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+1. Keep V6-D as the current baseline.
+2. Fix the existing Python PPO profiler name-shadowing bug without changing training semantics.
+3. Use Python stage profiling to split the remaining batchAct/replay cost into decode,
+   H2D/restore, model forward, retention decode/combine, and PPO accumulate/update work.
+4. Choose the next structural optimization from measured Python-stage cost; do not guess.
+5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
 - checkpointKind: ppo_self_play
