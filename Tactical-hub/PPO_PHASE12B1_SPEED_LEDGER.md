@@ -128,13 +128,30 @@ Updated: 2026-09-28
 - The 4k and 8k runs both show the intended structural reduction; V6-C is now the
   fastest verified Action generation path under exact semantics.
 
+## V6-D direct compact Observation — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-direct-compact-observation
+- Candidate tested: 95010f5aa74ffe766fe66d2eab2b643e0df76c5b
+- Baseline: V6-C 1d7468a1015402932f42b82a1c1689b361850162
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semanticExact=true; checkpointCoreExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/FeatureSpec/hyperparameters/seed all exact.
+- retention structure, drain state, raw bytes and compressed bytes all exact.
+- Retained raw bytes: 340,830,768 on both V6-C and V6-D.
+- Retained compressed bytes: 23,168,575 on both V6-C and V6-D.
+- Observation encode: 3,586.56 ms -> 2,656.40 ms (~25.9% reduction).
+- Action encode: 982.91 ms -> 905.21 ms.
+- batchAct: 6,678.99 ms -> 5,232.32 ms.
+- Replay: 5,171.75 ms -> 4,934.78 ms.
+- Rollout: 14.552 sec -> 12.041 sec (~17.3% reduction).
+- External wall: 29.322 sec -> 22.232 sec (1.3189x diagnostic).
+- Packed payload is byte-identical; the gain comes from avoiding padded zero-row
+  allocation/copy before the already-existing packed-row compaction.
+
 ## Next steps
-1. Keep V6-C direct sparse Action generation as the current Action baseline.
-2. Implement direct compact Observation generation for units/bases/constructions so
-   padded zero rows are never allocated before packed-row compaction.
-3. Preserve logical row counts and the zero-row autograd rule exactly.
-4. Run byte-exact local tests, then a 4k exact Kaggle comparison against V6-C.
-5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+1. Run one 8k V6-C vs V6-D confirmation with Node profiling and full exactness.
+2. If exact and repeatable, make V6-D the current fastest verified baseline.
+3. Then target the remaining structural bottlenecks: batchAct, replay, and game step.
+4. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
 - checkpointKind: ppo_self_play
