@@ -480,3 +480,27 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Do not alter replay chunk size, sample order, tensor shape/value/stride, gradient
    accumulation order, PPO objective, finite checks, RNG state or checkpoint schema.
 5. Do not reduce observation/action information.
+
+
+## V6-N exact replay input-shape audit
+- Diagnostic commit: 6143dd725d8a13aed12a50f4d1966a138ce10527
+- Workload: 8 env x 500 decisions = 4,000 decisions, replay chunk size 32.
+- Replay chunks: 125.
+- Unique exact signatures: 33.
+- Singleton signatures: 10.
+- Repeated signatures: 23.
+- Calls on repeated signatures: 115 / 125.
+- Reused calls after first occurrence: 92 / 125 = 73.6%.
+- Top exact-signature counts: 23, 9, 8, 7, 7, 7, 6, 6, 5, 5, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2.
+- Conclusion: replay shapes are reusable enough to justify one exact-shape training
+  CUDA Graph / graphed-callable experiment.
+- Do not bucket or pad to create new shared shapes; use exact signatures only.
+
+## Next steps after replay shape audit
+1. Keep V6-N as the verified baseline.
+2. Test training graphed-callable only for exact hot replay signatures.
+3. Start conservatively with minHits=3 and maxEntries=16.
+4. Keep PPO objective algebra, validation checks, replay chunk size, sample order,
+   gradient accumulation order and optimizer step unchanged.
+5. Graph the model forward/backward path only; do not graph sampling/RNG.
+6. Reject immediately if model/optimizer/gradient/RNG exactness changes.
