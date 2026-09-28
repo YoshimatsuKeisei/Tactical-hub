@@ -586,6 +586,7 @@ def main():
                             )
                         )
                     )
+
                     replay_integrity_start = time.perf_counter()
                     immutable_verified_raw = bool(
                         record.get("storageMode") == "raw"
@@ -752,6 +753,11 @@ def main():
                     old,
                     advantages,
                     returns,
+                    profile_stage=(
+                        record_replay_phase
+                        if replay_phase_profile
+                        else None
+                    ),
                 )
                 replay_phase_sync()
                 record_replay_phase(
