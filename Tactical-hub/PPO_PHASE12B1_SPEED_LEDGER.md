@@ -616,3 +616,23 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Preserve exact game state transitions, action cadence, RNG, adjudication,
    rewards and all PPO/trajectory semantics.
 5. Do not simplify game rules or skip state updates.
+
+## V6-Q neutral attack candidate profile
+- Diagnostic commit: 2ec0fa29aee1b177e1780fa654978d5251b0e1ce
+- Workload: 8 env x 125 decisions = 1,000 decisions; paired against V6-Q fdd9de2.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Neutral candidate search: 212.72 ms / 360 calls.
+- attackTargetSearch: 211.93 ms; attackRangeDistance: 188.73 ms / 516 calls.
+- attackRangeDistance is about 88.7% of neutral candidate search.
+- Other measured neutral costs were small: context 0.16 ms, basic filter 1.31 ms,
+  topology gate 5.41 ms, post-processing 0.63 ms.
+- Conclusion: repeated exact road-distance searches are the next isolated target.
+
+## Next steps after neutral attack profile
+1. Keep V6-Q as production baseline.
+2. Reuse the existing exact createRoadAttackDistanceLookup path per target inside
+   AttackEnumerationContext; preserve pair-distance caching and all candidate ordering.
+3. Gate with a 1k paired exact test first; proceed to 4k only on isolated game-step gain.
+4. Preserve neutral-unit ID order, target ordering, road/bridge/base semantics, RNG order,
+   battle events, state hashes, PPO trajectory and checkpoint/RNG state bit-exactly.
+5. Do not run 50k yet.
