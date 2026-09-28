@@ -9,7 +9,7 @@ import type {
   UnitType,
 } from "../types";
 import { positionKey } from "../utils/position";
-import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, type RoadAttackTopologyContext } from "../utils/roadTopology";
+import { canAttackAcrossRoadTopology, createRoadAttackDistanceLookup, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, type RoadAttackTopologyContext } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
 import { getMovementCandidates } from "./movement";
@@ -154,6 +154,10 @@ export type AttackEnumerationContext = {
   readonly coordByUnitId: ReadonlyMap<string, { x: number; y: number } | undefined>;
   readonly roadTopology: RoadAttackTopologyContext;
   readonly distances: Map<string, number>;
+  readonly distanceLookupsByTargetId: Map<
+    string,
+    (position: UnitPosition) => number
+  >;
 };
 
 const attackContextCache = new WeakMap<GameState["units"], AttackEnumerationContext>();
@@ -179,6 +183,7 @@ export function getAttackEnumerationContext(state: GameState): AttackEnumeration
       coordByUnitId: new Map(living.map((unit) => [unit.id, getPositionCoord(state, unit.position)])),
       roadTopology: createRoadAttackTopologyContext(state),
       distances: new Map<string, number>(),
+      distanceLookupsByTargetId: new Map(),
     } satisfies AttackEnumerationContext;
   });
   if (state.phase === "attack_input") attackContextCache.set(state.units, context);
@@ -267,7 +272,16 @@ function contextDistance(state: GameState, attacker: Unit, target: Unit, context
   const key = `${attacker.id}\u0000${target.id}`;
   const cached = context.distances.get(key);
   if (cached !== undefined) return cached;
-  const distance = candidateDistance(state, attacker, target, context.roadTopology);
+  let lookup = context.distanceLookupsByTargetId.get(target.id);
+  if (!lookup) {
+    lookup = createRoadAttackDistanceLookup(
+      state,
+      target.position,
+      context.roadTopology,
+    );
+    context.distanceLookupsByTargetId.set(target.id, lookup);
+  }
+  const distance = lookup(attacker.position);
   context.distances.set(key, distance);
   return distance;
 }
