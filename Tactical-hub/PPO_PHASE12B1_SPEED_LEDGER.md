@@ -616,3 +616,31 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Preserve exact game state transitions, action cadence, RNG, adjudication,
    rewards and all PPO/trajectory semantics.
 5. Do not simplify game rules or skip state updates.
+
+
+## V6-Q game-step internal profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6q-game-step-profile
+- Diagnostic commit: 896ab046fbcd83c816944d0300bb6dadf12bd995
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- Paired against V6-Q baseline fdd9de2c65eec2a95be3a387d30eb36973fe4502.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Candidate game step: 866.43 ms total (~0.866 ms/decision).
+- Accounted game-step internals: 826.58 ms = 95.40%.
+- runtime clone: 31.65 ms; policy callback: 0.52 ms; log: 0.45 ms.
+- apply: 468.89 ms; enumerate: 325.07 ms; unaccounted: 39.85 ms.
+- apply hotspot: resolve_battle 259.39 ms / 24 calls = 10.808 ms/call.
+- movement-phase apply: 203.27 ms total; movement action itself 117.05 ms / 344 calls.
+- enumerate hotspots: movement_input 168.64 ms / 520 calls and attack_input 154.91 ms / 408 calls.
+- submit_team_production: 65.36 ms / 32 calls = 2.043 ms/call.
+- Conclusion: runtime cloning is not the next target. The largest measured game-step costs are
+  resolve_battle and legal-decision enumeration for movement/attack.
+
+## Next steps after V6-Q game-step profile
+1. Keep V6-Q as the production baseline; profiling commits remain diagnostic.
+2. Inspect resolveBattleInPlaceForRl first and split its internal cost before changing battle logic.
+3. Separately inspect movement/attack enumeration for repeated visibility, candidate, path or scan work.
+4. Do not mix battle-resolution and enumeration changes in one candidate.
+5. Preserve exact state transitions, RNG consumption/order, simultaneous-battle semantics,
+   legal action ordering/content, state hashes, trajectory semantics and PPO/checkpoint behavior.
+6. Reject any optimization that is not bit-exact on model/optimizer/RNG/counters and semantic outputs.
+7. Do not run 50k until another material structural gain is exact-verified.
