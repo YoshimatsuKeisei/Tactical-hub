@@ -50,6 +50,59 @@ describe("packed BC batches", () => {
       .toEqual([encoded.actions.length - 1, 0]);
   });
 
+  it("round-trips sparse Action transport bytes exactly", () => {
+    const environment = new RlEnvironment();
+    environment.reset(19, 4);
+    const observation = environment.getObservation(
+      environment.getCurrentActorTeamId()!,
+    );
+    const legal = environment.getLegalActions(observation.observingTeamId);
+    const encoded = encodeRlLegalActions(observation, legal);
+    const encodedObservation = encodeRlObservation(observation);
+    const spec = createRlFeatureSpec(observation);
+    const samples = [
+      { observation: encodedObservation, actions: encoded.actions, targetIndex: 0 },
+      { observation: encodedObservation, actions: encoded.actions.slice(0, 2), targetIndex: 1 },
+    ];
+
+    const dense = packBcEncodedSamples(samples, spec);
+    const sparse = packBcEncodedSamples(samples, spec, {
+      sparseActions: true,
+    });
+    const denseActions = tensorView(dense, "actions");
+    const sparseIndices = tensorView(sparse, "actionSparseIndices");
+    const sparseValues = tensorView(sparse, "actionSparseValues");
+    const restored = new Float32Array(
+      denseActions.buffer.byteLength / Float32Array.BYTES_PER_ELEMENT,
+    );
+    const indices = new Int32Array(
+      sparseIndices.buffer.buffer,
+      sparseIndices.buffer.byteOffset,
+      sparseIndices.buffer.byteLength / Int32Array.BYTES_PER_ELEMENT,
+    );
+    const values = new Float32Array(
+      sparseValues.buffer.buffer,
+      sparseValues.buffer.byteOffset,
+      sparseValues.buffer.byteLength / Float32Array.BYTES_PER_ELEMENT,
+    );
+    expect(indices.length).toBe(values.length);
+    indices.forEach((index, offset) => {
+      restored[index] = values[offset];
+    });
+
+    const restoredBytes = Buffer.from(
+      restored.buffer,
+      restored.byteOffset,
+      restored.byteLength,
+    );
+    expect(Buffer.compare(restoredBytes, denseActions.buffer)).toBe(0);
+    expect(sparse.actionSparseShape).toEqual(denseActions.descriptor.shape);
+    expect(Buffer.compare(
+      tensorView(sparse, "actionMask").buffer,
+      tensorView(dense, "actionMask").buffer,
+    )).toBe(0);
+  });
+
   it("preserves Feature Spec widths for empty strategic tables", () => {
     const environment = new RlEnvironment();
     environment.reset(23, 4);
