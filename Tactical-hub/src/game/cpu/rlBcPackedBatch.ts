@@ -107,3 +107,164 @@ export function packBcEncodedSamples(samples: BcEncodedSample[], featureSpec: Rl
   }
   return { payload: Buffer.concat(buffers, byteOffset), tensors, batchSize: samples.length };
 }
+
+
+const VARIABLE_BATCH_ROW_TENSORS = new Set([
+  "teams",
+  "units",
+  "bases",
+  "constructions",
+  "map",
+  "actions",
+  ...strategicNames.map((name) => `strategic.${name}`),
+  "teamMask",
+  "unitMask",
+  "baseMask",
+  "constructionMask",
+  "mapMask",
+  "actionMask",
+  ...strategicNames.map((name) => `strategicMask.${name}`),
+]);
+
+const PACKED_DTYPE_BYTES: Record<PackedTensorDescriptor["dtype"], number> = {
+  float32: 4,
+  int32: 4,
+  uint8: 1,
+};
+
+/**
+ * Combine batch-size-1 packed samples without reconstructing JS number arrays.
+ * Tensor bytes remain bit-identical; only batch padding/layout is rebuilt.
+ */
+export function combinePackedSingleSampleBatches(
+  samples: PackedBcBatch[],
+): PackedBcBatch {
+  if (!samples.length) {
+    throw new Error("Cannot combine an empty packed sample list");
+  }
+  if (samples.some((sample) => sample.batchSize !== 1)) {
+    throw new Error("Packed worker samples must all have batchSize=1");
+  }
+
+  const template = samples[0].tensors;
+  for (let sampleIndex = 1; sampleIndex < samples.length; sampleIndex += 1) {
+    const descriptors = samples[sampleIndex].tensors;
+    if (descriptors.length !== template.length) {
+      throw new Error("Packed worker tensor count mismatch");
+    }
+    for (let index = 0; index < template.length; index += 1) {
+      const left = template[index];
+      const right = descriptors[index];
+      if (left.name !== right.name || left.dtype !== right.dtype) {
+        throw new Error(
+          `Packed worker tensor mismatch at ${index}: ${left.name}/${right.name}`,
+        );
+      }
+    }
+  }
+
+  let byteOffset = 0;
+  const tensors: PackedTensorDescriptor[] = [];
+  const buffers: Buffer[] = [];
+
+  for (let descriptorIndex = 0; descriptorIndex < template.length; descriptorIndex += 1) {
+    const descriptors = samples.map((sample) => sample.tensors[descriptorIndex]);
+    const first = descriptors[0];
+    const itemBytes = PACKED_DTYPE_BYTES[first.dtype];
+
+    if (VARIABLE_BATCH_ROW_TENSORS.has(first.name)) {
+      if (first.shape.length !== 2 && first.shape.length !== 3) {
+        throw new Error(
+          `Unexpected variable packed tensor rank for ${first.name}: ${first.shape.length}`,
+        );
+      }
+
+      const trailing = first.shape.slice(2);
+      for (const descriptor of descriptors) {
+        if (descriptor.shape[0] !== 1 || descriptor.shape.length !== first.shape.length) {
+          throw new Error(`Packed worker variable shape mismatch: ${first.name}`);
+        }
+        if (
+          descriptor.shape.slice(2).length !== trailing.length
+          || descriptor.shape.slice(2).some((value, index) => value !== trailing[index])
+        ) {
+          throw new Error(`Packed worker variable width mismatch: ${first.name}`);
+        }
+      }
+
+      const maxRows = Math.max(...descriptors.map((descriptor) => descriptor.shape[1]));
+      const rowWidth = first.shape.length === 3 ? first.shape[2] : 1;
+      const rowBytes = rowWidth * itemBytes;
+      const output = Buffer.alloc(samples.length * maxRows * rowBytes);
+
+      descriptors.forEach((descriptor, sampleIndex) => {
+        const source = samples[sampleIndex].payload.subarray(
+          descriptor.byteOffset,
+          descriptor.byteOffset + descriptor.byteLength,
+        );
+        const expectedBytes = descriptor.shape[1] * rowBytes;
+        if (source.byteLength !== expectedBytes) {
+          throw new Error(`Packed worker byte length mismatch: ${first.name}`);
+        }
+        source.copy(output, sampleIndex * maxRows * rowBytes);
+      });
+
+      const shape = first.shape.length === 3
+        ? [samples.length, maxRows, first.shape[2]]
+        : [samples.length, maxRows];
+      tensors.push({
+        name: first.name,
+        dtype: first.dtype,
+        shape,
+        byteOffset,
+        byteLength: output.byteLength,
+      });
+      buffers.push(output);
+      byteOffset += output.byteLength;
+      continue;
+    }
+
+    const trailingShape = first.shape.slice(1);
+    for (const descriptor of descriptors) {
+      if (
+        descriptor.shape[0] !== 1
+        || descriptor.shape.length !== first.shape.length
+        || descriptor.shape.slice(1).some(
+          (value, index) => value !== trailingShape[index],
+        )
+      ) {
+        throw new Error(`Packed worker fixed tensor shape mismatch: ${first.name}`);
+      }
+    }
+
+    const sampleByteLength = first.byteLength;
+    if (descriptors.some((descriptor) => descriptor.byteLength !== sampleByteLength)) {
+      throw new Error(`Packed worker fixed byte length mismatch: ${first.name}`);
+    }
+
+    const output = Buffer.allocUnsafe(samples.length * sampleByteLength);
+    descriptors.forEach((descriptor, sampleIndex) => {
+      const source = samples[sampleIndex].payload.subarray(
+        descriptor.byteOffset,
+        descriptor.byteOffset + descriptor.byteLength,
+      );
+      source.copy(output, sampleIndex * sampleByteLength);
+    });
+
+    tensors.push({
+      name: first.name,
+      dtype: first.dtype,
+      shape: [samples.length, ...trailingShape],
+      byteOffset,
+      byteLength: output.byteLength,
+    });
+    buffers.push(output);
+    byteOffset += output.byteLength;
+  }
+
+  return {
+    payload: Buffer.concat(buffers, byteOffset),
+    tensors,
+    batchSize: samples.length,
+  };
+}
