@@ -37,6 +37,9 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    keep_compact_model_rows = (
+        os.environ.get("PPO_KEEP_COMPACT_MODEL_ROWS") == "1"
+    )
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
@@ -564,6 +567,7 @@ def main():
                             trainer.device,
                             logical_row_counts=first_row_compaction,
                             action_sparse_shape=combined_sparse_shape,
+                            restore_logical_rows=not keep_compact_model_rows,
                         )
                     )
                 else:
@@ -576,6 +580,7 @@ def main():
                             views,
                             trainer.device,
                             logical_row_counts=first_row_compaction,
+                            restore_logical_rows=not keep_compact_model_rows,
                         )
                     )
                 scalar_values = np.frombuffer(
@@ -829,6 +834,7 @@ def main():
                         include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
+                        restore_logical_rows=not keep_compact_model_rows,
                     )
                 else:
                     views = decode_packed_views(message, payload)

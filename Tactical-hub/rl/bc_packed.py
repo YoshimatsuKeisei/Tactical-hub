@@ -493,6 +493,7 @@ def prepare_packed_tensors_grouped_h2d(
     include_nonempty_metadata: bool = False,
     include_valid_prefix_metadata: bool = False,
     validate_action_mask_cpu: bool = False,
+    restore_logical_rows: bool = True,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
@@ -615,10 +616,11 @@ def prepare_packed_tensors_grouped_h2d(
             for name in strategic_names
         },
     }
-    _apply_logical_row_counts(
-        prepared,
-        header.get("rowCompaction"),
-    )
+    if restore_logical_rows:
+        _apply_logical_row_counts(
+            prepared,
+            header.get("rowCompaction"),
+        )
     if include_nonempty_metadata or include_valid_prefix_metadata:
         def mask_values(name: str) -> np.ndarray:
             descriptor = by_name[name]
@@ -690,6 +692,7 @@ def prepare_packed_tensors(
     *,
     logical_row_counts: dict[str, Any] | None = None,
     action_sparse_shape: tuple[int, int, int] | None = None,
+    restore_logical_rows: bool = True,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
     def floating(name: str) -> torch.Tensor:
         return torch.from_numpy(views[name]).to(device=device, dtype=torch.float32)
@@ -721,10 +724,11 @@ def prepare_packed_tensors(
             for name in strategic_names
         },
     }
-    _apply_logical_row_counts(
-        prepared,
-        logical_row_counts,
-    )
+    if restore_logical_rows:
+        _apply_logical_row_counts(
+            prepared,
+            logical_row_counts,
+        )
 
     if action_sparse_shape is None:
         actions = floating("actions")
