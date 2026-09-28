@@ -366,3 +366,34 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 6. If replay H2D reuse changes model/optimizer/gradient exactness, close the route immediately.
 7. Do not reduce observation/action information or skip decisions.
 8. Do not run 50k until the remaining structural gap is materially reduced.
+
+
+## V6-M persistent replay H2D workspace — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6m-replay-h2d-workspace
+- Candidate: bb1e41a59cc2170efd21ac0f9a503819e6b4d8a8
+- Baseline: V6-L c0aeb13678c497fd2a41168ec9c99fc087d587da
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- CUDA Graph behavior unchanged: 29 captures, 426 replays, 74 fallbacks.
+- Replay H2D workspace reuses GPU destination buffers for replay observation tensors,
+  sparse Action indices/values, dense Action restore, targets, old log-probabilities,
+  advantages and returns.
+- Replay stage: 4,991.27 -> 4,834.32 ms (~3.1% reduction).
+- Internal replay: 5.012 -> 4.855 sec.
+- External wall: 27.032 -> 21.770 sec (1.2417x paired diagnostic; do not attribute
+  the whole wall difference to replay H2D workspace).
+- batchAct changed 5,803.64 -> 5,529.41 ms even though act path is unchanged;
+  treat that difference as run variability, not as V6-M's isolated effect.
+- V6-M is the current fastest exact-verified baseline.
+
+## Next steps after V6-M
+1. Keep V6-M as the current baseline.
+2. Inspect replay H2D transfer count: workspace removes allocations but still performs
+   many per-tensor CPU->GPU copy_ operations each replay chunk.
+3. Explore grouped replay H2D only if tensor shape/value/stride, sample order, replay
+   chunk size, forward/backward order and gradient accumulation remain exactly unchanged.
+4. Do not reuse the closed V6-J logical-row restore-buffer route.
+5. Reject grouped replay H2D immediately if model/optimizer/gradient/RNG exactness fails.
+6. Do not reduce observation/action information or skip decisions.
+7. Do not run 50k until the remaining structural gap is materially reduced.
