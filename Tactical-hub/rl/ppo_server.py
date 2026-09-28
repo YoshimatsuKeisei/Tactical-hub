@@ -37,7 +37,7 @@ def main():
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
-    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1"):
+    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     packed_h2d_workspace = None
     timings = {}
@@ -727,7 +727,7 @@ def main():
                     )
                 ) or (
                     kind == "packedActBatch"
-                    and packed_prepare_mode == "fast_batch_v1"
+                    and packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2")
                 )
                 if grouped_act_prepare:
                     prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
@@ -736,7 +736,7 @@ def main():
                         trainer.device,
                         include_targets=False,
                         workspace=packed_h2d_workspace,
-                        include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1"),
+                        include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
                     )
@@ -802,7 +802,7 @@ def main():
                         prepared,
                         actions,
                         action_mask,
-                        manual_categorical_mode=packed_prepare_mode == "fast_batch_v1",
+                        manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
                     )
                     if retention_ids:
                         reserve_retention_ids(retention_ids)
