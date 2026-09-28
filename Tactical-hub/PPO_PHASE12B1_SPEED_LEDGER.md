@@ -509,3 +509,31 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Preserve model input information/shape/value/stride, replay chunk size, sample order,
    PPO objective, RNG, gradient accumulation order and checkpoint schema.
 6. If the microprobe cannot preserve exact gradients, close training CUDA Graph immediately.
+
+
+## V6-O replay graphed forward — 4k gate CLOSED
+- Branch: experiment/ppo-fast-batch-v6o-replay-graphed-forward
+- Candidate: 1596d823f422a59caa6e3fa9eb6f2b6c828ac7f0
+- Baseline: V6-N ea68bbd776c156e3ee0d9c484501d3c3327a35bc
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention exact.
+- update equivalence exact, including gradientHash.
+- Replay Graph: minHits=3, maxEntries=4, seenSignatures=33,
+  capturedGraphs=4, graphReplays=30, fallbackForwards=95.
+- Replay stage: 3,953.93 -> 3,982.15 ms (~0.7% regression).
+- The prior 1k gate improvement did not reproduce at 4k.
+- PyTorch AccumulateGrad stream-mismatch warning persisted.
+- External wall 25.772 -> 20.351 sec is not attributed to V6-O because the targeted
+  replay stage did not improve.
+- Conclusion: exact but no isolated replay speed gain. Do not promote V6-O.
+- V6-N remains the current production baseline.
+
+## Next steps after V6-O
+1. Keep V6-N as baseline.
+2. Close replay CUDA Graph forward for now.
+3. Return to Node-side structural cost: game step and observation encoding are the
+   next sizeable non-training stages.
+4. Profile before changing logic; preserve the same game state, observation values,
+   action values, decision cadence, RNG, PPO math and checkpoint schema.
+5. Do not reduce information observed by the policy and do not skip decisions.
+6. Do not run 50k until another material structural gain is verified.
