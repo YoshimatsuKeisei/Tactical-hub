@@ -563,3 +563,31 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
   - replay: 1,381.91 ms
 - Conclusion: map + bases account for about 70.2% of Observation encode.
 - Next: optimize map first with exact-value-preserving static row templates; keep bases separate.
+
+
+## V6-P static map row template cache — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6n-map-template-cache
+- Candidate: 1a67e421d70293360275ee88ccbeadfa9c076e1b
+- Baseline: V6-N 93a909a (same production code as immutable-retention baseline plus docs).
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Change only caches the immutable static map row template once per episode/team width;
+  each decision still creates a fresh output row and writes dynamic bridge/obstacle/base
+  ownership/team one-hot values exactly as before.
+- Observation encode: 2,368.23 -> 1,771.10 ms (~25.2% reduction).
+- Game step: 2,659.46 -> 2,736.88 ms (run variability / unrelated to candidate).
+- batchAct: 5,345.57 -> 4,953.24 ms and replay 3,952.23 -> 3,782.24 ms;
+  these paths were unchanged and are treated as run variability.
+- External wall: 25.274 -> 19.787 sec (1.2773x paired diagnostic; do not attribute
+  the full wall difference to map-template caching).
+- V6-P is the current fastest exact-verified baseline.
+
+## Next steps after V6-P
+1. Keep V6-P as the current baseline.
+2. Observation profile showed bases as the next largest encoder component (~29.0% before V6-P).
+3. Inspect encodeBase for repeat work that can be cached without changing row values/order/width.
+4. Preserve dynamic ownership, slot occupancy, cooldowns and all team/base reference vectors.
+5. Keep game step as a separate later bottleneck; do not mix base encoding and game-step changes.
+6. Do not reduce observed information or skip decisions.
+7. Do not run 50k until another material structural gain is verified.
