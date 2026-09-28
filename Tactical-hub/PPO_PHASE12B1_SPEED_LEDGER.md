@@ -644,3 +644,33 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    legal action ordering/content, state hashes, trajectory semantics and PPO/checkpoint behavior.
 6. Reject any optimization that is not bit-exact on model/optimizer/RNG/counters and semantic outputs.
 7. Do not run 50k until another material structural gain is exact-verified.
+
+## V6-Q battle-resolution internal profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6q-battle-event-profile
+- Diagnostic commit: 3671d40c66781f6bbdc9343dc7c2b76535f9ab56
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- Paired against V6-Q baseline fdd9de2c65eec2a95be3a387d30eb36973fe4502.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- resolve_battle: 225.61 ms / 24 calls = 9.401 ms/call.
+- Battle stage breakdown:
+  - event_build.neutral_intents: 208.90 ms / 24 = 8.704 ms/call
+  - event_build.encouragement: 2.93 ms
+  - event_build.start_positions: 2.00 ms
+  - pre_hit_metadata: 1.76 ms
+  - turn_flags_and_logs: 1.39 ms
+  - capture_and_king_resolution: 1.37 ms
+  - status_cleanup: 1.18 ms
+  - all remaining measured battle stages were below 1 ms total each.
+- neutral-intent generation accounts for about 92.6% of resolve_battle time in this 1k diagnostic.
+- Conclusion: damage resolution, capture/king handling and retreat cleanup are not the next target.
+  The next target is neutral-unit attack candidate generation inside battle event construction.
+- V6-Q remains the production baseline; battle-profile commits are diagnostic only.
+
+## Next steps after battle-resolution profile
+1. Profile neutral-unit getAttackCandidates work with the existing legalEnumerationProfile categories.
+2. Confirm whether target filtering, visibility, topology, distance or sorting dominates.
+3. Do not alter neutral action ordering or target selection semantics.
+4. Any optimization must preserve the same first neutral target, battle events, RNG order,
+   final state hash, trajectory, model/optimizer state and checkpoint/RNG counters bit-exactly.
+5. Keep movement/attack enumeration optimization separate from neutral battle-event work.
+6. Do not run 50k yet.
