@@ -69,6 +69,28 @@ export type PpoReplayRollout = {
   retentionIds?: string[];
 };
 
+export type PpoReplayValidationStep = Pick<
+  PpoTrajectoryStep,
+  | "decisionIndex"
+  | "turnNumber"
+  | "phase"
+  | "teamId"
+  | "selectedActionIndex"
+  | "selectedActionKey"
+>;
+
+export type PpoReplayValidationRollout = Pick<
+  PpoReplayRollout,
+  | "seed"
+  | "terminal"
+  | "endReason"
+  | "winnerTeamId"
+  | "finalStateHash"
+  | "loserTeamIds"
+> & {
+  trajectory: PpoReplayValidationStep[];
+};
+
 type PpoEpisodeSummary = {
   seed: number;
   decisionCount: number;
@@ -247,7 +269,7 @@ export async function replayPpoTrajectoryFromSpool(input: {
 }
 
 export async function validatePpoTrajectoryReplay(input: {
-  rollout: PpoReplayRollout;
+  rollout: PpoReplayValidationRollout;
   memoryLogInterval: number;
   fastRlMovement?: boolean;
   fastRlPhaseTransitions?: boolean;
