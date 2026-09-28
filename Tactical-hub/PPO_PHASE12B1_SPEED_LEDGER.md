@@ -110,11 +110,30 @@ Updated: 2026-09-28
 - Direct sparse encoder output and the prior dense-scan sparse transport payload were
   verified byte-identical before the Kaggle smoke.
 
+## V6-C direct sparse Action encoder — 8k verified result
+- Same implementation commit: 1d7468a1015402932f42b82a1c1689b361850162
+- Baseline: V6-B 085216a1342da2ea313305f4276eda61e7f4797f
+- Workload: 8 env x 1,000 decisions = 8,000 decisions.
+- allExact=true; semanticExact=true; checkpointCoreExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/FeatureSpec/hyperparameters/seed all exact.
+- retention structure exact, fully drained, and retained payload bytes exactly equal.
+- Retained raw bytes: 687,613,680 on both V6-B and V6-C.
+- Retained compressed bytes: 47,070,103 on both V6-B and V6-C.
+- Action encode: 4,951.94 ms -> 1,777.92 ms (~64.1% reduction, ~2.79x).
+- batchAct: 12,996.03 ms -> 11,250.24 ms (~13.4% reduction).
+- Replay: 9,046.05 ms -> 8,799.60 ms (~2.7% reduction; likely mostly run variance because retention bytes are identical).
+- Rollout: 31.365 sec -> 25.982 sec (~17.2% reduction).
+- Internal total: 49.580 sec -> 38.422 sec (~22.5% reduction).
+- External wall: 51.122 sec -> 39.904 sec (1.2811x).
+- The 4k and 8k runs both show the intended structural reduction; V6-C is now the
+  fastest verified Action generation path under exact semantics.
+
 ## Next steps
-1. Run V6-B vs V6-C at 8k with Node profiling and full exactness checks.
-2. Confirm Action encode reduction and overall wall improvement scale beyond 4k.
-3. If exact and repeatable, make V6-C the current fastest verified Action path.
-4. Then evaluate direct compact Observation generation.
+1. Keep V6-C direct sparse Action generation as the current Action baseline.
+2. Implement direct compact Observation generation for units/bases/constructions so
+   padded zero rows are never allocated before packed-row compaction.
+3. Preserve logical row counts and the zero-row autograd rule exactly.
+4. Run byte-exact local tests, then a 4k exact Kaggle comparison against V6-C.
 5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
