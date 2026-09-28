@@ -37,6 +37,9 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    replay_phase_profile = (
+        os.environ.get("PPO_REPLAY_PHASE_PROFILE") == "1"
+    )
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -64,6 +67,7 @@ def main():
     packed_h2d_workspace = None
     replay_h2d_workspace = None
     timings = {}
+    replay_phase_timings = {}
     legal_action_counts = []
     retained_chunks = {}
     consumed_retention_ids = set()
@@ -398,6 +402,24 @@ def main():
         if profile and trainer is not None and trainer.device.type == "cuda":
             torch.cuda.synchronize(trainer.device)
 
+    def replay_phase_sync():
+        if (
+            replay_phase_profile
+            and trainer is not None
+            and trainer.device.type == "cuda"
+        ):
+            torch.cuda.synchronize(trainer.device)
+
+    def record_replay_phase(stage, elapsed):
+        if not replay_phase_profile:
+            return
+        item = replay_phase_timings.setdefault(
+            stage,
+            {"count": 0, "totalMs": 0.0},
+        )
+        item["count"] += 1
+        item["totalMs"] += elapsed * 1000.0
+
     def read_binary(byte_length):
         if byte_length < 0:
             raise ValueError("Packed PPO byteLength must be non-negative")
@@ -548,6 +570,8 @@ def main():
                         "PPO retained batch scalar byte length mismatch"
                     )
 
+                replay_phase_sync()
+                replay_decode_start = time.perf_counter()
                 decoded_records = []
                 selected_action_groups = []
                 template_descriptors = records[0]["header"]["tensors"]
@@ -591,7 +615,12 @@ def main():
                             for value in record["selectedActionIndices"]
                         ]
                     )
+                record_replay_phase(
+                    "decode_records",
+                    time.perf_counter() - replay_decode_start,
+                )
 
+                replay_combine_start = time.perf_counter()
                 row_compactions = [
                     record["header"].get("rowCompaction")
                     for record in records
@@ -609,6 +638,7 @@ def main():
                     record["header"].get("actionSparseShape")
                     for record in records
                 ]
+                combined_sparse_shape = None
                 if any(shape is not None for shape in sparse_shapes):
                     if any(shape is None for shape in sparse_shapes):
                         raise ValueError(
@@ -621,28 +651,33 @@ def main():
                             selected_action_groups,
                         )
                     )
-                    prepared, actions, action_mask, targets = (
-                        prepare_packed_tensors(
-                            views,
-                            trainer.device,
-                            logical_row_counts=first_row_compaction,
-                            action_sparse_shape=combined_sparse_shape,
-                            workspace=replay_h2d_workspace,
-                        )
-                    )
                 else:
                     views = combine_packed_batch_views(
                         decoded_records,
                         selected_action_groups,
                     )
-                    prepared, actions, action_mask, targets = (
-                        prepare_packed_tensors(
-                            views,
-                            trainer.device,
-                            logical_row_counts=first_row_compaction,
-                            workspace=replay_h2d_workspace,
-                        )
+                record_replay_phase(
+                    "combine_cpu",
+                    time.perf_counter() - replay_combine_start,
+                )
+
+                replay_phase_sync()
+                replay_h2d_start = time.perf_counter()
+                prepared, actions, action_mask, targets = (
+                    prepare_packed_tensors(
+                        views,
+                        trainer.device,
+                        logical_row_counts=first_row_compaction,
+                        action_sparse_shape=combined_sparse_shape,
+                        workspace=replay_h2d_workspace,
                     )
+                )
+                replay_phase_sync()
+                record_replay_phase(
+                    "prepare_h2d",
+                    time.perf_counter() - replay_h2d_start,
+                )
+
                 scalar_values = np.frombuffer(
                     scalar_payload,
                     dtype=np.dtype("<f4"),
@@ -668,6 +703,8 @@ def main():
                         torch.float32,
                     )
 
+                replay_phase_sync()
+                replay_scalar_start = time.perf_counter()
                 old = replay_scalar(
                     "oldLogProbabilities",
                     scalar_values[:sample_count],
@@ -682,6 +719,14 @@ def main():
                     "returns",
                     scalar_values[sample_count * 2:],
                 )
+                replay_phase_sync()
+                record_replay_phase(
+                    "scalar_h2d",
+                    time.perf_counter() - replay_scalar_start,
+                )
+
+                replay_phase_sync()
+                replay_accumulate_start = time.perf_counter()
                 result = trainer.accumulate_prepared_chunk(
                     prepared,
                     actions,
@@ -690,6 +735,16 @@ def main():
                     old,
                     advantages,
                     returns,
+                    profile_stage=(
+                        record_replay_phase
+                        if replay_phase_profile
+                        else None
+                    ),
+                )
+                replay_phase_sync()
+                record_replay_phase(
+                    "accumulate_total",
+                    time.perf_counter() - replay_accumulate_start,
                 )
                 feature_audit = (
                     packed_views_audit(
@@ -1046,6 +1101,27 @@ def main():
                     sys.stderr.write("[PPO profile python] " + json.dumps(
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
+                    sys.stderr.flush()
+                if replay_phase_profile:
+                    replay_summary = {
+                        name: {
+                            "count": item["count"],
+                            "totalMs": round(item["totalMs"], 2),
+                            "avgMs": round(
+                                item["totalMs"] / item["count"],
+                                3,
+                            ),
+                        }
+                        for name, item in replay_phase_timings.items()
+                    }
+                    sys.stderr.write(
+                        "[PPO replay phase profile] "
+                        + json.dumps(
+                            replay_summary,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
                     sys.stderr.flush()
                 graph_stats = trainer.act_cuda_graph_stats()
                 if graph_stats.get("enabled"):
