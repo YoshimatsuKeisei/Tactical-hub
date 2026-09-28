@@ -100,11 +100,26 @@ type StaticMapCell = {
   dynamicOffset: number;
 };
 
+type StaticBaseSlot = {
+  slotId: string;
+  sourceIndex: number;
+  rowOffset: number;
+  teamOffset: number;
+  typeOffset: number;
+};
+
 type StaticBaseGeometry = {
   normalizedCentroidX: number;
   normalizedCentroidY: number;
   hasCentroid: number;
   sortedSlotIds: string[];
+};
+
+type StaticBaseTemplate = {
+  template: number[];
+  ownerTeamOffset: number;
+  occupationTeamOffset: number;
+  slotDescriptors: StaticBaseSlot[];
 };
 
 /**
@@ -116,6 +131,9 @@ export type RlObservationEncoderCache = {
   staticMap?: StaticMapCell[][];
   staticMapTeamWidth?: number;
   baseGeometry?: Map<string, StaticBaseGeometry>;
+  baseTemplates?: Map<string, StaticBaseTemplate>;
+  baseTemplateTeamWidth?: number;
+  baseTemplateMaxSlots?: number;
   zeroRows?: Map<number, number[]>;
 };
 
@@ -350,27 +368,127 @@ function getBaseGeometry(context: Context, base: RlObservation["bases"][number])
   return geometry;
 }
 
-function encodeBase(context: Context, base: RlObservation["bases"][number], maxSlots: number) {
+function getBaseTemplate(
+  context: Context,
+  base: RlObservation["bases"][number],
+  maxSlots: number,
+): StaticBaseTemplate {
+  const teamWidth = context.teams.length + 1;
+  const cache = context.encoderCache;
+  if (
+    cache
+    && (
+      cache.baseTemplateTeamWidth !== teamWidth
+      || cache.baseTemplateMaxSlots !== maxSlots
+    )
+  ) {
+    cache.baseTemplates = new Map();
+    cache.baseTemplateTeamWidth = teamWidth;
+    cache.baseTemplateMaxSlots = maxSlots;
+  }
+
+  const cached = cache?.baseTemplates?.get(base.id);
+  if (cached) return cached;
+
   const geometry = getBaseGeometry(context, base);
-  const slotById = new Map(base.slots.map((slot) => [slot.id, slot]));
-  const slotWidth = 3 + context.teams.length + 1 + UNIT_TYPES.length;
-  const slotFeatures = geometry.sortedSlotIds.flatMap((slotId) => {
-    const slot = slotById.get(slotId)!;
-    const occupant = slot.unitId ? context.unitById.get(slot.unitId) : undefined;
-    return [Number(slot.kind === "front"), Number(slot.kind === "protected"), Number(Boolean(occupant)), ...teamVector(context, occupant?.ownerTeamId), ...oneHot(occupant?.type, UNIT_TYPES)];
+  const slotWidth = 3 + teamWidth + UNIT_TYPES.length;
+  const ownerTeamOffset = 2;
+  const geometryOffset = ownerTeamOffset + teamWidth;
+  const occupationTeamOffset = geometryOffset + 5;
+  const slotsOffset = occupationTeamOffset + teamWidth;
+  const rowWidth = slotsOffset + maxSlots * slotWidth;
+  const template = Array(rowWidth).fill(0);
+
+  template[geometryOffset] = geometry.hasCentroid;
+  template[geometryOffset + 1] = geometry.normalizedCentroidX;
+  template[geometryOffset + 2] = geometry.normalizedCentroidY;
+
+  const slotDescriptors = geometry.sortedSlotIds.map((slotId, sortedIndex) => {
+    const sourceIndex = base.slots.findIndex((slot) => slot.id === slotId);
+    if (sourceIndex < 0) {
+      throw new Error(`RL base ${base.id} is missing cached slot ${slotId}`);
+    }
+    const slot = base.slots[sourceIndex];
+    const rowOffset = slotsOffset + sortedIndex * slotWidth;
+    template[rowOffset] = Number(slot.kind === "front");
+    template[rowOffset + 1] = Number(slot.kind === "protected");
+    const teamOffset = rowOffset + 3;
+    return {
+      slotId,
+      sourceIndex,
+      rowOffset,
+      teamOffset,
+      typeOffset: teamOffset + teamWidth,
+    };
   });
-  slotFeatures.push(...Array((maxSlots - geometry.sortedSlotIds.length) * slotWidth).fill(0));
-  return [
-    Number(base.type === "home"), Number(base.type === "neutral"),
-    ...teamVector(context, base.ownerTeamId),
-    geometry.hasCentroid,
-    geometry.normalizedCentroidX,
-    geometry.normalizedCentroidY,
-    base.coords.length,
-    base.slots.length,
-    ...teamVector(context, base.occupationPriorityTeamId),
-    ...slotFeatures,
-  ];
+
+  const built = {
+    template,
+    ownerTeamOffset,
+    occupationTeamOffset,
+    slotDescriptors,
+  };
+  if (cache) {
+    cache.baseTemplates ??= new Map();
+    cache.baseTemplates.set(base.id, built);
+  }
+  return built;
+}
+
+function encodeBase(context: Context, base: RlObservation["bases"][number], maxSlots: number) {
+  const teamWidth = context.teams.length + 1;
+  const staticBase = getBaseTemplate(context, base, maxSlots);
+  const result = staticBase.template.slice();
+
+  result[0] = Number(base.type === "home");
+  result[1] = Number(base.type === "neutral");
+  writeTeamVector(
+    context,
+    result,
+    staticBase.ownerTeamOffset,
+    base.ownerTeamId,
+  );
+
+  const geometryOffset = staticBase.ownerTeamOffset + teamWidth;
+  result[geometryOffset + 3] = base.coords.length;
+  result[geometryOffset + 4] = base.slots.length;
+  writeTeamVector(
+    context,
+    result,
+    staticBase.occupationTeamOffset,
+    base.occupationPriorityTeamId,
+  );
+
+  for (const descriptor of staticBase.slotDescriptors) {
+    let slot: (typeof base.slots)[number] | undefined =
+      base.slots[descriptor.sourceIndex];
+    if (!slot || slot.id !== descriptor.slotId) {
+      slot = base.slots.find((entry) => entry.id === descriptor.slotId);
+    }
+    if (!slot) {
+      throw new Error(
+        `RL base ${base.id} is missing cached slot ${descriptor.slotId}`,
+      );
+    }
+    const occupant = slot.unitId
+      ? context.unitById.get(slot.unitId)
+      : undefined;
+    result[descriptor.rowOffset + 2] = Number(Boolean(occupant));
+    writeTeamVector(
+      context,
+      result,
+      descriptor.teamOffset,
+      occupant?.ownerTeamId,
+    );
+    if (occupant) {
+      const typeIndex = UNIT_TYPES.indexOf(occupant.type);
+      if (typeIndex >= 0) {
+        result[descriptor.typeOffset + typeIndex] = 1;
+      }
+    }
+  }
+
+  return result;
 }
 
 function encodeConstruction(context: Context, construction: Construction) {
