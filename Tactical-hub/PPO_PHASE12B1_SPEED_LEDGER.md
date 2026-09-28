@@ -263,3 +263,42 @@ Updated: 2026-09-28
 
 This file is the persistent handoff for PPO speed work.
 Update it whenever the verified fastest path, failed routes, or next experiment changes.
+
+
+## V6-H inference prefix buffer — CLOSED
+- Candidate combined with V6-G: 68059b75999cc45831311a53413891f3d6f86b05
+- Baseline: V6-G 45d13c43a36de3e0e3e0b5d79f8669c1bfac8e01
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- retention bytes/counters/CPU RNG/CUDA RNG remained exact.
+- semanticExact=false; modelExact=false; optimizerExact=false.
+- semanticDiffKeys: update, diagnostics.
+- batchAct 5,512.16 -> 5,532.09 ms: no isolated structural gain.
+- Conclusion: full-shape inference prefix-buffer rewriting still changes floating-point
+  execution enough to violate bit-exactness. Do not adopt or extend this route.
+
+## V6-I persistent Action restore buffers — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-action-restore-workspace
+- Candidate: fdb0706627cd8cc6ce2837ae2d83f59fabda58de
+- Baseline: V6-G 45d13c43a36de3e0e3e0b5d79f8669c1bfac8e01
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Raw retention: 340,830,768 bytes on both paths.
+- External wall 26.724 -> 21.361 sec (1.2510x paired diagnostic).
+- Internal total 25.193 -> 19.844 sec.
+- Rollout 11.891 -> 11.525 sec.
+- Replay 4.871 -> 4.713 sec.
+- batchAct 5,741.44 -> 5,288.71 ms (~7.9% reduction).
+- The candidate preserves the dense Action shape/value/stride and only reuses
+  the zeroed dense-restore buffer plus the GPU index buffer.
+- V6-I is the current fastest exact-verified baseline.
+
+## Next steps after V6-I
+1. Keep V6-I as the current baseline.
+2. Before CUDA Graph implementation, measure exact act input-shape reuse frequency.
+3. Do not introduce new bucket/padded shapes solely to increase graph reuse.
+4. If exact-shape reuse is too low, close CUDA Graph quickly and return to Node-side
+   observation/game-step structural cost.
+5. Keep sampling, RNG consumption, finite checks, host-scalar behavior, model input
+   shape/value/stride and PPO math unchanged.
+6. Do not run 50k until the remaining gap to the 20x target is materially reduced.
