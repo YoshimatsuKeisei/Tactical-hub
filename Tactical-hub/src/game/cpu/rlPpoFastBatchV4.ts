@@ -129,7 +129,7 @@ export async function runPpoFastBatchV4Smoke(input: PpoFastBatchV4Input) {
   const client = input.client ?? new PythonPpoClient({
     device: "cuda",
     env: {
-      PPO_PACKED_PREPARE_MODE: "fast_batch_v4_workers",
+      PPO_PACKED_PREPARE_MODE: "fast_batch_v2",
     },
   });
 
@@ -162,8 +162,6 @@ export async function runPpoFastBatchV4Smoke(input: PpoFastBatchV4Input) {
   >();
   let rolloutPool: PpoRolloutWorkerPool | undefined;
 
-  const outstandingRetentionIds = new Set<string>();
-  const retainedBatches: FastBatchRetentionRecord[] = [];
   let totalDecisions = 0;
   let batchRounds = 0;
   let mergeLegalActionCount = 0;
