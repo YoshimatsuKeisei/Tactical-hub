@@ -59,12 +59,29 @@ Updated: 2026-09-28
 - Diagnostic round-trip: 1.657566 -> 1.521167 ms/decision (1.0897x).
 - This timing is transport inference diagnostic only, NOT full PPO throughput.
 - Direct sparse Action encoder is still NOT integrated; packer scans dense encoded rows.
+## V6-B verified result
+- Branch: experiment/ppo-fast-batch-v6-sparse-action-retention
+- Candidate tested: 88dd57fcc5d047d081f6b05e7e1d84455e9750fb
+- Workload: 8 env x safety-action-limit 500 = 4,000 decisions.
+- semanticExact=true; checkpointCoreExact=true; allExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/FeatureSpec/hyperparameters/seed all exact.
+- retention structure exact and fully drained after replay.
+- Dense retained raw bytes: 599,328,088.
+- Sparse retained raw bytes: 340,830,768 (43.1312% reduction).
+- Dense retained compressed bytes: 24,598,400.
+- Sparse retained compressed bytes: 23,168,575 (5.8127% reduction).
+- External wall: 31.577 sec -> 26.167 sec (1.2067x).
+- Internal total: 30.080 sec -> 24.679 sec.
+- Rollout: 16.368 sec -> 15.990 sec.
+- Replay: 5.948 sec -> 5.075 sec.
+- This is a 4k diagnostic smoke, not a 40k/50k throughput claim.
+
 ## Next steps
-1. Integrate sparse retention/replay without changing PPO semantics.
-2. Run full small PPO exactness smoke against V5.
-3. Require model/optimizer/CPU RNG/CUDA RNG/counters/rollout hashes/workload/retention/validation/allExact.
-4. Only after exactness PASS, benchmark larger workload.
-5. Do not run 50k until the structural path is proven promising.
+1. Run an 8k V5 vs V6-B profiled performance comparison.
+2. Confirm which stages shrink and whether the 4k speedup scales.
+3. If the structural gain holds, integrate the direct sparse Action encoder proven in Probe-02.
+4. Then evaluate direct compact Observation generation.
+5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
 - checkpointKind: ppo_self_play
