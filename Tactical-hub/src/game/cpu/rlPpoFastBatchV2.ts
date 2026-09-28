@@ -18,12 +18,14 @@ import {
   type PpoRetentionStats,
 } from "./pythonPpoClient";
 import { PpoTimingProfiler } from "./rlPpoProfiler";
+import { validatePpoRolloutsParallel } from "./rlPpoValidationParallel";
 import {
   DEFAULT_PPO_HYPERPARAMETERS,
   finalizeTerminalTrajectory,
   finalizeVictoryTrajectory,
   validatePpoTrajectoryReplay,
   type PpoReplayRollout,
+  type PpoReplayValidationRollout,
   type PpoTrajectoryStep,
 } from "./rlPpoSelfPlay";
 import type { PpoUpdateScalarSample } from "./rlPpoPackedBatch";
@@ -72,6 +74,7 @@ export type PpoFastBatchInput = {
   safetyMaxActions?: number;
   replayChunkSize?: number;
   memoryLogInterval?: number;
+  validationWorkerCount?: number;
   client?: PythonPpoClient;
 };
 
@@ -110,6 +113,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   const safetyMaxActions = input.safetyMaxActions ?? 100_000;
   const replayChunkSize = input.replayChunkSize ?? 32;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
+  const validationWorkerCount = input.validationWorkerCount ?? 0;
   for (const [name, value] of [
     ["safetyMaxTurns", safetyMaxTurns],
     ["safetyMaxActions", safetyMaxActions],
@@ -119,6 +123,15 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     if (!Number.isInteger(value) || value <= 0) {
       throw new Error(`${name} must be a positive integer`);
     }
+  }
+
+  if (
+    !Number.isInteger(validationWorkerCount)
+    || validationWorkerCount < 0
+  ) {
+    throw new Error(
+      "validationWorkerCount must be a non-negative integer",
+    );
   }
 
   const hyperparameters = {
@@ -465,14 +478,48 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     let replayedSamples = 0;
     const replayStarted = performance.now();
 
-    for (const rollout of learnableRollouts) {
-      validatedSamples += await validatePpoTrajectoryReplay({
-        rollout,
-        memoryLogInterval,
-        fastRlMovement: true,
-        fastRlPhaseTransitions: true,
-        profiler,
-      });
+    const validationRollouts: PpoReplayValidationRollout[] = (
+      learnableRollouts.map((rollout) => ({
+        seed: rollout.seed,
+        terminal: rollout.terminal,
+        endReason: rollout.endReason,
+        winnerTeamId: rollout.winnerTeamId,
+        finalStateHash: rollout.finalStateHash,
+        loserTeamIds: rollout.loserTeamIds,
+        trajectory: rollout.trajectory.map((step) => ({
+          decisionIndex: step.decisionIndex,
+          turnNumber: step.turnNumber,
+          phase: step.phase,
+          teamId: step.teamId,
+          selectedActionIndex: step.selectedActionIndex,
+          selectedActionKey: step.selectedActionKey,
+        })),
+      }))
+    );
+
+    const parallelValidationPromise = validationWorkerCount > 0
+      ? validatePpoRolloutsParallel({
+          rollouts: validationRollouts,
+          workerCount: validationWorkerCount,
+          memoryLogInterval,
+          fastRlMovement: true,
+          fastRlPhaseTransitions: true,
+        }).then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error }),
+        )
+      : undefined;
+
+    if (!parallelValidationPromise) {
+      for (const rollout of validationRollouts) {
+        validatedSamples += await validatePpoTrajectoryReplay({
+          rollout,
+          memoryLogInterval,
+          fastRlMovement: true,
+          fastRlPhaseTransitions: true,
+          profiler,
+        });
+      }
     }
 
     const scalarFor = (
@@ -548,6 +595,18 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     }
     await flushRetainedBatches();
 
+    let parallelValidation:
+      | Awaited<ReturnType<typeof validatePpoRolloutsParallel>>
+      | undefined;
+    if (parallelValidationPromise) {
+      const outcome = await parallelValidationPromise;
+      if ("error" in outcome) {
+        throw outcome.error;
+      }
+      parallelValidation = outcome.result;
+      validatedSamples = parallelValidation.sampleCount;
+    }
+
     replayMs = performance.now() - replayStarted;
 
     if (
@@ -599,6 +658,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
       adjudicatedEpisodeCount,
       truncatedEpisodeCount,
       replayedSamples,
+      validationWorkerCount,
     };
 
     const saved = await profiler.measureAsync(
@@ -633,6 +693,8 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
       summaries,
       replayedSamples,
       validatedSamples,
+      validationWorkerCount,
+      parallelValidation,
       mergeLegalActionCount,
       update,
       saved,
