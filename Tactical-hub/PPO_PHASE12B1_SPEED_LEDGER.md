@@ -335,3 +335,34 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 6. If larger cache does not materially improve batchAct or causes memory/capture overhead,
    keep V6-K and close graph-cache scaling.
 7. Do not change observation/action information, tensor shapes, PPO math, or RNG semantics.
+
+
+## V6-L CUDA Graph cache 32 — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6l-cuda-graph-32
+- Candidate: c0aeb13678c497fd2a41168ec9c99fc087d587da
+- Baseline: V6-K 219c8bd00b109b77a5f5a1cf37715cdfa36ad157
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- CUDA Graph minHits remained 3; only maxEntries changed 12 -> 32.
+- Captured graphs: 12 -> 29.
+- Graph replays: 232 -> 426 / 500 actBatch calls (46.4% -> 85.2%).
+- Fallback forwards: 268 -> 74.
+- batchAct: 6,019.23 -> 5,536.70 ms (~8.0% reduction).
+- Replay: 5,148.87 -> 4,867.77 ms.
+- Rollout: 12.397 -> 12.194 sec.
+- Internal total: 26.120 -> 20.898 sec.
+- External wall: 27.705 -> 22.477 sec (1.2326x paired diagnostic).
+- Model input information/shape/value/stride and PPO/RNG semantics remain unchanged.
+- V6-L is the current fastest exact-verified baseline.
+
+## Next steps after V6-L
+1. Keep V6-L as the current baseline.
+2. Close further CUDA Graph cache-capacity scaling for now; 85.2% of act calls already replay graphs.
+3. Target replay-side H2D allocation/copy overhead next.
+4. Preserve retained sample order, tensor shape/value/stride, gradient accumulation order,
+   PPO math, RNG state, and checkpoint schema exactly.
+5. Prefer persistent workspace/buffer reuse over changing replay chunk semantics.
+6. If replay H2D reuse changes model/optimizer/gradient exactness, close the route immediately.
+7. Do not reduce observation/action information or skip decisions.
+8. Do not run 50k until the remaining structural gap is materially reduced.
