@@ -557,14 +557,24 @@ function resolveBattleInternal(
     profileStarted = now;
   };
   const next = inPlaceForRl ? state : structuredClone(state) as GameState;
-  const neutralIntents: AttackIntent[] = next.units
+  const neutralUnits = next.units
     .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed" && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "neutral")
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .flatMap((unit) => {
-      const target = getAttackCandidates(next, unit.id)[0];
-      return target ? [{ teamId: unit.ownerTeamId, attackerUnitId: unit.id, target, pass: false }] : [];
-    });
-  profileMark("event_build.neutral_intents");
+    .sort((left, right) => left.id.localeCompare(right.id));
+  profileMark("event_build.neutral_filter_sort");
+  const neutralAttackContext = getAttackEnumerationContext(next);
+  profileMark("event_build.neutral_context");
+  const neutralIntents: AttackIntent[] = neutralUnits.flatMap((unit) => {
+    const candidateStarted = profileSink ? performance.now() : 0;
+    const target = getAttackCandidates(next, unit.id, neutralAttackContext)[0];
+    if (profileSink) {
+      profileSink(
+        "event_build.neutral_candidate_search",
+        performance.now() - candidateStarted,
+      );
+    }
+    return target ? [{ teamId: unit.ownerTeamId, attackerUnitId: unit.id, target, pass: false }] : [];
+  });
+  if (profileSink) profileStarted = performance.now();
   const intents = next.turnState.actionIntents.flatMap(
     (intent) => intent.attackIntents ?? [],
   ).concat(neutralIntents.filter((neutral) => !next.turnState.actionIntents.some((intent) => intent.attackIntents?.some((saved) => saved.attackerUnitId === neutral.attackerUnitId))));
