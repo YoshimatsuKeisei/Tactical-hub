@@ -195,7 +195,6 @@ class TacticalPolicyValueNetwork(nn.Module):
         map_table, map_mask = prepared["map"]
         nonempty = prepared.get("_nonempty")
         valid_prefix_counts = prepared.get("_validPrefixCount")
-        logical_row_counts = prepared.get("_logicalRowCount")
 
         def pooled(key: str, encoder: nn.Module, table: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
             if nonempty is not None and nonempty.get(key) is False:
@@ -203,44 +202,6 @@ class TacticalPolicyValueNetwork(nn.Module):
                     (table.shape[0], 64),
                     dtype=table.dtype,
                     device=table.device,
-                )
-
-            logical_rows = (
-                None
-                if logical_row_counts is None
-                else logical_row_counts.get(key)
-            )
-            if (
-                logical_rows is not None
-                and logical_rows > table.shape[1]
-            ):
-                encoded = encoder(table)
-                trailing_rows = logical_rows - table.shape[1]
-                trailing = torch.zeros(
-                    (
-                        table.shape[0],
-                        trailing_rows,
-                        encoded.shape[-1],
-                    ),
-                    dtype=encoded.dtype,
-                    device=encoded.device,
-                )
-                encoded = torch.cat((encoded, trailing), dim=1)
-                mask_padding = torch.zeros(
-                    (
-                        mask.shape[0],
-                        trailing_rows,
-                    ),
-                    dtype=mask.dtype,
-                    device=mask.device,
-                )
-                expanded_mask = torch.cat(
-                    (mask, mask_padding),
-                    dim=1,
-                )
-                return batched_masked_mean_pool(
-                    encoded,
-                    expanded_mask,
                 )
 
             valid_count = None if valid_prefix_counts is None else valid_prefix_counts.get(key)
