@@ -88,7 +88,8 @@ export type PpoFastBatchInput = {
     | "fast_batch_v5_compact_rows"
     | "fast_batch_v6_sparse_action_retention"
     | "fast_batch_v6_direct_sparse_actions"
-    | "fast_batch_v6_direct_compact_observation";
+    | "fast_batch_v6_direct_compact_observation"
+    | "fast_batch_v6_raw_retention";
   client?: PythonPpoClient;
 };
 

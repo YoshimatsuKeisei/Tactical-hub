@@ -37,6 +37,14 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    retention_storage_mode = os.environ.get(
+        "PPO_RETENTION_STORAGE_MODE",
+        "deflate",
+    )
+    if retention_storage_mode not in ("deflate", "raw"):
+        raise ValueError(
+            f"Unsupported PPO_RETENTION_STORAGE_MODE: {retention_storage_mode}"
+        )
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
@@ -80,7 +88,11 @@ def main():
 
                 if task.get("kind") == "batch_record":
                     raw = task["payload"]
-                    compressed = deflate_raw(raw)
+                    stored_payload = (
+                        raw
+                        if retention_storage_mode == "raw"
+                        else deflate_raw(raw)
+                    )
                     raw_sha256 = hashlib.sha256(raw).hexdigest()
                     retention_id = task["retentionId"]
                     batch_size = int(task["header"]["batchSize"])
@@ -95,7 +107,8 @@ def main():
                     with retention_lock:
                         retained_chunks[retention_id] = {
                             "header": task["header"],
-                            "compressed": compressed,
+                            "compressed": stored_payload,
+                            "storageMode": retention_storage_mode,
                             "rawByteLength": len(raw),
                             "rawSha256": raw_sha256,
                             "batchSize": batch_size,
@@ -105,9 +118,9 @@ def main():
                         retention_totals["storedChunks"] += 1
                         retention_totals["storedSamples"] += batch_size
                         retention_totals["rawBytes"] += len(raw)
-                        retention_totals["compressedBytes"] += len(compressed)
+                        retention_totals["compressedBytes"] += len(stored_payload)
                         retention_totals["pendingRawBytes"] -= len(raw)
-                        retention_totals["currentRetainedBytes"] += len(compressed)
+                        retention_totals["currentRetainedBytes"] += len(stored_payload)
                         retention_totals["peakRetainedBytes"] = max(
                             retention_totals["peakRetainedBytes"],
                             retention_totals["currentRetainedBytes"],
@@ -505,10 +518,14 @@ def main():
                 selected_action_groups = []
                 template_descriptors = records[0]["header"]["tensors"]
                 for record in records:
-                    raw = bytearray(
-                        zlib.decompress(
-                            record["compressed"],
-                            wbits=-zlib.MAX_WBITS,
+                    raw = (
+                        record["compressed"]
+                        if record.get("storageMode") == "raw"
+                        else bytearray(
+                            zlib.decompress(
+                                record["compressed"],
+                                wbits=-zlib.MAX_WBITS,
+                            )
                         )
                     )
                     if (
