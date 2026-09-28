@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import zlib
+from typing import Any
 
 import numpy as np
 import torch
@@ -37,6 +38,9 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    act_shape_profile = (
+        os.environ.get("PPO_ACT_SHAPE_PROFILE") == "1"
+    )
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -54,6 +58,8 @@ def main():
     packed_h2d_workspace = None
     timings = {}
     legal_action_counts = []
+    act_shape_counts: dict[str, int] = {}
+    action_shape_counts: dict[str, int] = {}
     retained_chunks = {}
     consumed_retention_ids = set()
     retention_totals = {
@@ -390,6 +396,125 @@ def main():
                 "pendingChunks": len(pending_retention_ids),
                 **retention_totals,
             }
+
+    def tensor_meta(tensor: torch.Tensor) -> dict[str, Any]:
+        return {
+            "shape": [int(value) for value in tensor.shape],
+            "stride": [int(value) for value in tensor.stride()],
+            "dtype": str(tensor.dtype),
+        }
+
+    def record_act_shape(
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> None:
+        if not act_shape_profile:
+            return
+
+        masked = {
+            key: {
+                "table": tensor_meta(table),
+                "mask": tensor_meta(mask),
+            }
+            for key, (table, mask) in sorted(
+                prepared["masked"].items()
+            )
+        }
+        strategic = {
+            key: {
+                "table": tensor_meta(table),
+                "mask": tensor_meta(mask),
+            }
+            for key, (table, mask) in sorted(
+                prepared["strategic"].items()
+            )
+        }
+        nonempty = {
+            key: bool(value)
+            for key, value in sorted(
+                (prepared.get("_nonempty") or {}).items()
+            )
+        }
+        signature = {
+            "global": tensor_meta(prepared["global"]),
+            "strategicGlobal": tensor_meta(
+                prepared["strategicGlobal"]
+            ),
+            "masked": masked,
+            "map": {
+                "table": tensor_meta(prepared["map"][0]),
+                "mask": tensor_meta(prepared["map"][1]),
+            },
+            "strategic": strategic,
+            "actions": tensor_meta(actions),
+            "actionMask": tensor_meta(action_mask),
+            "nonempty": nonempty,
+        }
+        key = json.dumps(
+            signature,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        act_shape_counts[key] = act_shape_counts.get(key, 0) + 1
+
+        action_key = json.dumps(
+            tensor_meta(actions),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        action_shape_counts[action_key] = (
+            action_shape_counts.get(action_key, 0) + 1
+        )
+
+    def shape_profile_summary() -> dict[str, Any]:
+        total = sum(act_shape_counts.values())
+        unique = len(act_shape_counts)
+        reused_hits = max(0, total - unique)
+        repeated = [
+            (key, count)
+            for key, count in act_shape_counts.items()
+            if count > 1
+        ]
+        top = sorted(
+            act_shape_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:12]
+        action_top = sorted(
+            action_shape_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:12]
+        return {
+            "totalActBatchCalls": total,
+            "uniqueExactSignatures": unique,
+            "exactReuseHitsAfterFirst": reused_hits,
+            "exactReuseRateAfterFirst": (
+                reused_hits / total if total else 0.0
+            ),
+            "singletonSignatures": sum(
+                1 for count in act_shape_counts.values()
+                if count == 1
+            ),
+            "repeatedSignatures": len(repeated),
+            "callsOnRepeatedSignatures": sum(
+                count for _key, count in repeated
+            ),
+            "uniqueActionShapes": len(action_shape_counts),
+            "topExactSignatures": [
+                {
+                    "count": count,
+                    "signature": json.loads(key),
+                }
+                for key, count in top
+            ],
+            "topActionShapes": [
+                {
+                    "count": count,
+                    "action": json.loads(key),
+                }
+                for key, count in action_top
+            ],
+        }
 
     while True:
         line = stream.readline()
@@ -911,6 +1036,11 @@ def main():
                             )
                     if retention_batch_id:
                         reserve_retention_id(retention_batch_id)
+                    record_act_shape(
+                        prepared,
+                        actions,
+                        action_mask,
+                    )
                     actions_result = trainer.act_prepared_batch(
                         prepared,
                         actions,
@@ -989,6 +1119,16 @@ def main():
                     sys.stderr.write("[PPO profile python] " + json.dumps(
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
+                    sys.stderr.flush()
+                if act_shape_profile:
+                    sys.stderr.write(
+                        "[PPO act shape profile] "
+                        + json.dumps(
+                            shape_profile_summary(),
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
                     sys.stderr.flush()
                 send({"type": "closed"})
                 return
