@@ -76,10 +76,25 @@ Updated: 2026-09-28
 - Replay: 5.948 sec -> 5.075 sec.
 - This is a 4k diagnostic smoke, not a 40k/50k throughput claim.
 
+## V6-B 8k profiled verification
+- Candidate tested: 085216a1342da2ea313305f4276eda61e7f4797f
+- Workload: 8 env x 1,000 decisions = 8,000 decisions.
+- allExact=true; semanticExact=true; checkpointCoreExact=true.
+- V5 wall 54.480 sec -> V6-B wall 45.946 sec (1.1857x).
+- Internal total 52.950 sec -> 44.480 sec.
+- Rollout 32.743 sec -> 31.294 sec (~4.4% reduction).
+- Replay 11.744 sec -> 9.330 sec (~20.6% reduction).
+- batchAct 12.669 sec -> 12.067 sec (~4.8% reduction).
+- Dense retained raw 1,331,131,880 -> sparse 687,613,680 bytes (48.3437% reduction).
+- Dense compressed 50,668,397 -> sparse 47,070,103 bytes (7.1017% reduction).
+- Python PPO_PROFILE has a pre-existing name-shadowing bug: nested record() is overwritten by
+  loop variable record during retention replay, causing TypeError at finishUpdate when PPO_PROFILE=1.
+  Node profiling is unaffected and was used for the successful 8k comparison.
+
 ## Next steps
-1. Run an 8k V5 vs V6-B profiled performance comparison.
-2. Confirm which stages shrink and whether the 4k speedup scales.
-3. If the structural gain holds, integrate the direct sparse Action encoder proven in Probe-02.
+1. Integrate the direct sparse Action encoder proven byte-exact in Probe-02.
+2. Keep V6-B sparse transport + sparse retention/replay unchanged while replacing only dense Action generation.
+3. Run a small exactness smoke first, then an 8k profile if exact.
 4. Then evaluate direct compact Observation generation.
 5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
