@@ -21,6 +21,7 @@ from rl.bc_packed import (
     packed_views_audit,
     prepare_packed_tensors,
     prepare_packed_tensors_grouped_h2d,
+    prepare_packed_views_grouped_h2d,
     split_packed_batch_samples,
 )
 from rl.device import report_torch_device, resolve_torch_device
@@ -37,9 +38,19 @@ def main():
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
+    fast_v2_replay_prepare = os.environ.get(
+        "PPO_FAST_V2_REPLAY_PREPARE",
+        "default",
+    )
+    if fast_v2_replay_prepare not in ("default", "grouped_views"):
+        raise ValueError(
+            "Unsupported PPO_FAST_V2_REPLAY_PREPARE: "
+            f"{fast_v2_replay_prepare}"
+        )
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     packed_h2d_workspace = None
+    replay_h2d_workspace = None
     timings = {}
     legal_action_counts = []
     retained_chunks = {}
@@ -367,6 +378,11 @@ def main():
                 trainer = PpoTrainer(message["featureSpec"], message["hyperparameters"], int(message["seed"]), device)
                 if packed_prepare_mode == "grouped_h2d_persistent":
                     packed_h2d_workspace = PackedH2dWorkspace(device)
+                if (
+                    packed_prepare_mode == "fast_batch_v2"
+                    and fast_v2_replay_prepare == "grouped_views"
+                ):
+                    replay_h2d_workspace = PackedH2dWorkspace(device)
                 if message.get("resume"):
                     state = trainer.resume(message["resume"])
                 else:
@@ -507,12 +523,25 @@ def main():
                     decoded_records,
                     selected_action_groups,
                 )
-                prepared, actions, action_mask, targets = (
-                    prepare_packed_tensors(
-                        views,
-                        trainer.device,
+                if (
+                    packed_prepare_mode == "fast_batch_v2"
+                    and fast_v2_replay_prepare == "grouped_views"
+                ):
+                    prepared, actions, action_mask, targets = (
+                        prepare_packed_views_grouped_h2d(
+                            views,
+                            trainer.device,
+                            workspace=replay_h2d_workspace,
+                            include_nonempty_metadata=True,
+                        )
                     )
-                )
+                else:
+                    prepared, actions, action_mask, targets = (
+                        prepare_packed_tensors(
+                            views,
+                            trainer.device,
+                        )
+                    )
                 scalar_values = np.frombuffer(
                     scalar_payload,
                     dtype=np.dtype("<f4"),
