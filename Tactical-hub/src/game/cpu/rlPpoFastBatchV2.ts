@@ -5,7 +5,11 @@ import {
   type EncodedLegalActionsSparseV2,
   type EncodedLegalActionsV2,
 } from "./rlActionEncoder";
-import { RlEnvironmentV2, type RlResult } from "./rlEnvironment";
+import {
+  RlEnvironmentV2,
+  type RlEnvironmentInstrumentation,
+  type RlResult,
+} from "./rlEnvironment";
 import {
   adjudicatePpoTimeLimit,
   isPpoTimeLimitReason,
@@ -99,11 +103,19 @@ export type PpoFastBatchInput = {
   client?: PythonPpoClient;
 };
 
-function createFastEnvironment() {
+function createFastEnvironment(
+  instrumentation?: RlEnvironmentInstrumentation,
+) {
   return new RlEnvironmentV2(
     undefined,
     true,
-    { cpuStep: { rlInPlacePhaseTransitions: true } },
+    {
+      ...instrumentation,
+      cpuStep: {
+        ...instrumentation?.cpuStep,
+        rlInPlacePhaseTransitions: true,
+      },
+    },
   );
 }
 
@@ -136,6 +148,77 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   const replayChunkSize = input.replayChunkSize ?? 32;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
   const validationWorkerCount = input.validationWorkerCount ?? 0;
+  const nodeRolloutProfileEnabled =
+    process.env.PPO_NODE_ROLLOUT_PROFILE === "1";
+  type NodeMetric = { count: number; totalMs: number; maxMs: number };
+  const nodeMetric = (): NodeMetric => ({
+    count: 0,
+    totalMs: 0,
+    maxMs: 0,
+  });
+  const nodeProfile = {
+    runtimeClone: nodeMetric(),
+    policy: nodeMetric(),
+    apply: nodeMetric(),
+    log: nodeMetric(),
+    enumerate: nodeMetric(),
+    applyByKind: new Map<string, NodeMetric>(),
+    enumerateByPhase: new Map<string, NodeMetric>(),
+  };
+  const addNodeMetric = (target: NodeMetric, milliseconds: number) => {
+    target.count += 1;
+    target.totalMs += milliseconds;
+    target.maxMs = Math.max(target.maxMs, milliseconds);
+  };
+  const addNodeNamed = (
+    target: Map<string, NodeMetric>,
+    key: string,
+    milliseconds: number,
+  ) => {
+    let metric = target.get(key);
+    if (!metric) {
+      metric = nodeMetric();
+      target.set(key, metric);
+    }
+    addNodeMetric(metric, milliseconds);
+  };
+  const nodeInstrumentation: RlEnvironmentInstrumentation | undefined =
+    nodeRolloutProfileEnabled
+      ? {
+        cpuStep: {
+          onRuntimeClone(milliseconds) {
+            addNodeMetric(nodeProfile.runtimeClone, milliseconds);
+          },
+          onPolicy(milliseconds) {
+            addNodeMetric(nodeProfile.policy, milliseconds);
+          },
+          onApply(milliseconds, decision, phaseBefore) {
+            addNodeMetric(nodeProfile.apply, milliseconds);
+            addNodeNamed(
+              nodeProfile.applyByKind,
+              decision.kind,
+              milliseconds,
+            );
+            addNodeNamed(
+              nodeProfile.applyByKind,
+              `${decision.kind}@${phaseBefore}`,
+              milliseconds,
+            );
+          },
+          onLog(milliseconds) {
+            addNodeMetric(nodeProfile.log, milliseconds);
+          },
+        },
+        onEnumerate(milliseconds, phase) {
+          addNodeMetric(nodeProfile.enumerate, milliseconds);
+          addNodeNamed(
+            nodeProfile.enumerateByPhase,
+            phase,
+            milliseconds,
+          );
+        },
+      }
+      : undefined;
   for (const [name, value] of [
     ["safetyMaxTurns", safetyMaxTurns],
     ["safetyMaxActions", safetyMaxActions],
@@ -190,7 +273,9 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   const slots: FastBatchSlot[] = Array.from(
     { length: environmentCount },
     (_, environmentIndex) => {
-      const environment = createFastEnvironment();
+      const environment = createFastEnvironment(
+        nodeInstrumentation,
+      );
       const seed = firstGameSeed + environmentIndex;
       environment.reset(seed, 4);
       return {
@@ -707,6 +792,52 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     const finalRetentionStats = await client.retentionStats();
     const diagnostics = await client.diagnostics();
     const totalMs = performance.now() - started;
+
+    if (nodeRolloutProfileEnabled) {
+      const serializeMetric = (metric: NodeMetric) => ({
+        count: metric.count,
+        totalMs: Number(metric.totalMs.toFixed(3)),
+        avgMs: metric.count
+          ? Number((metric.totalMs / metric.count).toFixed(6))
+          : 0,
+        maxMs: Number(metric.maxMs.toFixed(6)),
+      });
+      const serializeNamed = (values: Map<string, NodeMetric>) =>
+        Object.fromEntries(
+          [...values.entries()]
+            .sort(
+              (left, right) =>
+                right[1].totalMs - left[1].totalMs
+                || left[0].localeCompare(right[0]),
+            )
+            .map(([key, metric]) => [
+              key,
+              serializeMetric(metric),
+            ]),
+        );
+      const instrumentedTotalMs =
+        nodeProfile.runtimeClone.totalMs
+        + nodeProfile.policy.totalMs
+        + nodeProfile.apply.totalMs
+        + nodeProfile.log.totalMs
+        + nodeProfile.enumerate.totalMs;
+      process.stderr.write(
+        `[PPO node rollout detail] ${JSON.stringify({
+          runtimeClone: serializeMetric(nodeProfile.runtimeClone),
+          policy: serializeMetric(nodeProfile.policy),
+          apply: serializeMetric(nodeProfile.apply),
+          log: serializeMetric(nodeProfile.log),
+          enumerate: serializeMetric(nodeProfile.enumerate),
+          instrumentedTotalMs: Number(
+            instrumentedTotalMs.toFixed(3),
+          ),
+          applyByKind: serializeNamed(nodeProfile.applyByKind),
+          enumerateByPhase: serializeNamed(
+            nodeProfile.enumerateByPhase,
+          ),
+        })}\n`,
+      );
+    }
 
     return {
       mode: modeLabel,
