@@ -64,6 +64,9 @@ const result = await runPpoFastBatchV2Smoke({
     device: "cuda",
     env: {
       PPO_PACKED_PREPARE_MODE: "fast_batch_v2",
+      ...(args.includes("--grouped-replay-prepare")
+        ? { PPO_FAST_V2_REPLAY_PREPARE: "grouped_views" }
+        : {}),
     },
   }),
 });
