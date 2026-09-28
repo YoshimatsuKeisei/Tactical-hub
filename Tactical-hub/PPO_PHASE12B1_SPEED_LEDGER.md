@@ -616,3 +616,36 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Preserve exact game state transitions, action cadence, RNG, adjudication,
    rewards and all PPO/trajectory semantics.
 5. Do not simplify game rules or skip state updates.
+
+
+## V6-Q neutral battle / attack-distance profiling
+- Diagnostic commits:
+  - game-step profile: 896ab046fbcd83c816944d0300bb6dadf12bd995
+  - battle-stage profile: 0111437a686fe04531a14fdd84e765daff627f07
+  - battle event-build profile: 3671d40c66781f6bbdc9343dc7c2b76535f9ab56
+  - neutral attack detail profile: 2ec0fa29aee1b177e1780fa654978d5251b0e1ce
+- 1k paired diagnostics remained allExact=true.
+- Game-step internal profile: apply 468.89 ms, enumerate 325.07 ms, runtime clone 31.65 ms.
+- resolve_battle hotspot: 259.39 ms / 24 calls in the first profile.
+- Battle-stage split localized nearly all resolve_battle time to event_build.
+- Event-build split localized the hotspot to neutral attack candidate generation.
+- Neutral candidate detail: 360 getAttackCandidates calls over 24 battles (=15 neutral units/battle).
+- neutral candidate search: 212.72 ms total.
+- attackRangeDistance: 188.73 ms / 516 calls (~88.7% of neutral candidate search).
+- attackPostProcessing/sort: only 0.63 ms total.
+- Conclusion: sorting/first-target-only optimization is not the main target. Pairwise road-distance search is the dominant neutral-battle cost.
+
+## V6-R CLOSED — target-based attack distance lookup
+- Branch: experiment/ppo-fast-batch-v6r-attack-distance-lookup-clean
+- Commit: e9e3a1cb2bd1593a38972a34d11a5b5ae7af4a44
+- Change: cache createRoadAttackDistanceLookup() by target unit ID and reuse across attackers.
+- Local TypeScript check: PASS.
+- Related tests: 45/45 PASS.
+- Kaggle 1k paired against V6-Q: allExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/retention/semantics: exact.
+- game-step: 721.78 -> 1135.69 ms.
+- game-step speed ratio: 0.6355x (candidate slower by ~57%).
+- Candidate wall was lower, but batchAct/replay noise moved strongly in the opposite direction, so wall is not accepted as evidence of improvement.
+- Interpretation: full-graph target lookup construction is too expensive for this workload.
+- Decision: V6-R rejected and closed. Do not run 4k or 50k for this route.
+- Next candidate: keep pairwise BFS semantics and optimize its queue mechanics only (remove Array.shift without changing visitation order or returned distances).
