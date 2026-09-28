@@ -591,3 +591,27 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Keep game step as a separate later bottleneck; do not mix base encoding and game-step changes.
 6. Do not reduce observed information or skip decisions.
 7. Do not run 50k until another material structural gain is verified.
+
+
+## V6-P static map row template cache — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6n-map-template-cache
+- Candidate: 1a67e421d70293360275ee88ccbeadfa9c076e1b
+- Baseline: V6-N 93a909a
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Observation encode: 2,368.23 -> 1,771.10 ms (~25.2% reduction).
+- Static map geometry is cached as full zero-initialized row templates; every decision
+  clones the exact same row width/value layout and overwrites only dynamic bridge,
+  obstacle and owner-team fields.
+- Policy information, map coverage, row width/order and feature values are unchanged.
+- External wall: 25.274 -> 19.787 sec (1.2773x paired diagnostic; do not attribute
+  the whole wall difference to map templating).
+- V6-P is the current fastest exact-verified baseline.
+
+## Next steps after V6-P
+1. Keep V6-P as the current baseline.
+2. Target base encoding next; prior profile showed bases at 29.05% of Observation encode.
+3. Preserve exact base row width/order/value semantics.
+4. Prefer cache/index/allocation reductions only; do not remove base slots or unit-owner/type features.
+5. Validate cache/no-cache outputs and full PPO checkpoint/RNG exactness.
