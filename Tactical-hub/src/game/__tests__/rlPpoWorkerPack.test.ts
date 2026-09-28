@@ -15,7 +15,7 @@ import {
 
 describe("PPO worker packed-batch combiner", () => {
   it("matches the existing central batch packer byte-for-byte", () => {
-    const samples = [9, 10].map((seed) => {
+    const samples = Array.from({ length: 8 }, (_, index) => 9 + index).map((seed) => {
       const environment = new RlEnvironmentV2(
         undefined,
         true,
