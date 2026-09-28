@@ -445,3 +445,38 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    order, PPO math, RNG state and checkpoint schema unchanged.
 6. Do not reduce observation/action information or skip decisions.
 7. Do not run 50k until the remaining structural gap is materially reduced.
+
+
+## V6-N replay compute profile after SHA removal
+- Diagnostic branch: experiment/ppo-fast-batch-v6n-replay-profile
+- Diagnostic commit: 6ad62c02bc05d864368a2f3f07b3164eb08a226e
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- Top-level replay profile:
+  - accumulate_total: 1,095.96 ms (79.01%)
+  - prepare_h2d: 124.31 ms (8.96%)
+  - decode_records: 78.81 ms (5.68%)
+  - combine_cpu: 75.42 ms (5.44%)
+  - scalar_h2d: 12.60 ms (0.91%)
+- Immutable raw-retention integrity validation: 0.20 ms total.
+- accumulate_total breakdown:
+  - backward: 458.97 ms (41.88% of accumulate_total)
+  - model forward: 285.96 ms (26.09%)
+    - state encoder: 214.48 ms
+    - action encoder: 13.12 ms
+    - score head: 26.06 ms
+    - value head: 14.72 ms
+  - objective: 235.28 ms (21.47%)
+  - input checks: 31.70 ms
+  - finite checks: 31.68 ms
+  - selected-action checks: 15.04 ms
+- Conclusion: transport/integrity overhead is no longer dominant. The remaining replay
+  bottleneck is actual training compute, especially backward + state encoding + objective.
+
+## Next steps after V6-N replay compute profile
+1. Keep V6-N as the production baseline; profile-only commits remain diagnostic.
+2. Before changing training math or kernels, measure exact replay input-shape reuse.
+3. Consider exact-shape CUDA Graph / graphed-callable training only if replay signatures
+   repeat enough to amortize capture cost.
+4. Do not alter replay chunk size, sample order, tensor shape/value/stride, gradient
+   accumulation order, PPO objective, finite checks, RNG state or checkpoint schema.
+5. Do not reduce observation/action information.
