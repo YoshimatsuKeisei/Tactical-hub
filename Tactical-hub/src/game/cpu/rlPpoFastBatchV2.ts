@@ -101,18 +101,26 @@ export type PpoFastBatchInput = {
   client?: PythonPpoClient;
 };
 
-function createFastEnvironment(profiler?: PpoTimingProfiler) {
+function createFastEnvironment(
+  profiler?: PpoTimingProfiler,
+  shouldProfile: () => boolean = () => true,
+) {
   const instrumentation = profiler
     ? {
         cpuStep: {
           rlInPlacePhaseTransitions: true,
           onRuntimeClone(milliseconds: number) {
-            profiler.record("fast_rollout_game_runtime_clone", milliseconds);
+            if (shouldProfile()) {
+              profiler.record("fast_rollout_game_runtime_clone", milliseconds);
+            }
           },
           onPolicy(milliseconds: number) {
-            profiler.record("fast_rollout_game_policy", milliseconds);
+            if (shouldProfile()) {
+              profiler.record("fast_rollout_game_policy", milliseconds);
+            }
           },
           onApply(milliseconds: number, decision: { kind: string }, phaseBefore: string) {
+            if (!shouldProfile()) return;
             profiler.record("fast_rollout_game_apply", milliseconds);
             profiler.record(
               `fast_rollout_game_apply_kind.${decision.kind}`,
@@ -124,10 +132,13 @@ function createFastEnvironment(profiler?: PpoTimingProfiler) {
             );
           },
           onLog(milliseconds: number) {
-            profiler.record("fast_rollout_game_log", milliseconds);
+            if (shouldProfile()) {
+              profiler.record("fast_rollout_game_log", milliseconds);
+            }
           },
         },
         onEnumerate(milliseconds: number, phase: string) {
+          if (!shouldProfile()) return;
           profiler.record("fast_rollout_game_enumerate", milliseconds);
           profiler.record(
             `fast_rollout_game_enumerate_phase.${phase}`,
@@ -224,6 +235,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   }
 
   const firstGameSeed = input.seed + initialized.episodeCount;
+  let gameStepProfileActive = false;
   const slots: FastBatchSlot[] = Array.from(
     { length: environmentCount },
     (_, environmentIndex) => {
@@ -242,6 +254,9 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
       };
     },
   );
+
+  // Exclude environment reset/startup automatic work from rollout timing.
+  profiler.reset();
 
   let totalDecisions = 0;
   let batchRounds = 0;

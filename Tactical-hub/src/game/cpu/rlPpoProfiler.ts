@@ -18,6 +18,11 @@ export class PpoTimingProfiler {
     this.add(stage, elapsedMs);
   }
 
+  reset() {
+    if (!this.enabled) return;
+    this.totals.clear();
+  }
+
   measure<T>(stage: string, operation: () => T): T {
     if (!this.enabled) return operation();
     const start = performance.now();
