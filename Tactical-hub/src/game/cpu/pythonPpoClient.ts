@@ -191,9 +191,9 @@ export class PythonPpoClient {
     }
     const sparseActionTransport =
       this.options.env?.PPO_SPARSE_ACTION_TRANSPORT === "1";
-    if (sparseActionTransport && (retentionIds || retentionBatchId)) {
+    if (sparseActionTransport && retentionIds) {
       throw new Error(
-        "Sparse Action transport retention is not enabled in this stage",
+        "Sparse Action transport does not support per-sample retentionIds",
       );
     }
     const requestId = this.nextRequestId++;

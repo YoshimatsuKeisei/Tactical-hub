@@ -75,7 +75,7 @@ export type PpoFastBatchInput = {
   replayChunkSize?: number;
   memoryLogInterval?: number;
   validationWorkerCount?: number;
-  modeLabel?: "fast_batch_v2" | "fast_batch_v5_compact_rows";
+  modeLabel?: "fast_batch_v2" | "fast_batch_v5_compact_rows" | "fast_batch_v6_sparse_action_retention";
   client?: PythonPpoClient;
 };
 

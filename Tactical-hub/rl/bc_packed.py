@@ -259,6 +259,86 @@ def combine_packed_batch_views(
     return combined
 
 
+def combine_sparse_packed_batch_views(
+    records: list[dict[str, np.ndarray]],
+    headers: list[dict[str, Any]],
+    selected_action_groups: list[list[int]],
+) -> tuple[dict[str, np.ndarray], tuple[int, int, int]]:
+    if not records or len(records) != len(headers):
+        raise ValueError("Sparse retained PPO records/headers must align")
+    sparse_names = {"actionSparseIndices", "actionSparseValues"}
+    base_records = [
+        {name: value for name, value in record.items() if name not in sparse_names}
+        for record in records
+    ]
+    combined = combine_packed_batch_views(base_records, selected_action_groups)
+
+    shapes = [header.get("actionSparseShape") for header in headers]
+    if any(shape is None for shape in shapes):
+        raise ValueError("Sparse retained PPO record is missing actionSparseShape")
+    parsed = [tuple(int(value) for value in shape) for shape in shapes]
+    widths = {shape[2] for shape in parsed}
+    if len(widths) != 1:
+        raise ValueError("Sparse retained PPO action widths mismatch")
+    width = parsed[0][2]
+    max_rows = max(shape[1] for shape in parsed)
+    total_batch = sum(shape[0] for shape in parsed)
+
+    remapped_indices: list[np.ndarray] = []
+    sparse_values: list[np.ndarray] = []
+    batch_offset = 0
+    for record, shape in zip(records, parsed):
+        batch_size, rows, local_width = shape
+        if local_width != width:
+            raise ValueError("Sparse retained PPO action width mismatch")
+        indices = np.asarray(
+            record["actionSparseIndices"], dtype=np.dtype("<i4")
+        ).reshape(-1)
+        values = np.asarray(
+            record["actionSparseValues"], dtype=np.dtype("<f4")
+        ).reshape(-1)
+        if indices.size != values.size:
+            raise ValueError("Sparse retained PPO index/value count mismatch")
+        local_total = batch_size * rows * width
+        if indices.size and (
+            int(indices.min()) < 0 or int(indices.max()) >= local_total
+        ):
+            raise ValueError("Sparse retained PPO index out of range")
+        if indices.size:
+            per_batch = rows * width
+            local_batch = indices.astype(np.int64) // per_batch
+            remainder = indices.astype(np.int64) % per_batch
+            row = remainder // width
+            feature = remainder % width
+            global_index = (
+                ((local_batch + batch_offset) * max_rows + row) * width
+                + feature
+            )
+            if int(global_index.max()) > np.iinfo(np.int32).max:
+                raise ValueError(
+                    "Sparse retained PPO combined index exceeds int32"
+                )
+            remapped_indices.append(
+                global_index.astype(np.dtype("<i4"))
+            )
+            sparse_values.append(
+                values.astype(np.dtype("<f4"), copy=False)
+            )
+        batch_offset += batch_size
+
+    combined["actionSparseIndices"] = (
+        np.concatenate(remapped_indices)
+        if remapped_indices
+        else np.empty((0,), dtype=np.dtype("<i4"))
+    )
+    combined["actionSparseValues"] = (
+        np.concatenate(sparse_values)
+        if sparse_values
+        else np.empty((0,), dtype=np.dtype("<f4"))
+    )
+    return combined, (total_batch, max_rows, width)
+
+
 def combine_single_sample_packed_views(
     records: list[dict[str, np.ndarray]],
     selected_action_indices: list[int],
@@ -609,6 +689,7 @@ def prepare_packed_tensors(
     device: torch.device,
     *,
     logical_row_counts: dict[str, Any] | None = None,
+    action_sparse_shape: tuple[int, int, int] | None = None,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
     def floating(name: str) -> torch.Tensor:
         return torch.from_numpy(views[name]).to(device=device, dtype=torch.float32)
@@ -644,9 +725,41 @@ def prepare_packed_tensors(
         prepared,
         logical_row_counts,
     )
+
+    if action_sparse_shape is None:
+        actions = floating("actions")
+    else:
+        indices_cpu = np.asarray(
+            views["actionSparseIndices"], dtype=np.dtype("<i4")
+        ).reshape(-1)
+        values_cpu = np.asarray(
+            views["actionSparseValues"], dtype=np.dtype("<f4")
+        ).reshape(-1)
+        if indices_cpu.size != values_cpu.size:
+            raise ValueError("Sparse replay Action index/value count mismatch")
+        total = int(np.prod(action_sparse_shape, dtype=np.int64))
+        if indices_cpu.size and (
+            int(indices_cpu.min()) < 0
+            or int(indices_cpu.max()) >= total
+        ):
+            raise ValueError("Sparse replay Action index out of range")
+        indices = torch.from_numpy(indices_cpu).to(
+            device=device, dtype=torch.long
+        )
+        values = torch.from_numpy(values_cpu).to(
+            device=device, dtype=torch.float32
+        )
+        actions = torch.zeros(
+            action_sparse_shape,
+            dtype=torch.float32,
+            device=device,
+        )
+        if indices.numel():
+            actions.view(-1).index_copy_(0, indices, values)
+
     return (
         prepared,
-        floating("actions"),
+        actions,
         mask("actionMask"),
         torch.from_numpy(views["targets"]).to(device=device, dtype=torch.long),
     )

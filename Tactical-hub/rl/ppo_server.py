@@ -15,6 +15,7 @@ import torch
 from rl.bc_packed import (
     PackedH2dWorkspace,
     combine_packed_batch_views,
+    combine_sparse_packed_batch_views,
     combine_single_sample_packed_views,
     decode_packed_views,
     packed_state_branch_fingerprints,
@@ -296,6 +297,11 @@ def main():
                     if message.get("rowCompaction")
                     else {}
                 ),
+                **(
+                    {"actionSparseShape": list(message["actionSparseShape"])}
+                    if message.get("actionSparseShape") is not None
+                    else {}
+                ),
             },
             "payload": payload,
             "selectedActionIndices": [
@@ -536,17 +542,42 @@ def main():
                         "PPO retained batch row-compaction metadata mismatch"
                     )
 
-                views = combine_packed_batch_views(
-                    decoded_records,
-                    selected_action_groups,
-                )
-                prepared, actions, action_mask, targets = (
-                    prepare_packed_tensors(
-                        views,
-                        trainer.device,
-                        logical_row_counts=first_row_compaction,
+                sparse_shapes = [
+                    record["header"].get("actionSparseShape")
+                    for record in records
+                ]
+                if any(shape is not None for shape in sparse_shapes):
+                    if any(shape is None for shape in sparse_shapes):
+                        raise ValueError(
+                            "PPO retained batch mixes dense and sparse Action records"
+                        )
+                    views, combined_sparse_shape = (
+                        combine_sparse_packed_batch_views(
+                            decoded_records,
+                            [record["header"] for record in records],
+                            selected_action_groups,
+                        )
                     )
-                )
+                    prepared, actions, action_mask, targets = (
+                        prepare_packed_tensors(
+                            views,
+                            trainer.device,
+                            logical_row_counts=first_row_compaction,
+                            action_sparse_shape=combined_sparse_shape,
+                        )
+                    )
+                else:
+                    views = combine_packed_batch_views(
+                        decoded_records,
+                        selected_action_groups,
+                    )
+                    prepared, actions, action_mask, targets = (
+                        prepare_packed_tensors(
+                            views,
+                            trainer.device,
+                            logical_row_counts=first_row_compaction,
+                        )
+                    )
                 scalar_values = np.frombuffer(
                     scalar_payload,
                     dtype=np.dtype("<f4"),
@@ -784,9 +815,9 @@ def main():
                         raise ValueError(
                             "Sparse Action transport requires packedActBatch fast_batch prepare"
                         )
-                    if message.get("retentionIds") or message.get("retentionBatchId"):
+                    if message.get("retentionIds"):
                         raise ValueError(
-                            "Sparse Action transport retention is not enabled in this stage"
+                            "Sparse Action transport does not support per-sample retentionIds"
                         )
                 if grouped_act_prepare:
                     prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
