@@ -334,7 +334,9 @@ async function handlePrepare(
 
     // A standalone transferable buffer avoids cloning the packed payload
     // through the worker_threads structured-clone path.
-    const transferable = Uint8Array.from(packed.payload).buffer;
+    const transferable = Uint8Array.from(
+      packed.payload,
+    ).buffer as ArrayBuffer;
     transferList.push(transferable);
     samples.push({
       environmentIndex: slot.environmentIndex,
