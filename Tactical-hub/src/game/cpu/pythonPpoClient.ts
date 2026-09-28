@@ -143,11 +143,20 @@ export class PythonPpoClient {
 
   async actBatch(
     samples: Array<{ observation: EncodedObservation; legalActions: EncodedLegalActionsV2 }>,
-    options: { retentionIds?: string[] } = {},
+    options: { retentionIds?: string[]; retentionBatchId?: string } = {},
   ) {
     if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
     if (!samples.length) throw new Error("PPO action batch cannot be empty");
     const retentionIds = options.retentionIds;
+    const retentionBatchId = options.retentionBatchId;
+    if (retentionIds && retentionBatchId) {
+      throw new Error(
+        "PPO batched action cannot use retentionIds and retentionBatchId together",
+      );
+    }
+    if (retentionBatchId !== undefined && !retentionBatchId) {
+      throw new Error("PPO retentionBatchId must not be empty");
+    }
     if (retentionIds) {
       if (retentionIds.length !== samples.length) {
         throw new Error("PPO batched retention IDs must match sample count");
@@ -166,6 +175,7 @@ export class PythonPpoClient {
         type: "packedActBatch",
         requestId,
         ...(retentionIds ? { retentionIds } : {}),
+        ...(retentionBatchId ? { retentionBatchId } : {}),
       },
       packPpoActBatchInput(
         samples.map(({ observation, legalActions }) => ({ observation, actions: legalActions.actions })),
@@ -344,6 +354,71 @@ export class PythonPpoClient {
       || response.rawSha256 !== rawSha256
     ) throw new Error("Unexpected PPO retained-chunk response");
     return { ...response, tensorSignature };
+  }
+
+  async accumulateRetainedBatches(
+    retentionIds: string[],
+    scalars: PpoUpdateScalarSample[],
+  ) {
+    if (!this.process?.stdin.writable) {
+      throw new Error("Python PPO process is not running");
+    }
+    if (!retentionIds.length) {
+      throw new Error("PPO retained batch IDs cannot be empty");
+    }
+    if (retentionIds.some((retentionId) => !retentionId)) {
+      throw new Error("PPO retained batch IDs must not be empty");
+    }
+    if (new Set(retentionIds).size !== retentionIds.length) {
+      throw new Error("PPO retained batch IDs must be unique per update chunk");
+    }
+    if (!scalars.length) {
+      throw new Error("PPO retained batch scalar list cannot be empty");
+    }
+    if (!scalars.every((sample) =>
+      [sample.oldLogProbability, sample.advantage, sample.return].every(Number.isFinite)
+    )) {
+      throw new Error("PPO retained batch scalars contain NaN or Inf");
+    }
+
+    const sampleCount = scalars.length;
+    const old = Float32Array.from(
+      scalars.map((sample) => sample.oldLogProbability),
+    );
+    const advantages = Float32Array.from(
+      scalars.map((sample) => sample.advantage),
+    );
+    const returns = Float32Array.from(
+      scalars.map((sample) => sample.return),
+    );
+    const payload = Buffer.concat([
+      Buffer.from(old.buffer, old.byteOffset, old.byteLength),
+      Buffer.from(advantages.buffer, advantages.byteOffset, advantages.byteLength),
+      Buffer.from(returns.buffer, returns.byteOffset, returns.byteLength),
+    ]);
+
+    const requestId = this.nextRequestId++;
+    const responsePromise = this.wait();
+    this.process.stdin.write(`${JSON.stringify({
+      type: "retainedBatchUpdateChunk",
+      requestId,
+      retentionIds,
+      encoding: "ppo-retained-scalars-v1",
+      byteLength: payload.byteLength,
+      sampleCount,
+    })}\n`);
+    this.process.stdin.write(payload);
+
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (
+      response.type !== "updateChunkAccepted"
+      || response.requestId !== requestId
+      || response.acceptedSamples !== sampleCount
+    ) {
+      throw new Error("Unexpected PPO retained batch update response");
+    }
+    return response;
   }
 
   async accumulateRetained(
