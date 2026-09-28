@@ -949,6 +949,75 @@ class PpoTrainer:
                 eager_gradient_hash == graph_gradient_hash
             )
 
+            eager_model.zero_grad(set_to_none=True)
+            graph_model.zero_grad(set_to_none=True)
+            for _ in range(2):
+                eager_logits_acc, eager_values_acc, _, _, _ = (
+                    eager_model.forward_prepared_batch(
+                        prepared,
+                        actions,
+                        action_mask,
+                    )
+                )
+                eager_objective_acc = self._replay_probe_objective(
+                    eager_logits_acc,
+                    eager_values_acc,
+                    selected,
+                    old_log_probabilities,
+                    advantages,
+                    returns,
+                    total_samples,
+                )
+                eager_objective_acc["loss"].backward()
+
+                graph_logits_acc, graph_values_acc = graphed(*args)
+                graph_objective_acc = self._replay_probe_objective(
+                    graph_logits_acc,
+                    graph_values_acc,
+                    selected,
+                    old_log_probabilities,
+                    advantages,
+                    returns,
+                    total_samples,
+                )
+                graph_objective_acc["loss"].backward()
+
+            accumulated_grad_none_mismatch = None
+            accumulated_gradient_value_mismatch = None
+            eager_parameters = dict(eager_model.named_parameters())
+            graph_parameters = dict(graph_model.named_parameters())
+            for name in sorted(eager_parameters):
+                eager_grad = eager_parameters[name].grad
+                graph_grad = graph_parameters[name].grad
+                if (eager_grad is None) != (graph_grad is None):
+                    accumulated_grad_none_mismatch = name
+                    break
+                if eager_grad is None:
+                    continue
+                if not self._exact_tensor(
+                    eager_grad,
+                    graph_grad,
+                ):
+                    accumulated_gradient_value_mismatch = name
+                    break
+
+            checks["accumulatedGradNoneExact"] = (
+                accumulated_grad_none_mismatch is None
+            )
+            checks["accumulatedGradientValuesExact"] = (
+                accumulated_gradient_value_mismatch is None
+            )
+            eager_accumulated_gradient_hash = (
+                self._module_gradient_hash(eager_model)
+            )
+            graph_accumulated_gradient_hash = (
+                self._module_gradient_hash(graph_model)
+            )
+            checks["accumulatedGradientHashExact"] = (
+                eager_accumulated_gradient_hash
+                == graph_accumulated_gradient_hash
+            )
+
             def eager_iteration() -> None:
                 eager_model.zero_grad(set_to_none=True)
                 logits, values, _, _, _ = (
@@ -1013,6 +1082,18 @@ class PpoTrainer:
                 "firstGradientMismatch": gradient_mismatch,
                 "eagerGradientHash": eager_gradient_hash,
                 "graphGradientHash": graph_gradient_hash,
+                "eagerAccumulatedGradientHash": (
+                    eager_accumulated_gradient_hash
+                ),
+                "graphAccumulatedGradientHash": (
+                    graph_accumulated_gradient_hash
+                ),
+                "firstAccumulatedGradNoneMismatch": (
+                    accumulated_grad_none_mismatch
+                ),
+                "firstAccumulatedGradientValueMismatch": (
+                    accumulated_gradient_value_mismatch
+                ),
                 "batchSize": int(actions.shape[0]),
                 "maxActions": int(actions.shape[1]),
                 "actionWidth": int(actions.shape[2]),
