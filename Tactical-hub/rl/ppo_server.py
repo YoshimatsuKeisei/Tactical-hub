@@ -564,22 +564,40 @@ def main():
                             )
                         )
                     )
+
+                    replay_integrity_start = time.perf_counter()
+                    raw_sha256 = hashlib.sha256(raw).hexdigest()
                     if (
                         len(raw) != record["rawByteLength"]
-                        or hashlib.sha256(raw).hexdigest()
-                        != record["rawSha256"]
+                        or raw_sha256 != record["rawSha256"]
                     ):
                         raise ValueError(
                             "PPO retained batch payload integrity mismatch"
                         )
+                    record_replay_phase(
+                        "integrity_hash",
+                        time.perf_counter() - replay_integrity_start,
+                    )
+
+                    replay_decode_views_start = time.perf_counter()
                     decoded_records.append(
                         decode_packed_views(record["header"], raw)
                     )
+                    record_replay_phase(
+                        "decode_views",
+                        time.perf_counter() - replay_decode_views_start,
+                    )
+
+                    replay_selected_start = time.perf_counter()
                     selected_action_groups.append(
                         [
                             int(value)
                             for value in record["selectedActionIndices"]
                         ]
+                    )
+                    record_replay_phase(
+                        "selected_actions",
+                        time.perf_counter() - replay_selected_start,
                     )
                 record_replay_phase(
                     "decode_records",
