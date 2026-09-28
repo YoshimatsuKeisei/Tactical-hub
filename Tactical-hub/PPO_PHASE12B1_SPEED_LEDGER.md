@@ -224,14 +224,33 @@ Updated: 2026-09-28
 - batchAct 5,521.17 -> 5,107.68 ms (~7.5% reduction).
 - V6-G is the current fastest exact-verified baseline.
 
+## V6-I persistent Action restore buffers — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-action-restore-workspace
+- Candidate: fdb0706627cd8cc6ce2837ae2d83f59fabda58de
+- Baseline: V6-G 45d13c43a36de3e0e3e0b5d79f8669c1bfac8e01
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Raw retention: 340,830,768 bytes on both paths.
+- batchAct: 5,741.44 -> 5,288.71 ms (~7.9% reduction).
+- Replay: 4,851.97 -> 4,692.79 ms (~3.3% reduction).
+- Rollout: 11.891 -> 11.525 sec.
+- Internal total: 25.193 -> 19.844 sec.
+- External wall: 26.724 -> 21.361 sec (1.2510x paired diagnostic).
+- V6-I is the current fastest exact-verified baseline.
+- The large wall difference exceeds the directly attributed stage reductions, so treat
+  wall speedup as diagnostic; the stage-local batchAct/replay reductions are the trusted effect.
+
 ## Next steps
-1. Keep V6-G as the current baseline.
+1. Keep V6-I as the current baseline.
 2. Inspect exact-shape CUDA Graph capture for act model forward only.
-3. Keep sampling, RNG consumption, finite checks and host-scalar behavior unchanged.
-4. Never pad to a new bucket shape just to enable capture; V6-E proved shape changes break bit-exactness.
-5. If exact-shape graph reuse is too sparse or capture overhead dominates, close the route quickly.
-6. After GPU forward work, return to Node observation/game-step structural cost.
-7. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+3. Measure exact act-shape/nonempty-signature reuse before relying on graph caching.
+4. Keep sampling, RNG consumption, finite checks and host-scalar behavior outside the graph.
+5. Never pad or change model input shape solely to increase graph reuse; V6-E/V6-H proved
+   shape/execution changes can break bit-exactness.
+6. If exact-shape graph reuse is sparse or output exactness fails, close the route quickly.
+7. After GPU forward work, return to Node observation/game-step structural cost.
+8. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
 ## Source checkpoint
 - checkpointKind: ppo_self_play
