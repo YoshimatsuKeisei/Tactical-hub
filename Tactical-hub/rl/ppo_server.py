@@ -14,6 +14,7 @@ import torch
 
 from rl.bc_packed import (
     PackedH2dWorkspace,
+    combine_packed_batch_views,
     combine_single_sample_packed_views,
     decode_packed_views,
     packed_state_branch_fingerprints,
@@ -75,6 +76,42 @@ def main():
             try:
                 if task is None:
                     return
+
+                if task.get("kind") == "batch_record":
+                    raw = task["payload"]
+                    compressed = deflate_raw(raw)
+                    raw_sha256 = hashlib.sha256(raw).hexdigest()
+                    retention_id = task["retentionId"]
+                    batch_size = int(task["header"]["batchSize"])
+                    selected_action_indices = [
+                        int(value)
+                        for value in task["selectedActionIndices"]
+                    ]
+                    if len(selected_action_indices) != batch_size:
+                        raise ValueError(
+                            "PPO retained batch selected-action count mismatch"
+                        )
+                    with retention_lock:
+                        retained_chunks[retention_id] = {
+                            "header": task["header"],
+                            "compressed": compressed,
+                            "rawByteLength": len(raw),
+                            "rawSha256": raw_sha256,
+                            "batchSize": batch_size,
+                            "selectedActionIndices": selected_action_indices,
+                        }
+                        pending_retention_ids.discard(retention_id)
+                        retention_totals["storedChunks"] += 1
+                        retention_totals["storedSamples"] += batch_size
+                        retention_totals["rawBytes"] += len(raw)
+                        retention_totals["compressedBytes"] += len(compressed)
+                        retention_totals["pendingRawBytes"] -= len(raw)
+                        retention_totals["currentRetainedBytes"] += len(compressed)
+                        retention_totals["peakRetainedBytes"] = max(
+                            retention_totals["peakRetainedBytes"],
+                            retention_totals["currentRetainedBytes"],
+                        )
+                    continue
 
                 if task.get("kind") == "batch":
                     records = split_packed_batch_samples(
@@ -231,6 +268,32 @@ def main():
             "selectedActionIndex": int(selected_action_index),
         })
 
+    def enqueue_retained_batch_record(
+        retention_id,
+        message,
+        payload,
+        selected_action_indices,
+    ):
+        with retention_lock:
+            retention_totals["pendingRawBytes"] += len(payload)
+            retention_totals["peakPendingRawBytes"] = max(
+                retention_totals["peakPendingRawBytes"],
+                retention_totals["pendingRawBytes"],
+            )
+        retention_queue.put({
+            "kind": "batch_record",
+            "retentionId": retention_id,
+            "header": {
+                "tensors": message["tensors"],
+                "batchSize": int(message["batchSize"]),
+            },
+            "payload": payload,
+            "selectedActionIndices": [
+                int(value)
+                for value in selected_action_indices
+            ],
+        })
+
     def enqueue_retained_batch(
         retention_ids,
         message,
@@ -363,6 +426,160 @@ def main():
                     "compressedBytes": len(compressed),
                     "rawSha256": raw_sha256,
                 })
+            elif kind == "retainedBatchUpdateChunk":
+                retention_ids = [
+                    str(value)
+                    for value in message.get("retentionIds", [])
+                ]
+                scalar_payload = read_binary(int(message["byteLength"]))
+                if not retention_ids:
+                    raise ValueError(
+                        "PPO retained batch update requires retentionIds"
+                    )
+                if any(
+                    retention_id in consumed_retention_ids
+                    for retention_id in retention_ids
+                ):
+                    raise ValueError("PPO retentionId already consumed")
+                records = [
+                    retained_chunks.get(retention_id)
+                    for retention_id in retention_ids
+                ]
+                missing = [
+                    retention_id
+                    for retention_id, record
+                    in zip(retention_ids, records)
+                    if record is None
+                ]
+                if missing:
+                    raise ValueError(
+                        f"Unknown PPO retentionId: {missing[0]}"
+                    )
+                if message.get("encoding") != "ppo-retained-scalars-v1":
+                    raise ValueError(
+                        "Unsupported PPO retained scalar encoding"
+                    )
+                sample_count = int(message["sampleCount"])
+                expected_samples = sum(
+                    int(record["batchSize"])
+                    for record in records
+                )
+                if sample_count != expected_samples:
+                    raise ValueError(
+                        "PPO retained batch sample count mismatch: "
+                        f"{sample_count} != {expected_samples}"
+                    )
+                expected_scalar_bytes = sample_count * 3 * 4
+                if len(scalar_payload) != expected_scalar_bytes:
+                    raise ValueError(
+                        "PPO retained batch scalar byte length mismatch"
+                    )
+
+                decoded_records = []
+                selected_action_groups = []
+                template_descriptors = records[0]["header"]["tensors"]
+                for record in records:
+                    raw = bytearray(
+                        zlib.decompress(
+                            record["compressed"],
+                            wbits=-zlib.MAX_WBITS,
+                        )
+                    )
+                    if (
+                        len(raw) != record["rawByteLength"]
+                        or hashlib.sha256(raw).hexdigest()
+                        != record["rawSha256"]
+                    ):
+                        raise ValueError(
+                            "PPO retained batch payload integrity mismatch"
+                        )
+                    decoded_records.append(
+                        decode_packed_views(record["header"], raw)
+                    )
+                    selected_action_groups.append(
+                        [
+                            int(value)
+                            for value in record["selectedActionIndices"]
+                        ]
+                    )
+
+                views = combine_packed_batch_views(
+                    decoded_records,
+                    selected_action_groups,
+                )
+                prepared, actions, action_mask, targets = (
+                    prepare_packed_tensors(
+                        views,
+                        trainer.device,
+                    )
+                )
+                scalar_values = np.frombuffer(
+                    scalar_payload,
+                    dtype=np.dtype("<f4"),
+                )
+                old = torch.from_numpy(
+                    scalar_values[:sample_count]
+                ).to(
+                    device=trainer.device,
+                    dtype=torch.float32,
+                )
+                advantages = torch.from_numpy(
+                    scalar_values[
+                        sample_count:sample_count * 2
+                    ]
+                ).to(
+                    device=trainer.device,
+                    dtype=torch.float32,
+                )
+                returns = torch.from_numpy(
+                    scalar_values[sample_count * 2:]
+                ).to(
+                    device=trainer.device,
+                    dtype=torch.float32,
+                )
+                result = trainer.accumulate_prepared_chunk(
+                    prepared,
+                    actions,
+                    action_mask,
+                    targets,
+                    old,
+                    advantages,
+                    returns,
+                )
+                feature_audit = (
+                    packed_views_audit(
+                        views,
+                        template_descriptors,
+                    )
+                    if os.environ.get(
+                        "PPO_RETENTION_EQUIVALENCE"
+                    ) == "1"
+                    else None
+                )
+                with retention_lock:
+                    for retention_id, record in zip(
+                        retention_ids,
+                        records,
+                    ):
+                        retained_chunks.pop(
+                            retention_id,
+                            None,
+                        )
+                        consumed_retention_ids.add(
+                            retention_id
+                        )
+                        retention_totals[
+                            "currentRetainedBytes"
+                        ] -= len(record["compressed"])
+                response = {
+                    "type": "updateChunkAccepted",
+                    "requestId": message["requestId"],
+                    **result,
+                }
+                if feature_audit is not None:
+                    response["featureAudit"] = feature_audit
+                send(response)
+
             elif kind == "retainedUpdateChunk":
                 retention_ids = [str(value) for value in message.get("retentionIds", [])]
                 scalar_payload = read_binary(int(message["byteLength"]))
@@ -566,11 +783,21 @@ def main():
                         str(value)
                         for value in message.get("retentionIds", [])
                     ]
+                    retention_batch_id = str(
+                        message.get("retentionBatchId", "")
+                    )
+                    if retention_ids and retention_batch_id:
+                        raise ValueError(
+                            "packedActBatch cannot use retentionIds "
+                            "and retentionBatchId together"
+                        )
                     if retention_ids:
                         if len(retention_ids) != int(message.get("batchSize", 0)):
                             raise ValueError(
                                 "packedActBatch retentionIds must match batchSize"
                             )
+                    if retention_batch_id:
+                        reserve_retention_id(retention_batch_id)
                     actions_result = trainer.act_prepared_batch(
                         prepared,
                         actions,
@@ -581,6 +808,13 @@ def main():
                         reserve_retention_ids(retention_ids)
                         enqueue_retained_batch(
                             retention_ids,
+                            message,
+                            payload,
+                            actions_result["actionIndices"],
+                        )
+                    elif retention_batch_id:
+                        enqueue_retained_batch_record(
+                            retention_batch_id,
                             message,
                             payload,
                             actions_result["actionIndices"],
