@@ -388,6 +388,8 @@ class PackedH2dWorkspace:
         self._float_buffer: torch.Tensor | None = None
         self._mask_buffer: torch.Tensor | None = None
         self._int_buffer: torch.Tensor | None = None
+        self._action_buffer: torch.Tensor | None = None
+        self._action_index_buffer: torch.Tensor | None = None
 
     @staticmethod
     def _capacity(required: int) -> int:
@@ -430,6 +432,22 @@ class PackedH2dWorkspace:
             self._int_buffer, cpu.numel(), torch.long
         )
         target = self._int_buffer.narrow(0, 0, cpu.numel())
+        target.copy_(cpu)
+        return target
+
+    def zero_action_float32(self, required: int) -> torch.Tensor:
+        self._action_buffer = self._ensure(
+            self._action_buffer, required, torch.float32
+        )
+        target = self._action_buffer.narrow(0, 0, required)
+        target.zero_()
+        return target
+
+    def copy_action_indices(self, cpu: torch.Tensor) -> torch.Tensor:
+        self._action_index_buffer = self._ensure(
+            self._action_index_buffer, cpu.numel(), torch.long
+        )
+        target = self._action_index_buffer.narrow(0, 0, cpu.numel())
         target.copy_(cpu)
         return target
 
@@ -583,10 +601,20 @@ def prepare_packed_tensors_grouped_h2d(
             int(indices_cpu.min()) < 0 or int(indices_cpu.max()) >= total
         ):
             raise ValueError("Sparse Action index is outside dense shape")
-        actions = torch.zeros(shape, dtype=torch.float32, device=device)
+        if workspace is None:
+            actions = torch.zeros(
+                shape,
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            actions = workspace.zero_action_float32(total).view(shape)
         if indices_cpu.size:
-            indices = torch.from_numpy(indices_cpu).to(
-                device=device, dtype=torch.long
+            indices_source = torch.from_numpy(indices_cpu)
+            indices = (
+                indices_source.to(device=device, dtype=torch.long)
+                if workspace is None
+                else workspace.copy_action_indices(indices_source)
             )
             actions.view(-1).index_copy_(0, indices, values)
         return actions
