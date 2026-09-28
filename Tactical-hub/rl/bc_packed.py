@@ -506,6 +506,163 @@ def prepare_packed_tensors_grouped_h2d(
     return prepared, floating("actions"), mask("actionMask"), targets
 
 
+def prepare_packed_views_grouped_h2d(
+    views: dict[str, np.ndarray],
+    device: torch.device,
+    *,
+    workspace: PackedH2dWorkspace | None = None,
+    include_nonempty_metadata: bool = False,
+) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
+    strategic_names = (
+        "siegeStates", "kingCampaignStates", "rewardPlacementRequests",
+        "strategistCooldowns", "teleportCooldowns", "productionIntents",
+        "movementIntents", "attackIntents", "strategistActionIntents",
+        "teleportIntents",
+    )
+
+    float_names = [
+        "global",
+        "strategicGlobal",
+        "teams",
+        "units",
+        "bases",
+        "constructions",
+        "map",
+        *(f"strategic.{name}" for name in strategic_names),
+        "actions",
+    ]
+    mask_names = [
+        "teamMask",
+        "unitMask",
+        "baseMask",
+        "constructionMask",
+        "mapMask",
+        *(f"strategicMask.{name}" for name in strategic_names),
+        "actionMask",
+    ]
+
+    def flatten_group(
+        names: list[str],
+        np_dtype: np.dtype,
+        torch_dtype: torch.dtype,
+        copy_kind: str,
+    ) -> tuple[torch.Tensor, dict[str, tuple[int, tuple[int, ...]]]]:
+        arrays: list[np.ndarray] = []
+        layout: dict[str, tuple[int, tuple[int, ...]]] = {}
+        cursor = 0
+        for name in names:
+            array = np.ascontiguousarray(
+                views[name],
+                dtype=np_dtype,
+            )
+            flat = array.reshape(-1)
+            arrays.append(flat)
+            layout[name] = (cursor, tuple(array.shape))
+            cursor += int(flat.size)
+
+        if arrays:
+            joined = np.concatenate(arrays)
+        else:
+            joined = np.empty((0,), dtype=np_dtype)
+
+        cpu = torch.from_numpy(joined)
+        if workspace is None:
+            device_flat = cpu.to(
+                device=device,
+                dtype=torch_dtype,
+            )
+        elif copy_kind == "float":
+            device_flat = workspace.copy_float32(cpu)
+        elif copy_kind == "mask":
+            device_flat = workspace.copy_mask(cpu)
+        elif copy_kind == "int":
+            device_flat = workspace.copy_int64(cpu)
+        else:
+            raise ValueError(
+                f"Unsupported grouped copy kind: {copy_kind}"
+            )
+
+        return device_flat, layout
+
+    floats, float_layout = flatten_group(
+        float_names,
+        np.dtype("<f4"),
+        torch.float32,
+        "float",
+    )
+    masks, mask_layout = flatten_group(
+        mask_names,
+        np.dtype("u1"),
+        torch.bool,
+        "mask",
+    )
+    targets_flat, target_layout = flatten_group(
+        ["targets"],
+        np.dtype("<i4"),
+        torch.long,
+        "int",
+    )
+
+    def restore(
+        name: str,
+        source: torch.Tensor,
+        layout: dict[str, tuple[int, tuple[int, ...]]],
+    ) -> torch.Tensor:
+        offset, shape = layout[name]
+        count = int(np.prod(shape, dtype=np.int64))
+        return source.narrow(0, offset, count).view(shape)
+
+    def floating(name: str) -> torch.Tensor:
+        return restore(name, floats, float_layout)
+
+    def mask(name: str) -> torch.Tensor:
+        return restore(name, masks, mask_layout)
+
+    prepared = {
+        "global": floating("global"),
+        "strategicGlobal": floating("strategicGlobal"),
+        "masked": {
+            name: (floating(name), mask(mask_name))
+            for name, mask_name in (
+                ("teams", "teamMask"),
+                ("units", "unitMask"),
+                ("bases", "baseMask"),
+                ("constructions", "constructionMask"),
+            )
+        },
+        "map": (floating("map"), mask("mapMask")),
+        "strategic": {
+            name: (
+                floating(f"strategic.{name}"),
+                mask(f"strategicMask.{name}"),
+            )
+            for name in strategic_names
+        },
+    }
+
+    if include_nonempty_metadata:
+        prepared["_nonempty"] = {
+            "teams": bool(views["teamMask"].any()),
+            "units": bool(views["unitMask"].any()),
+            "bases": bool(views["baseMask"].any()),
+            "constructions": bool(views["constructionMask"].any()),
+            "map": bool(views["mapMask"].any()),
+            **{
+                f"strategic.{name}": bool(
+                    views[f"strategicMask.{name}"].any()
+                )
+                for name in strategic_names
+            },
+        }
+
+    return (
+        prepared,
+        floating("actions"),
+        mask("actionMask"),
+        restore("targets", targets_flat, target_layout),
+    )
+
+
 def prepare_packed_tensors(
     views: dict[str, np.ndarray], device: torch.device
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
