@@ -110,6 +110,49 @@ def packed_state_branch_fingerprints(
     return fingerprints
 
 
+def split_packed_batch_samples(
+    header: dict[str, Any],
+    payload: bytes | bytearray | memoryview,
+) -> list[dict[str, Any]]:
+    batch_size = int(header.get("batchSize", 0))
+    if batch_size <= 0:
+        raise ValueError("Packed PPO batch must have a positive batchSize")
+    views = decode_packed_views(header, bytearray(payload))
+    records: list[dict[str, Any]] = []
+
+    for sample_index in range(batch_size):
+        byte_offset = 0
+        descriptors: list[dict[str, Any]] = []
+        buffers: list[bytes] = []
+        for template in header["tensors"]:
+            name = template["name"]
+            array = views[name]
+            if array.ndim < 1 or int(array.shape[0]) != batch_size:
+                raise ValueError(
+                    f"Packed tensor does not align with batchSize: {name}"
+                )
+            sample = np.ascontiguousarray(array[sample_index:sample_index + 1])
+            raw = sample.tobytes(order="C")
+            descriptors.append({
+                "name": name,
+                "dtype": template["dtype"],
+                "shape": list(sample.shape),
+                "byteOffset": byte_offset,
+                "byteLength": len(raw),
+            })
+            buffers.append(raw)
+            byte_offset += len(raw)
+        records.append({
+            "header": {
+                "batchSize": 1,
+                "tensors": descriptors,
+            },
+            "payload": bytearray(b"".join(buffers)),
+        })
+
+    return records
+
+
 def combine_single_sample_packed_views(
     records: list[dict[str, np.ndarray]],
     selected_action_indices: list[int],
