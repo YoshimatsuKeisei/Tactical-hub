@@ -75,6 +75,7 @@ export type PpoFastBatchInput = {
   replayChunkSize?: number;
   memoryLogInterval?: number;
   validationWorkerCount?: number;
+  modeLabel?: "fast_batch_v2" | "fast_batch_v5_compact_rows";
   client?: PythonPpoClient;
 };
 
@@ -104,6 +105,7 @@ function retentionSummary(stats: PpoRetentionStats | undefined) {
 
 export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   const profiler = new PpoTimingProfiler();
+  const modeLabel = input.modeLabel ?? "fast_batch_v2";
   const environmentCount = input.environmentCount ?? 8;
   if (environmentCount !== 8) {
     throw new Error("PPO fast_batch_v2 requires exactly 8 environments");
@@ -363,7 +365,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
 
       if (!batch.length) continue;
 
-      const retentionBatchId = `fast-v2-round-${batchRounds}`;
+      const retentionBatchId = `${modeLabel}-round-${batchRounds}`;
       const sampleReferences = batch.map((entry) => ({
         environmentIndex: entry.slot.environmentIndex,
         decisionIndex: entry.slot.trajectory.length,
@@ -647,8 +649,8 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     ).length;
 
     const metadata = {
-      purpose: "phase_12b_fast_batch_v2",
-      ppoMode: "fast_batch_v2",
+      purpose: `phase_12b_${modeLabel}`,
+      ppoMode: modeLabel,
       environmentCount,
       seeds: slots.map((slot) => slot.seed),
       mergeOrder: slots.map((slot) => slot.environmentIndex),
@@ -680,7 +682,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     const totalMs = performance.now() - started;
 
     return {
-      mode: "fast_batch_v2",
+      mode: modeLabel,
       environmentCount,
       seeds: slots.map((slot) => slot.seed),
       mergeOrder: slots.map((slot) => slot.environmentIndex),
@@ -724,7 +726,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
         // Preserve the original fast-mode error.
       }
     }
-    profiler.report("fast_batch_v2_final");
+    profiler.report(`${modeLabel}_final`);
     await client.close();
   }
 }
