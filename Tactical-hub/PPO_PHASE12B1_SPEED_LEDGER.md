@@ -497,3 +497,33 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - PyTorch emitted an AccumulateGrad stream-mismatch warning on the graphed path.
   Exactness still passed, but V6-O is NOT yet promoted to baseline.
 - Next gate: 4k paired exactness/performance with the same commits and settings.
+
+
+## V6-O replay graphed forward — CLOSED
+- Branch: experiment/ppo-fast-batch-v6o-replay-graphed-forward
+- Candidate: 1596d823f422a59caa6e3fa9eb6f2b6c828ac7f0
+- Baseline: V6-N ea68bbd776c156e3ee0d9c484501d3c3327a35bc
+- 1k exactness gate: PASS.
+  - allExact=true, gradientHashExact=true.
+  - replay 1,646.94 -> 1,421.51 ms (~13.7% diagnostic reduction).
+  - replay graph: 3 captures, 19 replays, 13 fallbacks.
+- 4k confirmation: exactness remained fully PASS.
+  - allExact=true; model/optimizer/CPU RNG/CUDA RNG/gradient/retention exact.
+  - replay graph: 4 captures, 30 replays, 95 fallbacks across 125 replay chunks.
+  - replay 3,953.93 -> 3,982.15 ms (~0.7% regression).
+  - PyTorch continued to warn about AccumulateGrad stream mismatch.
+- External wall 25.772 -> 20.351 sec is not attributable to replay graph because
+  unchanged batchAct also varied 5,351.95 -> 4,917.45 ms.
+- Conclusion: safe but no isolated replay speed gain at 4k. Do not adopt or expand
+  replay CUDA Graph / graphed-callable cache.
+- V6-N remains the fastest exact-verified production baseline.
+
+## Next steps after V6-O
+1. Keep V6-N as the baseline.
+2. Close replay CUDA Graph expansion; do not spend more GPU time scaling graph cache.
+3. Return to Node-side structural costs, especially game step and Observation encode.
+4. Profile before changing semantics: identify which subparts of game step / Observation
+   encode dominate current V6-N rollout.
+5. Preserve every Observation feature, legal-action set, decision frequency, game rule,
+   sample order, PPO math, RNG state and checkpoint schema.
+6. Do not reduce information or skip decisions to claim speed.
