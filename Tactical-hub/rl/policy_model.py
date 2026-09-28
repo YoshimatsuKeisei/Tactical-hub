@@ -203,7 +203,6 @@ class TacticalPolicyValueNetwork(nn.Module):
                     dtype=table.dtype,
                     device=table.device,
                 )
-
             valid_count = None if valid_prefix_counts is None else valid_prefix_counts.get(key)
             if valid_count is not None and valid_count < table.shape[1]:
                 if valid_count <= 0:
