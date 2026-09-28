@@ -96,7 +96,8 @@ export type PpoFastBatchInput = {
     | "fast_batch_v6_cuda_graph_32"
     | "fast_batch_v6_replay_h2d_workspace"
     | "fast_batch_v6_immutable_raw_retention"
-    | "fast_batch_v6_static_map_template";
+    | "fast_batch_v6_static_map_template"
+    | "fast_batch_v6_static_base_template";
   client?: PythonPpoClient;
 };
 
