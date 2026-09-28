@@ -247,6 +247,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     (_, environmentIndex) => {
       const environment = createFastEnvironment(
         profiler.enabled ? profiler : undefined,
+        () => gameStepProfileActive,
       );
       const seed = firstGameSeed + environmentIndex;
       environment.reset(seed, 4);
@@ -364,6 +365,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   };
 
   try {
+    gameStepProfileActive = true;
     const rolloutStarted = performance.now();
 
     while (slots.some((slot) => !slot.finished)) {
