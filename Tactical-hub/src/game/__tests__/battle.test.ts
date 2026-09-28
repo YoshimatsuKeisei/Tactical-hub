@@ -12,7 +12,7 @@ import {
 } from "../engine/battle";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit, UnitPosition, UnitType } from "../types";
-import { getRoadAttackDistance } from "../utils/roadTopology";
+import { getRoadAttackDistance, getRoadAttackDistanceWithinRange } from "../utils/roadTopology";
 
 function clearPreviousSlot(state: GameState, position: UnitPosition) {
   if (position.kind !== "base") return;
@@ -356,6 +356,22 @@ describe("battle", () => {
     )!;
     expect(
       getRoadAttackDistance(state, engineer.position, strategist.position),
+    ).toBe(6);
+    expect(
+      getRoadAttackDistanceWithinRange(
+        state,
+        engineer.position,
+        strategist.position,
+        5,
+      ),
+    ).toBe(Number.POSITIVE_INFINITY);
+    expect(
+      getRoadAttackDistanceWithinRange(
+        state,
+        engineer.position,
+        strategist.position,
+        6,
+      ),
     ).toBe(6);
 
     expect(targetIds(state, "team-2-engineer-on-bridge")).not.toContain(

@@ -276,6 +276,37 @@ export function getRoadAttackDistance(
   return Number.POSITIVE_INFINITY;
 }
 
+/** Exact shortest attack-path distance when reachable within maxDistance. */
+export function getRoadAttackDistanceWithinRange(
+  state: GameState,
+  from: UnitPosition,
+  to: UnitPosition,
+  maxDistance: number,
+  context?: RoadAttackTopologyContext,
+): number {
+  if (from.kind === "water" || to.kind === "water") {
+    if (from.kind !== "water" || to.kind !== "water") return Number.POSITIVE_INFINITY;
+    const distance = Math.max(Math.abs(from.x - to.x), Math.abs(from.y - to.y));
+    return distance <= maxDistance ? distance : Number.POSITIVE_INFINITY;
+  }
+  if (from.kind === "removed" || to.kind === "removed") return Number.POSITIVE_INFINITY;
+  const targetKey = attackPathKey(to);
+  const queue: { position: UnitPosition; distance: number }[] = [{ position: from, distance: 0 }];
+  const visited = new Set([attackPathKey(from)]);
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (attackPathKey(current.position) === targetKey) return current.distance;
+    if (current.distance >= maxDistance) continue;
+    for (const neighbor of attackPathNeighbors(state, current.position, context)) {
+      const key = attackPathKey(neighbor);
+      if (visited.has(key)) continue;
+      visited.add(key);
+      queue.push({ position: neighbor, distance: current.distance + 1 });
+    }
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 /**
  * Builds an exact single-cost distance lookup from one fixed destination.
  * The attack-path graph is undirected: ground/bridge edges use the symmetric

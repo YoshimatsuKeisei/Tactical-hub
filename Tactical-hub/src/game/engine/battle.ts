@@ -9,7 +9,7 @@ import type {
   UnitType,
 } from "../types";
 import { positionKey } from "../utils/position";
-import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, type RoadAttackTopologyContext } from "../utils/roadTopology";
+import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, getRoadAttackDistanceWithinRange, type RoadAttackTopologyContext } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
 import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
 import { getMovementCandidates } from "./movement";
@@ -272,6 +272,35 @@ function contextDistance(state: GameState, attacker: Unit, target: Unit, context
   return distance;
 }
 
+function contextDistanceWithinRange(
+  state: GameState,
+  attacker: Unit,
+  target: Unit,
+  maxDistance: number,
+  context?: AttackEnumerationContext,
+) {
+  if (!context) {
+    return getRoadAttackDistanceWithinRange(
+      state,
+      attacker.position,
+      target.position,
+      maxDistance,
+    );
+  }
+  const key = `${attacker.id}\u0000${target.id}`;
+  const cached = context.distances.get(key);
+  if (cached !== undefined) return cached;
+  const distance = getRoadAttackDistanceWithinRange(
+    state,
+    attacker.position,
+    target.position,
+    maxDistance,
+    context.roadTopology,
+  );
+  if (Number.isFinite(distance)) context.distances.set(key, distance);
+  return distance;
+}
+
 function targetSortKey(
   state: GameState,
   attacker: Unit,
@@ -368,8 +397,11 @@ function getAttackCandidatesCore(state: GameState, attackerUnitId: string, conte
       : canAttackAcrossRoadTopology(state, attacker.position, target.position, context.roadTopology);
     if (!topologyAllowed) continue;
     const distance = profile
-      ? measureLegalSegment("attackRangeDistance", () => contextDistance(state, attacker, target, context))
-      : contextDistance(state, attacker, target, context);
+      ? measureLegalSegment(
+        "attackRangeDistance",
+        () => contextDistanceWithinRange(state, attacker, target, range, context),
+      )
+      : contextDistanceWithinRange(state, attacker, target, range, context);
     if (distance > range) continue;
     legal.push(target);
   }
