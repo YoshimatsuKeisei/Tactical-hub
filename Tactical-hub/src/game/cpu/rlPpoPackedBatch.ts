@@ -1,5 +1,10 @@
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
-import { packBcEncodedSamples, type PackedBcBatch, type PackedTensorDescriptor } from "./rlBcPackedBatch";
+import {
+  packBcEncodedSamples,
+  type PackBcEncodedSamplesOptions,
+  type PackedBcBatch,
+  type PackedTensorDescriptor,
+} from "./rlBcPackedBatch";
 import type { EncodedObservation } from "./rlObservationEncoder";
 
 export type PpoEncodedSample = {
@@ -58,6 +63,9 @@ export function appendPpoUpdateScalars(
     payload: Buffer.concat([base.payload, ...additions.map((entry) => entry.buffer)], offset),
     tensors: [...base.tensors, ...descriptors],
     batchSize: base.batchSize,
+    ...(base.rowCompaction
+      ? { rowCompaction: base.rowCompaction }
+      : {}),
   };
 }
 
@@ -70,17 +78,24 @@ export function packPpoActInput(
   observation: EncodedObservation,
   actions: number[][],
   featureSpec: RlFeatureSpecV2,
+  options: PackBcEncodedSamplesOptions = {},
 ) {
-  return packBcEncodedSamples([{ observation, actions, targetIndex: 0 }], featureSpec);
+  return packBcEncodedSamples(
+    [{ observation, actions, targetIndex: 0 }],
+    featureSpec,
+    options,
+  );
 }
 
 export function packPpoActBatchInput(
   samples: Array<{ observation: EncodedObservation; actions: number[][] }>,
   featureSpec: RlFeatureSpecV2,
+  options: PackBcEncodedSamplesOptions = {},
 ) {
   if (!samples.length) throw new Error("Cannot pack an empty PPO action batch");
   return packBcEncodedSamples(
     samples.map((sample) => ({ ...sample, targetIndex: 0 })),
     featureSpec,
+    options,
   );
 }
