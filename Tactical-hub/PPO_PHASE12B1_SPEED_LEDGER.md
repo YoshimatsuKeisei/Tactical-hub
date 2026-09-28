@@ -445,3 +445,41 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    order, PPO math, RNG state and checkpoint schema unchanged.
 6. Do not reduce observation/action information or skip decisions.
 7. Do not run 50k until the remaining structural gap is materially reduced.
+
+
+## V6-N replay compute phase profile
+- Diagnostic commit: 6ad62c02bc05d864368a2f3f07b3164eb08a226e
+- Workload: 8 env x 125 decisions = 1,000 decisions, replay chunk size 32.
+- Profiled replay top-level total: 1,387.10 ms.
+- Top-level split:
+  - accumulate_total: 1,095.96 ms (79.01%).
+  - prepare_h2d: 124.31 ms (8.96%).
+  - scalar_h2d: 12.60 ms (0.91%).
+  - decode_records: 78.81 ms (5.68%).
+  - combine_cpu: 75.42 ms (5.44%).
+- Immutable raw retention worked as intended:
+  - replay integrity hash: only 0.20 ms total.
+  - decode_views: 75.09 ms.
+- accumulate_total split:
+  - backward: 458.97 ms (41.88% of accumulate_total).
+  - model forward: 285.96 ms (26.09%).
+    - state encoder alone: 214.48 ms.
+    - action encoder: 13.12 ms.
+    - score head: 26.06 ms.
+    - value head: 14.72 ms.
+  - PPO objective: 235.28 ms (21.47%).
+  - input checks: 31.70 ms.
+  - finite checks: 31.68 ms.
+  - selected-action checks: 15.04 ms.
+- Conclusion: grouped replay H2D is no longer the highest-priority route.
+  Training compute (forward/objective/backward) now dominates replay.
+
+## Next steps after V6-N compute profile
+1. Keep V6-N as the verified baseline.
+2. Do not prioritize grouped replay H2D; H2D is under 10% of profiled replay.
+3. Inspect exact replay-chunk input-shape reuse before attempting training CUDA Graphs.
+4. If replay shapes are highly reusable, test a graph/capture route that preserves
+   identical PPO math, forward/backward order, gradient accumulation, RNG and tensor
+   shape/value/stride.
+5. Do not rewrite the PPO objective algebra merely for speed without an exactness proof.
+6. Do not reduce observation/action information or skip decisions.
