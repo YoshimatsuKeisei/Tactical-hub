@@ -47,6 +47,13 @@ def main():
     persistent_replay_h2d = (
         os.environ.get("PPO_PERSISTENT_REPLAY_H2D") == "1"
     )
+    immutable_raw_retention = (
+        os.environ.get("PPO_IMMUTABLE_RAW_RETENTION") == "1"
+    )
+    if immutable_raw_retention and retention_storage_mode != "raw":
+        raise ValueError(
+            "PPO_IMMUTABLE_RAW_RETENTION requires raw retention storage"
+        )
     if retention_storage_mode not in ("deflate", "raw"):
         raise ValueError(
             f"Unsupported PPO_RETENTION_STORAGE_MODE: {retention_storage_mode}"
@@ -96,11 +103,22 @@ def main():
                 if task.get("kind") == "batch_record":
                     raw = task["payload"]
                     stored_payload = (
-                        raw
-                        if retention_storage_mode == "raw"
-                        else deflate_raw(raw)
+                        bytes(raw)
+                        if (
+                            retention_storage_mode == "raw"
+                            and immutable_raw_retention
+                        )
+                        else (
+                            raw
+                            if retention_storage_mode == "raw"
+                            else deflate_raw(raw)
+                        )
                     )
-                    raw_sha256 = hashlib.sha256(raw).hexdigest()
+                    raw_sha256 = hashlib.sha256(
+                        stored_payload
+                        if retention_storage_mode == "raw"
+                        else raw
+                    ).hexdigest()
                     retention_id = task["retentionId"]
                     batch_size = int(task["header"]["batchSize"])
                     selected_action_indices = [
@@ -118,6 +136,10 @@ def main():
                             "storageMode": retention_storage_mode,
                             "rawByteLength": len(raw),
                             "rawSha256": raw_sha256,
+                            "rawImmutableVerified": bool(
+                                retention_storage_mode == "raw"
+                                and immutable_raw_retention
+                            ),
                             "batchSize": batch_size,
                             "selectedActionIndices": selected_action_indices,
                         }
@@ -540,9 +562,21 @@ def main():
                             )
                         )
                     )
-                    if (
-                        len(raw) != record["rawByteLength"]
-                        or hashlib.sha256(raw).hexdigest()
+                    immutable_verified_raw = bool(
+                        record.get("storageMode") == "raw"
+                        and record.get("rawImmutableVerified") is True
+                    )
+                    if len(raw) != record["rawByteLength"]:
+                        raise ValueError(
+                            "PPO retained batch payload integrity mismatch"
+                        )
+                    if immutable_verified_raw:
+                        if not isinstance(raw, bytes):
+                            raise ValueError(
+                                "Verified immutable raw retention must use bytes"
+                            )
+                    elif (
+                        hashlib.sha256(raw).hexdigest()
                         != record["rawSha256"]
                     ):
                         raise ValueError(
