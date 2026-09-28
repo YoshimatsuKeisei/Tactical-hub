@@ -591,3 +591,28 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Keep game step as a separate later bottleneck; do not mix base encoding and game-step changes.
 6. Do not reduce observed information or skip decisions.
 7. Do not run 50k until another material structural gain is verified.
+
+
+## V6-Q static base row template cache — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6q-base-template-cache
+- Candidate: debacad53085bd106de1c60cc8cdd94464005375
+- Baseline: V6-P 50abdd3
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Observation encode: 1,709.77 -> 1,087.11 ms (~36.4% reduction).
+- Static base rows cache centroid/slot-layout zero templates and overwrite only
+  dynamic base ownership, occupation priority and occupant team/type fields.
+- Policy information, base-slot coverage, row width/order and feature values are unchanged.
+- External wall: 24.451 -> 19.100 sec (1.2802x paired diagnostic; do not attribute
+  the whole wall difference to base templating).
+- V6-Q is the current fastest exact-verified baseline.
+
+## Next steps after V6-Q
+1. Keep V6-Q as the current baseline.
+2. Observation encode is no longer the dominant Node-side stage.
+3. Profile game-step internals next; current 4k game step is 2,747.58 ms vs
+   Observation encode 1,087.11 ms.
+4. Preserve exact game state transitions, action cadence, RNG, adjudication,
+   rewards and all PPO/trajectory semantics.
+5. Do not simplify game rules or skip state updates.
