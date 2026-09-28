@@ -725,7 +725,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
           || left.signature.localeCompare(right.signature)
         ));
       process.stderr.write(
-        `[PPO act shape profile] ${JSON.stringify({
+        `[PPO act shape profile node] ${JSON.stringify({
           rounds: batchRounds,
           uniqueShapes: shapes.length,
           shapes,
