@@ -50,6 +50,10 @@ const result = await runPpoFastBatchV2Smoke({
     positiveInteger("--replay-chunk-size", 32),
   memoryLogInterval:
     positiveInteger("--memory-log-interval", 5_000),
+  validationWorkerCount:
+    process.argv.includes("--validation-workers")
+      ? positiveInteger("--validation-workers", 1)
+      : 0,
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4),
     gamma: numeric("--gamma", 0.99),
