@@ -480,3 +480,32 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Do not alter replay chunk size, sample order, tensor shape/value/stride, gradient
    accumulation order, PPO objective, finite checks, RNG state or checkpoint schema.
 5. Do not reduce observation/action information.
+
+
+## V6-N exact replay-shape reuse audit
+- Diagnostic branch: experiment/ppo-fast-batch-v6n-replay-shape-audit
+- Diagnostic commit: 6143dd725d8a13aed12a50f4d1966a138ce10527
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- Replay chunks: 125.
+- Unique exact signatures: 33.
+- Repeated signatures: 23; singleton signatures: 10.
+- Calls on repeated signatures: 115 / 125.
+- Reused calls after the first occurrence: 92 / 125 = 73.6%.
+- Top exact-signature counts:
+  23, 9, 8, 7, 7, 7, 6, 6, 5, 5, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2.
+- Signature includes tensor shape/stride/dtype plus _nonempty and _validPrefixCount,
+  and all replay tensors including Action/mask/targets/old log-prob/advantages/returns.
+- Conclusion: exact replay-shape reuse is materially high enough to justify a
+  controlled training CUDA Graph feasibility probe.
+- This audit is diagnostic only; V6-N remains the production baseline.
+
+## Next steps after replay-shape audit
+1. Keep V6-N as the production baseline.
+2. Do not directly graph the production backward path.
+3. First build an isolated GPU microprobe on cloned trainer/model state for one hot exact
+   replay signature.
+4. Compare eager vs graphed-callable outputs and gradients bit-exactly, including
+   per-parameter grad None/not-None state and gradient hash.
+5. Preserve model input information/shape/value/stride, replay chunk size, sample order,
+   PPO objective, RNG, gradient accumulation order and checkpoint schema.
+6. If the microprobe cannot preserve exact gradients, close training CUDA Graph immediately.
