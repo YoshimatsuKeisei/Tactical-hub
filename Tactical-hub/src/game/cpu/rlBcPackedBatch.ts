@@ -52,10 +52,12 @@ export type PackedBcBatch = {
   tensors: PackedTensorDescriptor[];
   batchSize: number;
   rowCompaction?: PackedRowCompaction;
+  actionSparseShape?: [number, number, number];
 };
 
 export type PackBcEncodedSamplesOptions = {
   compactMaskedPrefixes?: boolean;
+  sparseActions?: boolean;
 };
 
 function validMaskPrefixLength(
@@ -177,11 +179,33 @@ export function packBcEncodedSamples(
   if (actionRows.some((batch) => batch.some((row) => row.length !== featureSpec.actionFeatureWidth))) {
     throw new Error("action feature width does not match Feature Spec");
   }
-  const [actions, actionPresence] = paddedFloatRows("actions", actionRows, featureSpec.actionFeatureWidth);
-  floats.push(actions);
-  masks.push({ name: "actionMask", dtype: "uint8", shape: [samples.length, actions.shape[1]], bytes: Buffer.from(actionPresence.buffer) });
+  const maxActionRows = Math.max(0, ...actionRows.map((rows) => rows.length));
+  const actionPresence = new Uint8Array(samples.length * maxActionRows);
+  actionRows.forEach((rows, batch) => rows.forEach((_row, rowIndex) => {
+    actionPresence[batch * maxActionRows + rowIndex] = 1;
+  }));
   const targets = Int32Array.from(samples.map((sample) => sample.targetIndex));
   const integers: PendingTensor[] = [{ name: "targets", dtype: "int32", shape: [samples.length], bytes: Buffer.from(targets.buffer) }];
+  let actionSparseShape: [number, number, number] | undefined;
+  if (options.sparseActions) {
+    const sparseIndices: number[] = [];
+    const sparseValues: number[] = [];
+    actionRows.forEach((rows, batch) => rows.forEach((row, rowIndex) => row.forEach((item, featureIndex) => {
+      if (item !== 0) {
+        sparseIndices.push((batch * maxActionRows + rowIndex) * featureSpec.actionFeatureWidth + featureIndex);
+        sparseValues.push(item);
+      }
+    })));
+    const indices = Int32Array.from(sparseIndices);
+    const values = Float32Array.from(sparseValues);
+    integers.push({ name: "actionSparseIndices", dtype: "int32", shape: [indices.length], bytes: Buffer.from(indices.buffer) });
+    floats.push({ name: "actionSparseValues", dtype: "float32", shape: [values.length], bytes: Buffer.from(values.buffer) });
+    actionSparseShape = [samples.length, maxActionRows, featureSpec.actionFeatureWidth];
+  } else {
+    const [actions] = paddedFloatRows("actions", actionRows, featureSpec.actionFeatureWidth);
+    floats.push(actions);
+  }
+  masks.push({ name: "actionMask", dtype: "uint8", shape: [samples.length, maxActionRows], bytes: Buffer.from(actionPresence.buffer) });
 
   let byteOffset = 0;
   const tensors: PackedTensorDescriptor[] = [];
@@ -198,5 +222,6 @@ export function packBcEncodedSamples(
     ...(Object.keys(rowCompaction).length
       ? { rowCompaction }
       : {}),
+    ...(actionSparseShape ? { actionSparseShape } : {}),
   };
 }

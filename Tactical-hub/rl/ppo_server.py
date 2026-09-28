@@ -779,6 +779,15 @@ def main():
                     kind == "packedActBatch"
                     and packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2")
                 )
+                if message.get("actionSparseShape") is not None:
+                    if kind != "packedActBatch" or not grouped_act_prepare:
+                        raise ValueError(
+                            "Sparse Action transport requires packedActBatch fast_batch prepare"
+                        )
+                    if message.get("retentionIds") or message.get("retentionBatchId"):
+                        raise ValueError(
+                            "Sparse Action transport retention is not enabled in this stage"
+                        )
                 if grouped_act_prepare:
                     prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
                         message,

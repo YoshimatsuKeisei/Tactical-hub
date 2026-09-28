@@ -416,6 +416,14 @@ def prepare_packed_tensors_grouped_h2d(
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
+    action_sparse_shape = header.get("actionSparseShape")
+    if action_sparse_shape is not None:
+        if (
+            not isinstance(action_sparse_shape, list)
+            or len(action_sparse_shape) != 3
+            or any(int(value) < 0 for value in action_sparse_shape)
+        ):
+            raise ValueError("Invalid sparse Action shape")
 
     def grouped(dtype_name: str, torch_dtype: torch.dtype) -> tuple[torch.Tensor, int, int]:
         selected = [descriptor for descriptor in descriptors if descriptor["dtype"] == dtype_name]
@@ -470,6 +478,38 @@ def prepare_packed_tensors_grouped_h2d(
 
     def mask(name: str) -> torch.Tensor:
         return view(name, masks, mask_start, mask_itemsize)
+
+    def action_tensor() -> torch.Tensor:
+        if action_sparse_shape is None:
+            return floating("actions")
+        values = floating("actionSparseValues").reshape(-1)
+        descriptor = by_name.get("actionSparseIndices")
+        if descriptor is None:
+            raise ValueError("Sparse Action indices are missing")
+        byte_length = int(descriptor["byteLength"])
+        if byte_length % _DTYPES["int32"].itemsize:
+            raise ValueError("Sparse Action index byte length mismatch")
+        indices_cpu = np.frombuffer(
+            payload,
+            dtype=_DTYPES["int32"],
+            count=byte_length // _DTYPES["int32"].itemsize,
+            offset=int(descriptor["byteOffset"]),
+        )
+        if int(indices_cpu.size) != int(values.numel()):
+            raise ValueError("Sparse Action index/value count mismatch")
+        shape = tuple(int(value) for value in action_sparse_shape)
+        total = int(np.prod(shape, dtype=np.int64))
+        if indices_cpu.size and (
+            int(indices_cpu.min()) < 0 or int(indices_cpu.max()) >= total
+        ):
+            raise ValueError("Sparse Action index is outside dense shape")
+        actions = torch.zeros(shape, dtype=torch.float32, device=device)
+        if indices_cpu.size:
+            indices = torch.from_numpy(indices_cpu).to(
+                device=device, dtype=torch.long
+            )
+            actions.view(-1).index_copy_(0, indices, values)
+        return actions
 
     strategic_names = (
         "siegeStates", "kingCampaignStates", "rewardPlacementRequests",
@@ -561,7 +601,7 @@ def prepare_packed_tensors_grouped_h2d(
         if include_targets and targets_flat is not None
         else None
     )
-    return prepared, floating("actions"), mask("actionMask"), targets
+    return prepared, action_tensor(), mask("actionMask"), targets
 
 
 def prepare_packed_tensors(

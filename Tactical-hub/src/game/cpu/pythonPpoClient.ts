@@ -98,6 +98,9 @@ export class PythonPpoClient {
       ...(packed.rowCompaction
         ? { rowCompaction: packed.rowCompaction }
         : {}),
+      ...(packed.actionSparseShape
+        ? { actionSparseShape: packed.actionSparseShape }
+        : {}),
     })}\n`);
     this.process.stdin.write(packed.payload);
   }
@@ -186,6 +189,13 @@ export class PythonPpoClient {
         throw new Error("PPO batched retention IDs must be unique");
       }
     }
+    const sparseActionTransport =
+      this.options.env?.PPO_SPARSE_ACTION_TRANSPORT === "1";
+    if (sparseActionTransport && (retentionIds || retentionBatchId)) {
+      throw new Error(
+        "Sparse Action transport retention is not enabled in this stage",
+      );
+    }
     const requestId = this.nextRequestId++;
     const responsePromise = this.wait();
     this.sendPreparedPacked(
@@ -204,6 +214,7 @@ export class PythonPpoClient {
         {
           compactMaskedPrefixes:
             this.options.compactPaddedRows ?? false,
+          sparseActions: sparseActionTransport,
         },
       ),
     );
