@@ -148,16 +148,16 @@ def main():
                             "PPO batched retention split/result length mismatch"
                         )
                     stored = []
-                    for retention_id, record, selected_action_index in zip(
+                    for retention_id, retained_record, selected_action_index in zip(
                         retention_ids,
                         records,
                         selected_action_indices,
                     ):
-                        raw = record["payload"]
+                        raw = retained_record["payload"]
                         compressed = deflate_raw(raw)
                         stored.append((
                             retention_id,
-                            record["header"],
+                            retained_record["header"],
                             compressed,
                             len(raw),
                             hashlib.sha256(raw).hexdigest(),
