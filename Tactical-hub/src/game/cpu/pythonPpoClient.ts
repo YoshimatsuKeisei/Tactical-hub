@@ -141,12 +141,15 @@ export class PythonPpoClient {
     return { ...response, actionKey: legalActions.actionKeys[response.actionIndex] };
   }
 
-  async actBatch(
-    samples: Array<{ observation: EncodedObservation; legalActions: EncodedLegalActionsV2 }>,
+  async actPackedBatch(
+    packed: PackedBcBatch,
+    actionKeys: string[][],
     options: { retentionIds?: string[]; retentionBatchId?: string } = {},
   ) {
     if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
-    if (!samples.length) throw new Error("PPO action batch cannot be empty");
+    if (packed.batchSize <= 0 || packed.batchSize !== actionKeys.length) {
+      throw new Error("PPO packed action batch/action-key count mismatch");
+    }
     const retentionIds = options.retentionIds;
     const retentionBatchId = options.retentionBatchId;
     if (retentionIds && retentionBatchId) {
@@ -158,7 +161,7 @@ export class PythonPpoClient {
       throw new Error("PPO retentionBatchId must not be empty");
     }
     if (retentionIds) {
-      if (retentionIds.length !== samples.length) {
+      if (retentionIds.length !== packed.batchSize) {
         throw new Error("PPO batched retention IDs must match sample count");
       }
       if (retentionIds.some((retentionId) => !retentionId)) {
@@ -168,6 +171,7 @@ export class PythonPpoClient {
         throw new Error("PPO batched retention IDs must be unique");
       }
     }
+
     const requestId = this.nextRequestId++;
     const responsePromise = this.wait();
     this.sendPreparedPacked(
@@ -177,34 +181,65 @@ export class PythonPpoClient {
         ...(retentionIds ? { retentionIds } : {}),
         ...(retentionBatchId ? { retentionBatchId } : {}),
       },
-      packPpoActBatchInput(
-        samples.map(({ observation, legalActions }) => ({ observation, actions: legalActions.actions })),
-        this.featureSpec,
-      ),
+      packed,
     );
+
     const response = await responsePromise;
     if (response.type === "error") throw new Error(response.message);
-    if (response.type !== "actions" || response.requestId !== requestId) throw new Error("Unexpected PPO batch-action response");
     if (
-      response.actionIndices.length !== samples.length
-      || response.logProbabilities.length !== samples.length
-      || response.values.length !== samples.length
-    ) throw new Error("PPO returned an action batch with the wrong length");
-    return samples.map((sample, index) => {
+      response.type !== "actions"
+      || response.requestId !== requestId
+    ) {
+      throw new Error("Unexpected PPO packed batch-action response");
+    }
+    if (
+      response.actionIndices.length !== packed.batchSize
+      || response.logProbabilities.length !== packed.batchSize
+      || response.values.length !== packed.batchSize
+    ) {
+      throw new Error("PPO returned an action batch with the wrong length");
+    }
+
+    return actionKeys.map((keys, index) => {
       const actionIndex = response.actionIndices[index];
       const logProbability = response.logProbabilities[index];
       const value = response.values[index];
-      if (!Number.isInteger(actionIndex) || actionIndex < 0 || actionIndex >= sample.legalActions.actionKeys.length) {
+      if (
+        !Number.isInteger(actionIndex)
+        || actionIndex < 0
+        || actionIndex >= keys.length
+      ) {
         throw new Error("PPO returned an illegal batched action index");
       }
-      if (![logProbability, value].every(Number.isFinite)) throw new Error("PPO returned NaN or Inf in batched action output");
+      if (![logProbability, value].every(Number.isFinite)) {
+        throw new Error("PPO returned NaN or Inf in batched action output");
+      }
       return {
         actionIndex,
         logProbability,
         value,
-        actionKey: sample.legalActions.actionKeys[actionIndex],
+        actionKey: keys[actionIndex],
       };
     });
+  }
+
+  async actBatch(
+    samples: Array<{ observation: EncodedObservation; legalActions: EncodedLegalActionsV2 }>,
+    options: { retentionIds?: string[]; retentionBatchId?: string } = {},
+  ) {
+    if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
+    if (!samples.length) throw new Error("PPO action batch cannot be empty");
+    return this.actPackedBatch(
+      packPpoActBatchInput(
+        samples.map(({ observation, legalActions }) => ({
+          observation,
+          actions: legalActions.actions,
+        })),
+        this.featureSpec,
+      ),
+      samples.map((sample) => sample.legalActions.actionKeys),
+      options,
+    );
   }
 
   /**
