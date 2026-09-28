@@ -357,6 +357,8 @@ class PackedH2dWorkspace:
 def _apply_logical_row_counts(
     prepared: dict[str, Any],
     logical_row_counts: dict[str, Any] | None,
+    *,
+    defer_table_padding: bool = False,
 ) -> None:
     if not logical_row_counts:
         return
@@ -377,6 +379,10 @@ def _apply_logical_row_counts(
                 f"Packed compact table/mask shape mismatch: {key}"
             )
         if logical_rows == transferred_rows:
+            continue
+
+        if defer_table_padding:
+            prepared.setdefault("_logicalRowCount", {})[key] = logical_rows
             continue
 
         trailing_rows = logical_rows - transferred_rows
@@ -413,6 +419,7 @@ def prepare_packed_tensors_grouped_h2d(
     include_nonempty_metadata: bool = False,
     include_valid_prefix_metadata: bool = False,
     validate_action_mask_cpu: bool = False,
+    defer_logical_row_restore: bool = False,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
@@ -498,6 +505,7 @@ def prepare_packed_tensors_grouped_h2d(
     _apply_logical_row_counts(
         prepared,
         header.get("rowCompaction"),
+        defer_table_padding=defer_logical_row_restore,
     )
     if include_nonempty_metadata or include_valid_prefix_metadata:
         def mask_values(name: str) -> np.ndarray:
@@ -569,6 +577,7 @@ def prepare_packed_tensors(
     device: torch.device,
     *,
     logical_row_counts: dict[str, Any] | None = None,
+    defer_logical_row_restore: bool = False,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
     def floating(name: str) -> torch.Tensor:
         return torch.from_numpy(views[name]).to(device=device, dtype=torch.float32)
@@ -603,6 +612,7 @@ def prepare_packed_tensors(
     _apply_logical_row_counts(
         prepared,
         logical_row_counts,
+        defer_table_padding=defer_logical_row_restore,
     )
     return (
         prepared,
