@@ -43,17 +43,49 @@ function maskTensor(name: string, masks: number[][], maxRows: number, presence?:
   return { name, dtype: "uint8", shape: [masks.length, maxRows], bytes: Buffer.from(packed.buffer) };
 }
 
+export type PackedRowCompaction = Partial<
+  Record<"units" | "bases" | "constructions", number>
+>;
+
 export type PackedBcBatch = {
   payload: Buffer;
   tensors: PackedTensorDescriptor[];
   batchSize: number;
+  rowCompaction?: PackedRowCompaction;
 };
 
-export function packBcEncodedSamples(samples: BcEncodedSample[], featureSpec: RlFeatureSpec): PackedBcBatch {
+export type PackBcEncodedSamplesOptions = {
+  compactMaskedPrefixes?: boolean;
+};
+
+function validMaskPrefixLength(
+  mask: number[],
+  expectedRows: number,
+  name: string,
+) {
+  if (mask.length !== expectedRows) {
+    throw new Error(
+      `${name} mask length does not match row count: ${mask.length} != ${expectedRows}`,
+    );
+  }
+  let valid = 0;
+  while (valid < mask.length && Boolean(mask[valid])) valid += 1;
+  if (mask.slice(valid).some(Boolean)) {
+    throw new Error(`${name} mask is not a valid 1-prefix`);
+  }
+  return valid;
+}
+
+export function packBcEncodedSamples(
+  samples: BcEncodedSample[],
+  featureSpec: RlFeatureSpec,
+  options: PackBcEncodedSamplesOptions = {},
+): PackedBcBatch {
   if (!samples.length) throw new Error("Cannot pack an empty BC batch");
   const observations = samples.map((sample) => sample.observation);
   const floats: PendingTensor[] = [];
   const masks: PendingTensor[] = [];
+  const rowCompaction: PackedRowCompaction = {};
   const checkedMatrix = (name: string, rows: number[][], width: number) => {
     if (rows.some((row) => row.length !== width)) throw new Error(`${name} feature width does not match Feature Spec`);
     return floatMatrix(name, rows);
@@ -67,11 +99,65 @@ export function packBcEncodedSamples(samples: BcEncodedSample[], featureSpec: Rl
     ["bases", "baseMask", featureSpec.baseWidth],
     ["constructions", "constructionMask", featureSpec.constructionWidth],
   ] as const) {
-    const rows = observations.map((value) => value[name]);
-    if (rows.some((batch) => batch.some((row) => row.length !== width))) throw new Error(`${name} feature width does not match Feature Spec`);
-    const [tensor, presence] = paddedFloatRows(name, rows, width);
+    let rows = observations.map((value) => value[name]);
+    let explicitMasks = observations.map((value) => value[maskName]);
+    if (rows.some((batch) => batch.some((row) => row.length !== width))) {
+      throw new Error(`${name} feature width does not match Feature Spec`);
+    }
+
+    if (
+      options.compactMaskedPrefixes
+      && (
+        name === "units"
+        || name === "bases"
+        || name === "constructions"
+      )
+    ) {
+      const originalRowCounts = rows.map((batch) => batch.length);
+      if (
+        originalRowCounts.some(
+          (count) => count !== originalRowCounts[0],
+        )
+      ) {
+        throw new Error(
+          `${name} compact rows require a stable logical row count`,
+        );
+      }
+      const originalRows = originalRowCounts[0] ?? 0;
+      const validCounts = explicitMasks.map((mask) =>
+        validMaskPrefixLength(mask, originalRows, name),
+      );
+      rows = rows.map((batch, index) => {
+        const valid = validCounts[index];
+        if (valid > 0) return batch.slice(0, valid);
+        // Keep one masked zero input row so the encoder remains in the
+        // autograd graph and Adam observes grad=0 instead of grad=None.
+        if (batch.length) return [batch[0].map(() => 0)];
+        return [Array(width).fill(0)];
+      });
+      explicitMasks = explicitMasks.map((mask, index) => {
+        const valid = validCounts[index];
+        return valid > 0
+          ? mask.slice(0, valid)
+          : [0];
+      });
+      rowCompaction[name] = originalRows;
+    }
+
+    const [tensor, presence] = paddedFloatRows(
+      name,
+      rows,
+      width,
+    );
     floats.push(tensor);
-    masks.push(maskTensor(maskName, observations.map((value) => value[maskName]), tensor.shape[1], presence));
+    masks.push(
+      maskTensor(
+        maskName,
+        explicitMasks,
+        tensor.shape[1],
+        presence,
+      ),
+    );
   }
   const mapRows = observations.map((value) => value.map.flat());
   if (mapRows.some((batch) => batch.some((row) => row.length !== featureSpec.mapTileWidth))) throw new Error("map feature width does not match Feature Spec");
@@ -105,5 +191,12 @@ export function packBcEncodedSamples(samples: BcEncodedSample[], featureSpec: Rl
     buffers.push(tensor.bytes);
     byteOffset += tensor.bytes.byteLength;
   }
-  return { payload: Buffer.concat(buffers, byteOffset), tensors, batchSize: samples.length };
+  return {
+    payload: Buffer.concat(buffers, byteOffset),
+    tensors,
+    batchSize: samples.length,
+    ...(Object.keys(rowCompaction).length
+      ? { rowCompaction }
+      : {}),
+  };
 }
