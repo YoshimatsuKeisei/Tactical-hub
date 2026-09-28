@@ -205,6 +205,8 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   let mergeLegalActionCount = 0;
   let rolloutMs = 0;
   let replayMs = 0;
+  const profileActShapes = process.env.PPO_ACT_SHAPE_PROFILE === "1";
+  const actShapeCounts = new Map<string, number>();
 
   const finalizeSlot = async (slot: FastBatchSlot) => {
     if (slot.finished) return;
@@ -387,6 +389,17 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
       }
 
       if (!batch.length) continue;
+
+      if (profileActShapes) {
+        const maxActionRows = Math.max(
+          ...batch.map((entry) => entry.encodedActions.actionKeys.length),
+        );
+        const signature = `${batch.length}x${maxActionRows}x${featureSpec.actionFeatureWidth}`;
+        actShapeCounts.set(
+          signature,
+          (actShapeCounts.get(signature) ?? 0) + 1,
+        );
+      }
 
       const retentionBatchId = `${modeLabel}-round-${batchRounds}`;
       const sampleReferences = batch.map((entry) => ({
@@ -703,6 +716,22 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
     const finalRetentionStats = await client.retentionStats();
     const diagnostics = await client.diagnostics();
     const totalMs = performance.now() - started;
+
+    if (profileActShapes) {
+      const shapes = [...actShapeCounts.entries()]
+        .map(([signature, count]) => ({ signature, count }))
+        .sort((left, right) => (
+          right.count - left.count
+          || left.signature.localeCompare(right.signature)
+        ));
+      process.stderr.write(
+        `[PPO act shape profile] ${JSON.stringify({
+          rounds: batchRounds,
+          uniqueShapes: shapes.length,
+          shapes,
+        })}\n`,
+      );
+    }
 
     return {
       mode: modeLabel,
