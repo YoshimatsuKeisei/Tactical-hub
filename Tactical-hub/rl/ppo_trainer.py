@@ -9,10 +9,87 @@ import time
 import torch
 from torch.nn import functional as F
 
-from rl.policy_model import TacticalPolicyValueNetwork
+from rl.policy_model import STRATEGIC_TABLES, TacticalPolicyValueNetwork
 
 
 PPO_CHECKPOINT_SCHEMA_VERSION = 1
+
+_REPLAY_GRAPH_MASKED_KEYS = (
+    "teams",
+    "units",
+    "bases",
+    "constructions",
+)
+
+
+class _PreparedReplayGraphModule(torch.nn.Module):
+    def __init__(
+        self,
+        model: TacticalPolicyValueNetwork,
+        nonempty: dict[str, bool] | None,
+        valid_prefix_counts: dict[str, int] | None,
+    ):
+        super().__init__()
+        self.model = model
+        self.nonempty = None if nonempty is None else dict(nonempty)
+        self.valid_prefix_counts = (
+            None
+            if valid_prefix_counts is None
+            else dict(valid_prefix_counts)
+        )
+
+    def forward(
+        self,
+        *args: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        index = 0
+        prepared: dict[str, Any] = {
+            "global": args[index],
+            "strategicGlobal": args[index + 1],
+            "masked": {},
+            "strategic": {},
+        }
+        index += 2
+
+        for key in _REPLAY_GRAPH_MASKED_KEYS:
+            prepared["masked"][key] = (
+                args[index],
+                args[index + 1],
+            )
+            index += 2
+
+        prepared["map"] = (
+            args[index],
+            args[index + 1],
+        )
+        index += 2
+
+        for name in STRATEGIC_TABLES:
+            prepared["strategic"][name] = (
+                args[index],
+                args[index + 1],
+            )
+            index += 2
+
+        action_rows = args[index]
+        action_mask = args[index + 1]
+        index += 2
+        if index != len(args):
+            raise ValueError(
+                "Replay CUDA Graph argument count mismatch"
+            )
+
+        if self.nonempty is not None:
+            prepared["_nonempty"] = self.nonempty
+        if self.valid_prefix_counts is not None:
+            prepared["_validPrefixCount"] = self.valid_prefix_counts
+
+        logits, values, _, _, _ = self.model.forward_prepared_batch(
+            prepared,
+            action_rows,
+            action_mask,
+        )
+        return logits, values
 
 
 class PpoTrainer:
@@ -67,6 +144,37 @@ class PpoTrainer:
         self._act_cuda_graph_captures = 0
         self._act_cuda_graph_replays = 0
         self._act_cuda_graph_fallbacks = 0
+
+        self._replay_cuda_graph_enabled = (
+            os.environ.get("PPO_REPLAY_CUDAGRAPH_HOT") == "1"
+        )
+        if self._replay_cuda_graph_enabled and self.device.type != "cuda":
+            raise ValueError("PPO_REPLAY_CUDAGRAPH_HOT requires CUDA")
+        self._replay_cuda_graph_min_hits = int(
+            os.environ.get("PPO_REPLAY_CUDAGRAPH_MIN_HITS", "3")
+        )
+        self._replay_cuda_graph_max_entries = int(
+            os.environ.get("PPO_REPLAY_CUDAGRAPH_MAX_ENTRIES", "4")
+        )
+        if self._replay_cuda_graph_min_hits < 2:
+            raise ValueError(
+                "PPO_REPLAY_CUDAGRAPH_MIN_HITS must be >= 2"
+            )
+        if self._replay_cuda_graph_max_entries <= 0:
+            raise ValueError(
+                "PPO_REPLAY_CUDAGRAPH_MAX_ENTRIES must be positive"
+            )
+        self._replay_cuda_graph_seen: dict[
+            tuple[Any, ...],
+            int,
+        ] = {}
+        self._replay_cuda_graph_cache: dict[
+            tuple[Any, ...],
+            Callable[..., tuple[torch.Tensor, torch.Tensor]],
+        ] = {}
+        self._replay_cuda_graph_captures = 0
+        self._replay_cuda_graph_replays = 0
+        self._replay_cuda_graph_fallbacks = 0
 
     def load_initial_model(self, path: str) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -477,6 +585,195 @@ class PpoTrainer:
             "fallbackForwards": self._act_cuda_graph_fallbacks,
         }
 
+    @staticmethod
+    def _replay_graph_args(
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]:
+        values: list[torch.Tensor] = [
+            prepared["global"],
+            prepared["strategicGlobal"],
+        ]
+        for key in _REPLAY_GRAPH_MASKED_KEYS:
+            table, mask = prepared["masked"][key]
+            values.extend((table, mask))
+
+        map_table, map_mask = prepared["map"]
+        values.extend((map_table, map_mask))
+
+        for name in STRATEGIC_TABLES:
+            table, mask = prepared["strategic"][name]
+            values.extend((table, mask))
+
+        values.extend((actions, action_mask))
+        return tuple(values)
+
+    def _replay_graph_signature(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        selected: torch.Tensor,
+        old_log_probabilities: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+    ) -> tuple[Any, ...]:
+        return self._act_graph_signature(
+            prepared,
+            actions,
+            action_mask,
+        ) + (
+            (
+                "selected",
+                self._act_graph_tensor_signature(selected),
+            ),
+            (
+                "oldLogProbabilities",
+                self._act_graph_tensor_signature(
+                    old_log_probabilities
+                ),
+            ),
+            (
+                "advantages",
+                self._act_graph_tensor_signature(advantages),
+            ),
+            (
+                "returns",
+                self._act_graph_tensor_signature(returns),
+            ),
+        )
+
+    def _capture_replay_graphed_callable(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> Callable[..., tuple[torch.Tensor, torch.Tensor]]:
+        args = self._replay_graph_args(
+            prepared,
+            actions,
+            action_mask,
+        )
+        wrapper = _PreparedReplayGraphModule(
+            self.model,
+            prepared.get("_nonempty"),
+            prepared.get("_validPrefixCount"),
+        )
+
+        saved_gradients: list[
+            tuple[torch.nn.Parameter, torch.Tensor | None]
+        ] = [
+            (
+                parameter,
+                None
+                if parameter.grad is None
+                else parameter.grad.detach().clone(),
+            )
+            for parameter in self.model.parameters()
+        ]
+        cpu_rng = torch.get_rng_state().clone()
+        cuda_rng = [
+            state.clone()
+            for state in torch.cuda.get_rng_state_all()
+        ]
+        for parameter, _ in saved_gradients:
+            parameter.grad = None
+
+        try:
+            graphed = torch.cuda.make_graphed_callables(
+                wrapper,
+                args,
+                num_warmup_iters=3,
+                allow_unused_input=True,
+            )
+            torch.cuda.synchronize(self.device)
+        finally:
+            torch.set_rng_state(cpu_rng)
+            torch.cuda.set_rng_state_all(cuda_rng)
+            for parameter, saved_gradient in saved_gradients:
+                parameter.grad = saved_gradient
+
+        return graphed
+
+    def _replay_forward_hot_cuda_graph(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        selected: torch.Tensor,
+        old_log_probabilities: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not self._replay_cuda_graph_enabled:
+            logits, values, _, _, returned_mask = (
+                self.model.forward_prepared_batch(
+                    prepared,
+                    actions,
+                    action_mask,
+                )
+            )
+            return logits, values, returned_mask
+
+        signature = self._replay_graph_signature(
+            prepared,
+            actions,
+            action_mask,
+            selected,
+            old_log_probabilities,
+            advantages,
+            returns,
+        )
+        seen = self._replay_cuda_graph_seen.get(signature, 0) + 1
+        self._replay_cuda_graph_seen[signature] = seen
+
+        graphed = self._replay_cuda_graph_cache.get(signature)
+        if graphed is None:
+            if (
+                seen < self._replay_cuda_graph_min_hits
+                or len(self._replay_cuda_graph_cache)
+                >= self._replay_cuda_graph_max_entries
+            ):
+                self._replay_cuda_graph_fallbacks += 1
+                logits, values, _, _, returned_mask = (
+                    self.model.forward_prepared_batch(
+                        prepared,
+                        actions,
+                        action_mask,
+                    )
+                )
+                return logits, values, returned_mask
+
+            graphed = self._capture_replay_graphed_callable(
+                prepared,
+                actions,
+                action_mask,
+            )
+            self._replay_cuda_graph_cache[signature] = graphed
+            self._replay_cuda_graph_captures += 1
+
+        logits, values = graphed(
+            *self._replay_graph_args(
+                prepared,
+                actions,
+                action_mask,
+            )
+        )
+        self._replay_cuda_graph_replays += 1
+        return logits, values, action_mask
+
+    def replay_cuda_graph_stats(self) -> dict[str, Any]:
+        return {
+            "enabled": self._replay_cuda_graph_enabled,
+            "minHits": self._replay_cuda_graph_min_hits,
+            "maxEntries": self._replay_cuda_graph_max_entries,
+            "seenSignatures": len(self._replay_cuda_graph_seen),
+            "capturedGraphs": self._replay_cuda_graph_captures,
+            "graphReplays": self._replay_cuda_graph_replays,
+            "fallbackForwards": self._replay_cuda_graph_fallbacks,
+        }
+
     def act_prepared_batch(
         self,
         prepared_observations: dict[str, Any],
@@ -607,6 +904,8 @@ class PpoTrainer:
             raise RuntimeError("A PPO accumulated update is already active")
         self._act_state_branch_cache.clear()
         self._act_cuda_graph_cache.clear()
+        self._replay_cuda_graph_seen.clear()
+        self._replay_cuda_graph_cache.clear()
         if not isinstance(total_samples, int) or isinstance(total_samples, bool) or total_samples <= 0:
             raise ValueError("PPO total sample count must be a positive integer")
         self.model.train(True)
@@ -640,8 +939,16 @@ class PpoTrainer:
             raise ValueError("PPO accumulated chunk exceeds declared sample count")
         if not all(torch.isfinite(value).all() for value in (old_log_probabilities, advantages, returns)):
             raise FloatingPointError("PPO packed input contains NaN or Inf")
-        logits, values, _, _, returned_mask = self.model.forward_prepared_batch(
-            prepared_observations, prepared_actions, action_mask
+        logits, values, returned_mask = (
+            self._replay_forward_hot_cuda_graph(
+                prepared_observations,
+                prepared_actions,
+                action_mask,
+                selected,
+                old_log_probabilities,
+                advantages,
+                returns,
+            )
         )
         if torch.any(selected < 0) or torch.any(selected >= returned_mask.shape[1]) or not torch.all(returned_mask.gather(1, selected.unsqueeze(1))):
             raise ValueError("PPO selected action is outside the legal action mask")
@@ -715,6 +1022,7 @@ class PpoTrainer:
                 "optimizerHash": self.optimizer_hash(),
                 "rngHash": self.rng_hash(),
             }
+        self._replay_cuda_graph_cache.clear()
         self._accumulation = None
         return result
 

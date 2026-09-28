@@ -1055,6 +1055,17 @@ def main():
                         + "\n"
                     )
                     sys.stderr.flush()
+                replay_graph_stats = trainer.replay_cuda_graph_stats()
+                if replay_graph_stats.get("enabled"):
+                    sys.stderr.write(
+                        "[PPO replay cuda graph] "
+                        + json.dumps(
+                            replay_graph_stats,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
+                    sys.stderr.flush()
                 send({"type": "closed"})
                 return
             else:
