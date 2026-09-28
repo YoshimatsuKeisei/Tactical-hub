@@ -649,3 +649,27 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Interpretation: full-graph target lookup construction is too expensive for this workload.
 - Decision: V6-R rejected and closed. Do not run 4k or 50k for this route.
 - Next candidate: keep pairwise BFS semantics and optimize its queue mechanics only (remove Array.shift without changing visitation order or returned distances).
+
+
+## V6-S CLOSED — pairwise attack-distance BFS queue indexing
+- Branch: experiment/ppo-fast-batch-v6s-road-distance-queue-index
+- Commit: 5a4dc500360d6f0d1f70f12c753b63971fda0b75
+- Change: replace Array.shift() with index-based FIFO traversal only inside getRoadAttackDistance().
+- Local TypeScript check: PASS.
+- Related battle/heuristic tests: 45/45 PASS.
+- Kaggle 1k paired against V6-Q: allExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/retention/semantics: exact.
+- Game step: 645.06 -> 638.57 ms (~1.0102x).
+- Improvement is only ~6.49 ms / 1k decisions and is below the observed Kaggle timing noise floor.
+- External wall changed strongly, but batchAct/replay timing also moved strongly, so wall is not evidence for this two-line queue change.
+- Decision: exact but effect insufficient. Close V6-S; do not spend a 4k or 50k run on this route.
+
+## Next step after V6-S closure
+1. Keep V6-Q as the exact production baseline.
+2. Attack-range distance remains the measured neutral-battle hotspot: 188.73 ms / 516 calls in the 1k diagnostic.
+3. Test a dedicated bounded BFS only for attack-candidate range legality.
+4. The bounded BFS must return the exact shortest integer distance when the target is reachable within the attacker's exact range.
+5. If no target is reachable within that range, it may return Infinity because the existing caller immediately rejects distance > range.
+6. Do not replace unrestricted getRoadAttackDistance for other callers.
+7. Cache only finite exact distances into AttackEnumerationContext; do not cache bounded Infinity into the unrestricted pair-distance cache.
+8. Gate at 1k exact before any 4k run; 50k remains NOT RUN.
