@@ -245,6 +245,7 @@ class PpoTrainer:
         prepared_observations: dict[str, Any],
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
+        manual_categorical_mode: bool = False,
     ) -> dict[str, list[float] | list[int]]:
         batch_size = int(prepared_actions.shape[0])
         if batch_size <= 0 or action_mask.shape[0] != batch_size:
@@ -259,9 +260,25 @@ class PpoTrainer:
             )
             if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
                 raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
-            distribution = torch.distributions.Categorical(logits=logits)
-            selected = distribution.sample()
-            log_probabilities = distribution.log_prob(selected)
+            if manual_categorical_mode:
+                normalized_logits = logits - logits.logsumexp(
+                    dim=-1,
+                    keepdim=True,
+                )
+                probabilities = normalized_logits.softmax(dim=-1)
+                selected = torch.multinomial(
+                    probabilities,
+                    1,
+                    replacement=True,
+                ).squeeze(-1)
+                log_probabilities = normalized_logits.gather(
+                    -1,
+                    selected.unsqueeze(-1),
+                ).squeeze(-1)
+            else:
+                distribution = torch.distributions.Categorical(logits=logits)
+                selected = distribution.sample()
+                log_probabilities = distribution.log_prob(selected)
 
         return {
             "actionIndices": [int(value) for value in selected.tolist()],
