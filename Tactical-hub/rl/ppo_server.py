@@ -39,6 +39,21 @@ def main():
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
+    compact_execute_mode = os.environ.get(
+        "PPO_COMPACT_EXECUTE_MODE",
+        "restore_input",
+    )
+    if compact_execute_mode not in (
+        "restore_input",
+        "post_encoder_pad",
+    ):
+        raise ValueError(
+            "Unsupported PPO_COMPACT_EXECUTE_MODE: "
+            f"{compact_execute_mode}"
+        )
+    defer_logical_row_restore = (
+        compact_execute_mode == "post_encoder_pad"
+    )
     packed_h2d_workspace = None
     timings = {}
     legal_action_counts = []
@@ -545,6 +560,7 @@ def main():
                         views,
                         trainer.device,
                         logical_row_counts=first_row_compaction,
+                        defer_logical_row_restore=defer_logical_row_restore,
                     )
                 )
                 scalar_values = np.frombuffer(
@@ -667,6 +683,7 @@ def main():
                     views,
                     trainer.device,
                     logical_row_counts=first_row_compaction,
+                    defer_logical_row_restore=defer_logical_row_restore,
                 )
                 scalar_values = np.frombuffer(scalar_payload, dtype=np.dtype("<f4"))
                 old = torch.from_numpy(scalar_values[:batch_size]).to(device=trainer.device, dtype=torch.float32)
@@ -789,6 +806,7 @@ def main():
                         include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
+                        defer_logical_row_restore=defer_logical_row_restore,
                     )
                 else:
                     views = decode_packed_views(message, payload)
