@@ -19,8 +19,10 @@ import {
 import { createRlFeatureSpecV2 } from "./rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
+  createRlObservationEncoderProfile,
   encodeRlObservationCompactV2,
   encodeRlObservationV2,
+  RL_OBSERVATION_PROFILE_KEYS,
 } from "./rlObservationEncoder";
 import {
   PythonPpoClient,
@@ -150,6 +152,11 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   const validationWorkerCount = input.validationWorkerCount ?? 0;
   const nodeRolloutProfileEnabled =
     process.env.PPO_NODE_ROLLOUT_PROFILE === "1";
+  const observationEncoderProfileEnabled =
+    process.env.PPO_OBSERVATION_ENCODER_PROFILE === "1";
+  const observationEncoderProfile = observationEncoderProfileEnabled
+    ? createRlObservationEncoderProfile()
+    : undefined;
   type NodeMetric = { count: number; totalMs: number; maxMs: number };
   const nodeMetric = (): NodeMetric => ({
     count: 0,
@@ -282,7 +289,9 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
         environmentIndex,
         seed,
         environment,
-        encoderCache: createRlObservationEncoderCache(),
+        encoderCache: createRlObservationEncoderCache(
+          observationEncoderProfile,
+        ),
         trajectory: [],
         finished: false,
       };
@@ -835,6 +844,35 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
           enumerateByPhase: serializeNamed(
             nodeProfile.enumerateByPhase,
           ),
+        })}\n`,
+      );
+    }
+
+    if (observationEncoderProfile) {
+      const serialized = Object.fromEntries(
+        RL_OBSERVATION_PROFILE_KEYS.map((key) => {
+          const metric = observationEncoderProfile[key];
+          return [
+            key,
+            {
+              count: metric.count,
+              totalMs: Number(metric.totalMs.toFixed(3)),
+              avgMs: metric.count
+                ? Number((metric.totalMs / metric.count).toFixed(6))
+                : 0,
+              maxMs: Number(metric.maxMs.toFixed(6)),
+            },
+          ];
+        }),
+      );
+      const instrumentedTotalMs = RL_OBSERVATION_PROFILE_KEYS.reduce(
+        (sum, key) => sum + observationEncoderProfile[key].totalMs,
+        0,
+      );
+      process.stderr.write(
+        `[PPO observation encoder detail] ${JSON.stringify({
+          stages: serialized,
+          instrumentedTotalMs: Number(instrumentedTotalMs.toFixed(3)),
         })}\n`,
       );
     }

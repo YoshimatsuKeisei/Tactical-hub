@@ -7,6 +7,9 @@ if (args.includes("--node-profile")) process.env.PPO_NODE_PROFILE = "1";
 if (args.includes("--node-rollout-profile")) {
   process.env.PPO_NODE_ROLLOUT_PROFILE = "1";
 }
+if (args.includes("--observation-profile")) {
+  process.env.PPO_OBSERVATION_ENCODER_PROFILE = "1";
+}
 
 const value = (name: string) => {
   const index = args.indexOf(name);

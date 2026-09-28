@@ -111,14 +111,65 @@ type StaticBaseGeometry = {
  * geometry, base geometry/slot order, and zero-row templates. Dynamic ownership,
  * units, constructions and intents are deliberately never cached.
  */
+export const RL_OBSERVATION_PROFILE_KEYS = [
+  "setup",
+  "positions",
+  "units",
+  "bases",
+  "constructions",
+  "compaction",
+  "teamsGlobal",
+  "map",
+  "strategic",
+] as const;
+
+export type RlObservationProfileKey =
+  typeof RL_OBSERVATION_PROFILE_KEYS[number];
+
+export type RlObservationProfileMetric = {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+};
+
+export type RlObservationEncoderProfile = Record<
+  RlObservationProfileKey,
+  RlObservationProfileMetric
+>;
+
 export type RlObservationEncoderCache = {
   staticMap?: StaticMapCell[][];
   baseGeometry?: Map<string, StaticBaseGeometry>;
   zeroRows?: Map<number, number[]>;
+  profile?: RlObservationEncoderProfile;
 };
 
-export function createRlObservationEncoderCache(): RlObservationEncoderCache {
-  return {};
+export function createRlObservationEncoderProfile(): RlObservationEncoderProfile {
+  return Object.fromEntries(
+    RL_OBSERVATION_PROFILE_KEYS.map((key) => [
+      key,
+      { count: 0, totalMs: 0, maxMs: 0 },
+    ]),
+  ) as RlObservationEncoderProfile;
+}
+
+export function createRlObservationEncoderCache(
+  profile?: RlObservationEncoderProfile,
+): RlObservationEncoderCache {
+  return profile ? { profile } : {};
+}
+
+function recordObservationProfile(
+  cache: RlObservationEncoderCache | undefined,
+  key: RlObservationProfileKey,
+  started: number,
+) {
+  const metric = cache?.profile?.[key];
+  if (!metric) return;
+  const elapsed = performance.now() - started;
+  metric.count += 1;
+  metric.totalMs += elapsed;
+  metric.maxMs = Math.max(metric.maxMs, elapsed);
 }
 
 type Context = {
@@ -486,6 +537,7 @@ function encodeRlObservationForVersion(
   encoderCache?: RlObservationEncoderCache,
   compactPaddedRows = false,
 ): EncodedObservation {
+  let started = encoderCache?.profile ? performance.now() : 0;
   const teams = orderedTeams(observation);
   const bases = [...observation.bases].sort((left, right) => {
     const leftCoord = left.coords[0], rightCoord = right.coords[0];
@@ -511,19 +563,31 @@ function encodeRlObservationForVersion(
     productionCompletedTeams: new Set(observation.productionCompletedTeamIdsThisTurn),
     encoderCache,
   };
+  recordObservationProfile(encoderCache, "setup", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
   for (const unit of observation.units) {
     context.positionCoordinateByUnitId.set(unit.id, positionCoordinate(context, unit.position));
   }
+  recordObservationProfile(encoderCache, "positions", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
   const units = observation.units.filter((unit) => unit.position.kind !== "removed").sort((left, right) => compareKeys(unitSortKey(context, left), unitSortKey(context, right)));
   context.units = units;
   const maxUnits = observation.map.tiles.length + observation.bases.reduce((sum, base) => sum + base.slots.length, 0);
   if (units.length > maxUnits) throw new Error(`RL Observation contains ${units.length} board units, exceeding safe capacity ${maxUnits}`);
   const encodedUnits = units.map((unit) => encodeUnit(context, unit, schemaVersion));
   const unitWidth = encodedUnits[0]?.length ?? encodeUnit(context, { id: "", ownerTeamId: "", type: "infantry", hp: 0, position: { kind: "tile", x: 0, y: 0 }, statuses: [] }, schemaVersion).length;
+  recordObservationProfile(encoderCache, "units", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
   const maxBases = Math.max(observation.map.bases.length, observation.bases.length);
   const maxBaseSlots = Math.max(0, ...observation.bases.map((base) => base.slots.length), ...observation.map.bases.map((base) => base.slots.length));
   const encodedBases = bases.map((base) => encodeBase(context, base, maxBaseSlots));
   const baseWidth = encodedBases[0]?.length ?? 0;
+  recordObservationProfile(encoderCache, "bases", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
   const maxConstructions = observation.map.tiles.length;
   if (observation.constructions.length > maxConstructions) throw new Error(`RL Observation contains ${observation.constructions.length} constructions, exceeding safe capacity ${maxConstructions}`);
   const sortedConstructions = [...observation.constructions].sort((left, right) => {
@@ -532,7 +596,9 @@ function encodeRlObservationForVersion(
   });
   const encodedConstructions = sortedConstructions.map((construction) => encodeConstruction(context, construction));
   const constructionWidth = encodedConstructions[0]?.length ?? encodeConstruction(context, { id: "", kind: "bridge", tiles: [], placedTurn: 0, active: false }).length;
+  recordObservationProfile(encoderCache, "constructions", started);
 
+  started = encoderCache?.profile ? performance.now() : 0;
   const outputUnits = compactPaddedRows
     ? encodedUnits
     : paddedRows(encodedUnits, maxUnits, unitWidth, encoderCache);
@@ -567,41 +633,56 @@ function encodeRlObservationForVersion(
         constructions: maxConstructions,
       }
       : undefined;
+  recordObservationProfile(encoderCache, "compaction", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
+  const encodedGlobal = [
+    observation.turnNumber,
+    observation.config.productionInterval,
+    observation.map.width,
+    observation.map.height,
+    Number(Boolean(observation.actorTeamId)),
+    Number(observation.actorTeamId === observation.observingTeamId),
+    ...oneHot(observation.phase, PHASES),
+  ];
+  const encodedTeams = teams.map((team, index) => [
+    Number(index === 0),
+    Number(Boolean(team.isNeutral)),
+    ...oneHot(team.status, TEAM_STATUSES),
+    team.controlledBaseIds.length,
+    finite(team.defeatedUnitCount),
+    team.conqueredTeamIds?.length ?? 0,
+    Number(Boolean(team.homeBaseId)),
+    Number(context.movementCompletedTeams.has(team.id)),
+    Number(context.strategistSubmittedTeams.has(team.id)),
+    Number(context.productionCompletedTeams.has(team.id)),
+    context.movementOrderIndex.get(team.id) ?? -1,
+    context.movementSeatOrderIndex.get(team.id) ?? -1,
+  ]);
+  const teamMask = teams.map(() => 1);
+  recordObservationProfile(encoderCache, "teamsGlobal", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
+  const encodedMap = encodeMap(context);
+  recordObservationProfile(encoderCache, "map", started);
+
+  started = encoderCache?.profile ? performance.now() : 0;
+  const strategicState = encodeStrategicState(context);
+  recordObservationProfile(encoderCache, "strategic", started);
 
   return {
     schemaVersion,
-    global: [
-      observation.turnNumber,
-      observation.config.productionInterval,
-      observation.map.width,
-      observation.map.height,
-      Number(Boolean(observation.actorTeamId)),
-      Number(observation.actorTeamId === observation.observingTeamId),
-      ...oneHot(observation.phase, PHASES),
-    ],
-    teams: teams.map((team, index) => [
-      Number(index === 0),
-      Number(Boolean(team.isNeutral)),
-      ...oneHot(team.status, TEAM_STATUSES),
-      team.controlledBaseIds.length,
-      finite(team.defeatedUnitCount),
-      team.conqueredTeamIds?.length ?? 0,
-      Number(Boolean(team.homeBaseId)),
-      Number(context.movementCompletedTeams.has(team.id)),
-      Number(context.strategistSubmittedTeams.has(team.id)),
-      Number(context.productionCompletedTeams.has(team.id)),
-      context.movementOrderIndex.get(team.id) ?? -1,
-      context.movementSeatOrderIndex.get(team.id) ?? -1,
-    ]),
-    teamMask: teams.map(() => 1),
+    global: encodedGlobal,
+    teams: encodedTeams,
+    teamMask,
     units: outputUnits,
     unitMask: outputUnitMask,
-    map: encodeMap(context),
+    map: encodedMap,
     bases: outputBases,
     baseMask: outputBaseMask,
     constructions: outputConstructions,
     constructionMask: outputConstructionMask,
-    strategicState: encodeStrategicState(context),
+    strategicState,
     ...(rowCompaction ? { rowCompaction } : {}),
   };
 }
