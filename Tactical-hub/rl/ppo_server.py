@@ -75,6 +75,67 @@ def main():
             try:
                 if task is None:
                     return
+
+                if task.get("kind") == "batch":
+                    records = split_packed_batch_samples(
+                        task["header"],
+                        task["payload"],
+                    )
+                    retention_ids = task["retentionIds"]
+                    selected_action_indices = task["selectedActionIndices"]
+                    if (
+                        len(records) != len(retention_ids)
+                        or len(records) != len(selected_action_indices)
+                    ):
+                        raise ValueError(
+                            "PPO batched retention split/result length mismatch"
+                        )
+                    stored = []
+                    for retention_id, record, selected_action_index in zip(
+                        retention_ids,
+                        records,
+                        selected_action_indices,
+                    ):
+                        raw = record["payload"]
+                        compressed = deflate_raw(raw)
+                        stored.append((
+                            retention_id,
+                            record["header"],
+                            compressed,
+                            len(raw),
+                            hashlib.sha256(raw).hexdigest(),
+                            int(selected_action_index),
+                        ))
+                    with retention_lock:
+                        for (
+                            retention_id,
+                            header,
+                            compressed,
+                            raw_length,
+                            raw_sha256,
+                            selected_action_index,
+                        ) in stored:
+                            retained_chunks[retention_id] = {
+                                "header": header,
+                                "compressed": compressed,
+                                "rawByteLength": raw_length,
+                                "rawSha256": raw_sha256,
+                                "batchSize": 1,
+                                "selectedActionIndex": selected_action_index,
+                            }
+                            pending_retention_ids.discard(retention_id)
+                            retention_totals["storedChunks"] += 1
+                            retention_totals["storedSamples"] += 1
+                            retention_totals["rawBytes"] += raw_length
+                            retention_totals["compressedBytes"] += len(compressed)
+                            retention_totals["currentRetainedBytes"] += len(compressed)
+                        retention_totals["pendingRawBytes"] -= len(task["payload"])
+                        retention_totals["peakRetainedBytes"] = max(
+                            retention_totals["peakRetainedBytes"],
+                            retention_totals["currentRetainedBytes"],
+                        )
+                    continue
+
                 retention_id = task["retentionId"]
                 raw = task["payload"]
                 compressed = deflate_raw(raw)
@@ -102,10 +163,15 @@ def main():
             except Exception as error:
                 with retention_lock:
                     if task is not None:
-                        pending_retention_ids.discard(task.get("retentionId", ""))
+                        for retention_id in task.get(
+                            "retentionIds",
+                            [task.get("retentionId", "")],
+                        ):
+                            pending_retention_ids.discard(retention_id)
                         retention_totals["pendingRawBytes"] = max(
                             0,
-                            retention_totals["pendingRawBytes"] - len(task.get("payload", b"")),
+                            retention_totals["pendingRawBytes"]
+                            - len(task.get("payload", b"")),
                         )
                     if retention_worker_error[0] is None:
                         retention_worker_error[0] = error
@@ -163,6 +229,32 @@ def main():
             },
             "payload": payload,
             "selectedActionIndex": int(selected_action_index),
+        })
+
+    def enqueue_retained_batch(
+        retention_ids,
+        message,
+        payload,
+        selected_action_indices,
+    ):
+        with retention_lock:
+            retention_totals["pendingRawBytes"] += len(payload)
+            retention_totals["peakPendingRawBytes"] = max(
+                retention_totals["peakPendingRawBytes"],
+                retention_totals["pendingRawBytes"],
+            )
+        retention_queue.put({
+            "kind": "batch",
+            "retentionIds": list(retention_ids),
+            "header": {
+                "tensors": message["tensors"],
+                "batchSize": int(message["batchSize"]),
+            },
+            "payload": payload,
+            "selectedActionIndices": [
+                int(value)
+                for value in selected_action_indices
+            ],
         })
 
     def flush_retention_worker():
@@ -474,19 +566,10 @@ def main():
                         str(value)
                         for value in message.get("retentionIds", [])
                     ]
-                    retention_records = None
                     if retention_ids:
                         if len(retention_ids) != int(message.get("batchSize", 0)):
                             raise ValueError(
                                 "packedActBatch retentionIds must match batchSize"
-                            )
-                        retention_records = split_packed_batch_samples(
-                            message,
-                            payload,
-                        )
-                        if len(retention_records) != len(retention_ids):
-                            raise ValueError(
-                                "packedActBatch retained sample split mismatch"
                             )
                     actions_result = trainer.act_prepared_batch(
                         prepared,
@@ -494,23 +577,14 @@ def main():
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode == "fast_batch_v1",
                     )
-                    if retention_ids and retention_records is not None:
+                    if retention_ids:
                         reserve_retention_ids(retention_ids)
-                        for (
-                            retention_id,
-                            record,
-                            selected_action_index,
-                        ) in zip(
+                        enqueue_retained_batch(
                             retention_ids,
-                            retention_records,
+                            message,
+                            payload,
                             actions_result["actionIndices"],
-                        ):
-                            enqueue_retained_act(
-                                retention_id,
-                                record["header"],
-                                record["payload"],
-                                selected_action_index,
-                            )
+                        )
                     send({
                         "type": "actions",
                         "requestId": message["requestId"],
