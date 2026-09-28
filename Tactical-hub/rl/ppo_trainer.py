@@ -246,6 +246,7 @@ class PpoTrainer:
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
         manual_categorical_mode: bool = False,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> dict[str, list[float] | list[int]]:
         batch_size = int(prepared_actions.shape[0])
         if batch_size <= 0 or action_mask.shape[0] != batch_size:
@@ -253,38 +254,103 @@ class PpoTrainer:
         if not bool(action_mask.any(dim=1).all()):
             raise ValueError("Packed PPO batch act requires legal actions for every sample")
 
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if profile_stage is None:
+                return operation()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
+
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = self._act_forward(
-                prepared_observations, prepared_actions, action_mask
+            forward_operation = (
+                (lambda: self._act_forward(
+                    prepared_observations,
+                    prepared_actions,
+                    action_mask,
+                ))
+                if profile_stage is None
+                else (lambda: self.model.forward_prepared_batch(
+                    prepared_observations,
+                    prepared_actions,
+                    action_mask,
+                    profile_stage=profile_stage,
+                ))
             )
-            if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
-                raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
-            if manual_categorical_mode:
-                normalized_logits = logits - logits.logsumexp(
-                    dim=-1,
-                    keepdim=True,
-                )
-                probabilities = normalized_logits.softmax(dim=-1)
-                selected = torch.multinomial(
-                    probabilities,
-                    1,
-                    replacement=True,
-                ).squeeze(-1)
-                log_probabilities = normalized_logits.gather(
-                    -1,
-                    selected.unsqueeze(-1),
-                ).squeeze(-1)
-            else:
-                distribution = torch.distributions.Categorical(logits=logits)
-                selected = distribution.sample()
-                log_probabilities = distribution.log_prob(selected)
+            logits, values, _, _, returned_mask = timed(
+                "act_batch_model_forward",
+                forward_operation,
+            )
 
-        return {
-            "actionIndices": [int(value) for value in selected.tolist()],
-            "logProbabilities": [float(value) for value in log_probabilities.tolist()],
-            "values": [float(value) for value in values.tolist()],
-        }
+            def validate_outputs() -> None:
+                if (
+                    not torch.isfinite(logits[returned_mask]).all()
+                    or not torch.isfinite(values).all()
+                ):
+                    raise FloatingPointError(
+                        "Packed PPO batch action calculation contains NaN or Inf"
+                    )
+
+            timed("act_batch_finite_checks", validate_outputs)
+
+            if manual_categorical_mode:
+                def create_manual_distribution():
+                    normalized = logits - logits.logsumexp(
+                        dim=-1,
+                        keepdim=True,
+                    )
+                    return normalized, normalized.softmax(dim=-1)
+
+                normalized_logits, probabilities = timed(
+                    "act_batch_distribution_init",
+                    create_manual_distribution,
+                )
+                selected = timed(
+                    "act_batch_sampling",
+                    lambda: torch.multinomial(
+                        probabilities,
+                        1,
+                        replacement=True,
+                    ).squeeze(-1),
+                )
+                log_probabilities = timed(
+                    "act_batch_log_probability",
+                    lambda: normalized_logits.gather(
+                        -1,
+                        selected.unsqueeze(-1),
+                    ).squeeze(-1),
+                )
+            else:
+                distribution = timed(
+                    "act_batch_distribution_init",
+                    lambda: torch.distributions.Categorical(logits=logits),
+                )
+                selected = timed(
+                    "act_batch_sampling",
+                    distribution.sample,
+                )
+                log_probabilities = timed(
+                    "act_batch_log_probability",
+                    lambda: distribution.log_prob(selected),
+                )
+
+        return timed(
+            "act_batch_host_scalars",
+            lambda: {
+                "actionIndices": [int(value) for value in selected.tolist()],
+                "logProbabilities": [
+                    float(value)
+                    for value in log_probabilities.tolist()
+                ],
+                "values": [float(value) for value in values.tolist()],
+            },
+        )
 
     def act_prepared_stream_batch(
         self,
@@ -389,6 +455,7 @@ class PpoTrainer:
         old_log_probabilities: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> dict[str, int]:
         state = self._accumulation
         if state is None:
@@ -396,39 +463,142 @@ class PpoTrainer:
         chunk_size = int(selected.shape[0])
         if chunk_size <= 0 or state["processedSamples"] + chunk_size > state["totalSamples"]:
             raise ValueError("PPO accumulated chunk exceeds declared sample count")
-        if not all(torch.isfinite(value).all() for value in (old_log_probabilities, advantages, returns)):
-            raise FloatingPointError("PPO packed input contains NaN or Inf")
-        logits, values, _, _, returned_mask = self.model.forward_prepared_batch(
-            prepared_observations, prepared_actions, action_mask
+
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if profile_stage is None:
+                return operation()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
+
+        def validate_inputs() -> None:
+            if not all(
+                torch.isfinite(value).all()
+                for value in (old_log_probabilities, advantages, returns)
+            ):
+                raise FloatingPointError("PPO packed input contains NaN or Inf")
+
+        timed("update_chunk_input_checks", validate_inputs)
+
+        forward_operation = (
+            (lambda: self.model.forward_prepared_batch(
+                prepared_observations,
+                prepared_actions,
+                action_mask,
+            ))
+            if profile_stage is None
+            else (lambda: self.model.forward_prepared_batch(
+                prepared_observations,
+                prepared_actions,
+                action_mask,
+                profile_stage=profile_stage,
+            ))
         )
-        if torch.any(selected < 0) or torch.any(selected >= returned_mask.shape[1]) or not torch.all(returned_mask.gather(1, selected.unsqueeze(1))):
-            raise ValueError("PPO selected action is outside the legal action mask")
-        distribution = torch.distributions.Categorical(logits=logits)
-        log_probabilities = distribution.log_prob(selected)
-        entropies = distribution.entropy()
-        ratio = torch.exp(log_probabilities - old_log_probabilities)
-        clip_epsilon = float(self.hyperparameters["clipEpsilon"])
-        clipped_objective = torch.minimum(
-            ratio * advantages,
-            torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * advantages,
+        logits, values, _, _, returned_mask = timed(
+            "update_chunk_model_forward",
+            forward_operation,
         )
-        squared_errors = F.mse_loss(values, returns, reduction="none")
-        if not all(torch.isfinite(value).all() for value in (logits[returned_mask], values, log_probabilities, entropies, clipped_objective, squared_errors)):
-            raise FloatingPointError("PPO packed calculation contains NaN or Inf")
+
+        def validate_selected() -> None:
+            if (
+                torch.any(selected < 0)
+                or torch.any(selected >= returned_mask.shape[1])
+                or not torch.all(
+                    returned_mask.gather(1, selected.unsqueeze(1))
+                )
+            ):
+                raise ValueError(
+                    "PPO selected action is outside the legal action mask"
+                )
+
+        timed("update_chunk_selected_checks", validate_selected)
+
+        def compute_objective():
+            distribution = torch.distributions.Categorical(logits=logits)
+            log_probabilities = distribution.log_prob(selected)
+            entropies = distribution.entropy()
+            ratio = torch.exp(
+                log_probabilities - old_log_probabilities
+            )
+            clip_epsilon = float(self.hyperparameters["clipEpsilon"])
+            clipped_objective = torch.minimum(
+                ratio * advantages,
+                torch.clamp(
+                    ratio,
+                    1 - clip_epsilon,
+                    1 + clip_epsilon,
+                ) * advantages,
+            )
+            squared_errors = F.mse_loss(
+                values,
+                returns,
+                reduction="none",
+            )
+            return (
+                log_probabilities,
+                entropies,
+                clipped_objective,
+                squared_errors,
+            )
+
+        (
+            log_probabilities,
+            entropies,
+            clipped_objective,
+            squared_errors,
+        ) = timed("update_chunk_objective", compute_objective)
+
+        def validate_calculation() -> None:
+            if not all(
+                torch.isfinite(value).all()
+                for value in (
+                    logits[returned_mask],
+                    values,
+                    log_probabilities,
+                    entropies,
+                    clipped_objective,
+                    squared_errors,
+                )
+            ):
+                raise FloatingPointError(
+                    "PPO packed calculation contains NaN or Inf"
+                )
+
+        timed("update_chunk_finite_checks", validate_calculation)
+
         total_samples = state["totalSamples"]
         chunk_loss = (
             -clipped_objective.sum()
-            + float(self.hyperparameters["valueCoefficient"]) * squared_errors.sum()
-            - float(self.hyperparameters["entropyCoefficient"]) * entropies.sum()
+            + float(self.hyperparameters["valueCoefficient"])
+            * squared_errors.sum()
+            - float(self.hyperparameters["entropyCoefficient"])
+            * entropies.sum()
         ) / total_samples
         if not torch.isfinite(chunk_loss):
             raise FloatingPointError("PPO packed loss contains NaN or Inf")
-        chunk_loss.backward()
+
+        timed("update_chunk_backward", chunk_loss.backward)
+
         state["processedSamples"] += chunk_size
-        state["policyLossSum"] += float((-clipped_objective.sum()).detach().item())
-        state["valueLossSum"] += float(squared_errors.sum().detach().item())
-        state["entropySum"] += float(entropies.sum().detach().item())
-        return {"acceptedSamples": chunk_size, "accumulatedSamples": state["processedSamples"]}
+        state["policyLossSum"] += float(
+            (-clipped_objective.sum()).detach().item()
+        )
+        state["valueLossSum"] += float(
+            squared_errors.sum().detach().item()
+        )
+        state["entropySum"] += float(
+            entropies.sum().detach().item()
+        )
+        return {
+            "acceptedSamples": chunk_size,
+            "accumulatedSamples": state["processedSamples"],
+        }
 
     def finish_accumulated_update(self) -> dict[str, Any]:
         state = self._accumulation

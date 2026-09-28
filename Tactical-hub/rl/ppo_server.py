@@ -42,7 +42,19 @@ def main():
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     packed_h2d_workspace = None
     timings = {}
+    profile_lock = threading.Lock()
     legal_action_counts = []
+
+    def record(stage, elapsed):
+        if not profile:
+            return
+        with profile_lock:
+            item = timings.setdefault(
+                stage,
+                {"count": 0, "totalMs": 0.0},
+            )
+            item["count"] += 1
+            item["totalMs"] += elapsed * 1000.0
     retained_chunks = {}
     consumed_retention_ids = set()
     retention_totals = {
@@ -80,7 +92,14 @@ def main():
 
                 if task.get("kind") == "batch_record":
                     raw = task["payload"]
+                    if profile:
+                        compress_start = time.perf_counter()
                     compressed = deflate_raw(raw)
+                    if profile:
+                        record(
+                            "retention_compress",
+                            time.perf_counter() - compress_start,
+                        )
                     raw_sha256 = hashlib.sha256(raw).hexdigest()
                     retention_id = task["retentionId"]
                     batch_size = int(task["header"]["batchSize"])
@@ -345,13 +364,6 @@ def main():
         retention_queue.join()
         check_retention_worker_error()
 
-    def record(stage, elapsed):
-        if not profile:
-            return
-        item = timings.setdefault(stage, {"count": 0, "totalMs": 0.0})
-        item["count"] += 1
-        item["totalMs"] += elapsed * 1000.0
-
     def sync_device():
         if profile and trainer is not None and trainer.device.type == "cuda":
             torch.cuda.synchronize(trainer.device)
@@ -501,6 +513,10 @@ def main():
                         "PPO retained batch scalar byte length mismatch"
                     )
 
+                if profile:
+                    replay_decode_start = time.perf_counter()
+                if profile:
+                    retention_decode_start = time.perf_counter()
                 decoded_records = []
                 selected_action_groups = []
                 template_descriptors = records[0]["header"]["tensors"]
@@ -528,6 +544,11 @@ def main():
                             for value in retained_record["selectedActionIndices"]
                         ]
                     )
+                if profile:
+                    record(
+                        "retained_batch_decompress_decode",
+                        time.perf_counter() - replay_decode_start,
+                    )
 
                 row_compactions = [
                     record["header"].get("rowCompaction")
@@ -546,6 +567,9 @@ def main():
                     record["header"].get("actionSparseShape")
                     for record in records
                 ]
+                if profile:
+                    replay_combine_start = time.perf_counter()
+                combined_sparse_shape = None
                 if any(shape is not None for shape in sparse_shapes):
                     if any(shape is None for shape in sparse_shapes):
                         raise ValueError(
@@ -558,26 +582,35 @@ def main():
                             selected_action_groups,
                         )
                     )
-                    prepared, actions, action_mask, targets = (
-                        prepare_packed_tensors(
-                            views,
-                            trainer.device,
-                            logical_row_counts=first_row_compaction,
-                            action_sparse_shape=combined_sparse_shape,
-                        )
-                    )
                 else:
                     views = combine_packed_batch_views(
                         decoded_records,
                         selected_action_groups,
                     )
-                    prepared, actions, action_mask, targets = (
-                        prepare_packed_tensors(
-                            views,
-                            trainer.device,
-                            logical_row_counts=first_row_compaction,
-                        )
+                if profile:
+                    record(
+                        "retained_batch_combine_views",
+                        time.perf_counter() - replay_combine_start,
                     )
+                    sync_device()
+                    replay_prepare_start = time.perf_counter()
+                prepared, actions, action_mask, targets = (
+                    prepare_packed_tensors(
+                        views,
+                        trainer.device,
+                        logical_row_counts=first_row_compaction,
+                        action_sparse_shape=combined_sparse_shape,
+                    )
+                )
+                if profile:
+                    sync_device()
+                    record(
+                        "retained_batch_prepare_h2d_restore",
+                        time.perf_counter() - replay_prepare_start,
+                    )
+                if profile:
+                    sync_device()
+                    replay_scalar_start = time.perf_counter()
                 scalar_values = np.frombuffer(
                     scalar_payload,
                     dtype=np.dtype("<f4"),
@@ -602,6 +635,13 @@ def main():
                     device=trainer.device,
                     dtype=torch.float32,
                 )
+                if profile:
+                    sync_device()
+                    record(
+                        "retained_batch_scalar_h2d",
+                        time.perf_counter() - replay_scalar_start,
+                    )
+                    replay_accumulate_start = time.perf_counter()
                 result = trainer.accumulate_prepared_chunk(
                     prepared,
                     actions,
@@ -610,7 +650,14 @@ def main():
                     old,
                     advantages,
                     returns,
+                    profile_stage=record if profile else None,
                 )
+                if profile:
+                    sync_device()
+                    record(
+                        "retained_batch_accumulate",
+                        time.perf_counter() - replay_accumulate_start,
+                    )
                 feature_audit = (
                     packed_views_audit(
                         views,
@@ -787,7 +834,15 @@ def main():
             elif kind in ("packedAct", "packedActBatch", "packedUpdateChunk"):
                 if profile:
                     prepare_start = time.perf_counter()
+                    packed_read_start = prepare_start
                 payload = read_binary(int(message["byteLength"]))
+                if profile:
+                    record(
+                        "packed_read_binary",
+                        time.perf_counter() - packed_read_start,
+                    )
+                    sync_device()
+                    packed_prepare_start = time.perf_counter()
                 views = None
                 state_branch_fingerprints = (
                     packed_state_branch_fingerprints(message, payload)
@@ -835,7 +890,14 @@ def main():
                     prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
                 if profile:
                     sync_device()
-                    record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
+                    record(
+                        "packed_prepare_h2d_restore",
+                        time.perf_counter() - packed_prepare_start,
+                    )
+                    record(
+                        "packed_read_decode_prepare",
+                        time.perf_counter() - prepare_start,
+                    )
                 if kind == "packedAct":
                     check_retention_worker_error()
                     retention_id = message.get("retentionId")
@@ -888,12 +950,22 @@ def main():
                             )
                     if retention_batch_id:
                         reserve_retention_id(retention_batch_id)
+                    if profile:
+                        sync_device()
+                        batch_inference_start = time.perf_counter()
                     actions_result = trainer.act_prepared_batch(
                         prepared,
                         actions,
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
+                        profile_stage=record if profile else None,
                     )
+                    if profile:
+                        sync_device()
+                        record(
+                            "act_batch_inference_sampling",
+                            time.perf_counter() - batch_inference_start,
+                        )
                     if retention_ids:
                         reserve_retention_ids(retention_ids)
                         enqueue_retained_batch(
@@ -920,8 +992,14 @@ def main():
                         accumulate_start = time.perf_counter()
                     floating = lambda name: torch.from_numpy(views[name]).to(device=trainer.device, dtype=torch.float32)
                     result = trainer.accumulate_prepared_chunk(
-                        prepared, actions, action_mask, targets,
-                        floating("oldLogProbabilities"), floating("advantages"), floating("returns"),
+                        prepared,
+                        actions,
+                        action_mask,
+                        targets,
+                        floating("oldLogProbabilities"),
+                        floating("advantages"),
+                        floating("returns"),
+                        profile_stage=record if profile else None,
                     )
                     if profile:
                         sync_device()
