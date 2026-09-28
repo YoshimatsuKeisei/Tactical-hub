@@ -153,49 +153,115 @@ def split_packed_batch_samples(
     return records
 
 
-def combine_single_sample_packed_views(
+def combine_packed_batch_views(
     records: list[dict[str, np.ndarray]],
-    selected_action_indices: list[int],
+    selected_action_indices: list[list[int]],
 ) -> dict[str, np.ndarray]:
     if not records or len(records) != len(selected_action_indices):
-        raise ValueError("Retained PPO records and selected-action indices must be non-empty and aligned")
+        raise ValueError(
+            "Retained PPO batch records and selected-action groups "
+            "must be non-empty and aligned"
+        )
     names = list(records[0].keys())
     if any(list(record.keys()) != names for record in records):
         raise ValueError("Retained PPO tensor names/order mismatch")
-    batch_size = len(records)
+
+    batch_sizes: list[int] = []
+    for record, selected in zip(records, selected_action_indices):
+        first = next(iter(record.values()))
+        if first.ndim < 1:
+            raise ValueError("Retained PPO tensors must have a batch dimension")
+        batch_size = int(first.shape[0])
+        if batch_size <= 0 or len(selected) != batch_size:
+            raise ValueError(
+                "Retained PPO selected-action count does not match batch size"
+            )
+        if any(
+            array.ndim < 1 or int(array.shape[0]) != batch_size
+            for array in record.values()
+        ):
+            raise ValueError(
+                "Retained PPO tensors within a record disagree on batch size"
+            )
+        batch_sizes.append(batch_size)
+
+    total_batch = sum(batch_sizes)
     combined: dict[str, np.ndarray] = {}
     for name in names:
         if name == "targets":
             continue
         arrays = [record[name] for record in records]
-        if any(array.shape[0] != 1 for array in arrays):
-            raise ValueError(f"Retained PPO tensor is not a single-sample batch: {name}")
         if name in _VARIABLE_ROW_TENSORS:
             if any(array.ndim != 3 for array in arrays):
-                raise ValueError(f"Retained PPO row tensor rank mismatch: {name}")
+                raise ValueError(
+                    f"Retained PPO row tensor rank mismatch: {name}"
+                )
             width = arrays[0].shape[2]
             if any(array.shape[2] != width for array in arrays):
-                raise ValueError(f"Retained PPO row tensor width mismatch: {name}")
+                raise ValueError(
+                    f"Retained PPO row tensor width mismatch: {name}"
+                )
             max_rows = max(array.shape[1] for array in arrays)
-            output = np.zeros((batch_size, max_rows, width), dtype=arrays[0].dtype)
-            for index, array in enumerate(arrays):
-                output[index, : array.shape[1], :] = array[0]
+            output = np.zeros(
+                (total_batch, max_rows, width),
+                dtype=arrays[0].dtype,
+            )
+            cursor = 0
+            for array in arrays:
+                size = int(array.shape[0])
+                output[
+                    cursor:cursor + size,
+                    : array.shape[1],
+                    :,
+                ] = array
+                cursor += size
             combined[name] = output
         elif name in _VARIABLE_ROW_MASKS:
             if any(array.ndim != 2 for array in arrays):
-                raise ValueError(f"Retained PPO mask tensor rank mismatch: {name}")
+                raise ValueError(
+                    f"Retained PPO mask tensor rank mismatch: {name}"
+                )
             max_rows = max(array.shape[1] for array in arrays)
-            output = np.zeros((batch_size, max_rows), dtype=arrays[0].dtype)
-            for index, array in enumerate(arrays):
-                output[index, : array.shape[1]] = array[0]
+            output = np.zeros(
+                (total_batch, max_rows),
+                dtype=arrays[0].dtype,
+            )
+            cursor = 0
+            for array in arrays:
+                size = int(array.shape[0])
+                output[
+                    cursor:cursor + size,
+                    : array.shape[1],
+                ] = array
+                cursor += size
             combined[name] = output
         else:
             shapes = [array.shape[1:] for array in arrays]
             if any(shape != shapes[0] for shape in shapes):
-                raise ValueError(f"Retained PPO fixed tensor shape mismatch: {name}")
+                raise ValueError(
+                    f"Retained PPO fixed tensor shape mismatch: {name}"
+                )
             combined[name] = np.concatenate(arrays, axis=0)
-    combined["targets"] = np.asarray(selected_action_indices, dtype=np.dtype("<i4"))
+
+    combined["targets"] = np.asarray(
+        [
+            action_index
+            for group in selected_action_indices
+            for action_index in group
+        ],
+        dtype=np.dtype("<i4"),
+    )
     return combined
+
+
+def combine_single_sample_packed_views(
+    records: list[dict[str, np.ndarray]],
+    selected_action_indices: list[int],
+) -> dict[str, np.ndarray]:
+    return combine_packed_batch_views(
+        records,
+        [[int(value)] for value in selected_action_indices],
+    )
 
 
 def packed_views_audit(
