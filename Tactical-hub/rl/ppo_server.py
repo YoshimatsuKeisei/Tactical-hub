@@ -990,6 +990,14 @@ def main():
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
                     sys.stderr.flush()
+                graph_stats = trainer.act_cuda_graph_stats()
+                if graph_stats.get("enabled"):
+                    sys.stderr.write(
+                        "[PPO act cuda graph] "
+                        + json.dumps(graph_stats, separators=(",", ":"))
+                        + "\n"
+                    )
+                    sys.stderr.flush()
                 send({"type": "closed"})
                 return
             else:

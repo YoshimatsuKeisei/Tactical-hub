@@ -43,6 +43,30 @@ class PpoTrainer:
         self._accumulation: dict[str, Any] | None = None
         self._act_streams: list[torch.cuda.Stream] = []
         self._act_state_branch_cache: dict[str, tuple[Any, torch.Tensor]] = {}
+        self._act_cuda_graph_enabled = (
+            os.environ.get("PPO_ACT_CUDA_GRAPH_HOT") == "1"
+        )
+        if self._act_cuda_graph_enabled and self.device.type != "cuda":
+            raise ValueError("PPO_ACT_CUDA_GRAPH_HOT requires CUDA")
+        if self._act_cuda_graph_enabled and compile_mode:
+            raise ValueError(
+                "PPO_ACT_CUDA_GRAPH_HOT cannot be combined with PPO_ACT_COMPILE_MODE"
+            )
+        self._act_cuda_graph_min_hits = int(
+            os.environ.get("PPO_ACT_CUDA_GRAPH_MIN_HITS", "3")
+        )
+        self._act_cuda_graph_max_entries = int(
+            os.environ.get("PPO_ACT_CUDA_GRAPH_MAX_ENTRIES", "12")
+        )
+        if self._act_cuda_graph_min_hits < 2:
+            raise ValueError("PPO_ACT_CUDA_GRAPH_MIN_HITS must be >= 2")
+        if self._act_cuda_graph_max_entries <= 0:
+            raise ValueError("PPO_ACT_CUDA_GRAPH_MAX_ENTRIES must be positive")
+        self._act_cuda_graph_seen: dict[tuple[Any, ...], int] = {}
+        self._act_cuda_graph_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+        self._act_cuda_graph_captures = 0
+        self._act_cuda_graph_replays = 0
+        self._act_cuda_graph_fallbacks = 0
 
     def load_initial_model(self, path: str) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -240,6 +264,219 @@ class PpoTrainer:
             "value": float(values[0].item()),
         })
 
+    @staticmethod
+    def _act_graph_tensor_signature(tensor: torch.Tensor) -> tuple[Any, ...]:
+        return (
+            tuple(int(value) for value in tensor.shape),
+            tuple(int(value) for value in tensor.stride()),
+            str(tensor.dtype),
+        )
+
+    def _act_graph_signature(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[Any, ...]:
+        masked = tuple(
+            (
+                key,
+                self._act_graph_tensor_signature(table),
+                self._act_graph_tensor_signature(mask),
+            )
+            for key, (table, mask) in sorted(prepared["masked"].items())
+        )
+        strategic = tuple(
+            (
+                key,
+                self._act_graph_tensor_signature(table),
+                self._act_graph_tensor_signature(mask),
+            )
+            for key, (table, mask) in sorted(prepared["strategic"].items())
+        )
+        nonempty = tuple(
+            (key, bool(value))
+            for key, value in sorted((prepared.get("_nonempty") or {}).items())
+        )
+        valid_prefix = tuple(
+            (key, int(value))
+            for key, value in sorted(
+                (prepared.get("_validPrefixCount") or {}).items()
+            )
+        )
+        return (
+            ("global", self._act_graph_tensor_signature(prepared["global"])),
+            (
+                "strategicGlobal",
+                self._act_graph_tensor_signature(prepared["strategicGlobal"]),
+            ),
+            ("masked", masked),
+            (
+                "map",
+                self._act_graph_tensor_signature(prepared["map"][0]),
+                self._act_graph_tensor_signature(prepared["map"][1]),
+            ),
+            ("strategic", strategic),
+            ("actions", self._act_graph_tensor_signature(actions)),
+            ("actionMask", self._act_graph_tensor_signature(action_mask)),
+            ("nonempty", nonempty),
+            ("validPrefix", valid_prefix),
+        )
+
+    @staticmethod
+    def _act_graph_static_tensor(tensor: torch.Tensor) -> torch.Tensor:
+        static = torch.empty_strided(
+            tuple(int(value) for value in tensor.shape),
+            tuple(int(value) for value in tensor.stride()),
+            dtype=tensor.dtype,
+            device=tensor.device,
+        )
+        static.copy_(tensor)
+        return static
+
+    def _act_graph_static_prepared(
+        self,
+        prepared: dict[str, Any],
+    ) -> dict[str, Any]:
+        static: dict[str, Any] = {
+            "global": self._act_graph_static_tensor(prepared["global"]),
+            "strategicGlobal": self._act_graph_static_tensor(
+                prepared["strategicGlobal"]
+            ),
+            "masked": {
+                key: (
+                    self._act_graph_static_tensor(table),
+                    self._act_graph_static_tensor(mask),
+                )
+                for key, (table, mask) in prepared["masked"].items()
+            },
+            "map": (
+                self._act_graph_static_tensor(prepared["map"][0]),
+                self._act_graph_static_tensor(prepared["map"][1]),
+            ),
+            "strategic": {
+                key: (
+                    self._act_graph_static_tensor(table),
+                    self._act_graph_static_tensor(mask),
+                )
+                for key, (table, mask) in prepared["strategic"].items()
+            },
+        }
+        if "_nonempty" in prepared:
+            static["_nonempty"] = dict(prepared["_nonempty"])
+        if "_validPrefixCount" in prepared:
+            static["_validPrefixCount"] = dict(prepared["_validPrefixCount"])
+        return static
+
+    @staticmethod
+    def _act_graph_copy_prepared(
+        target: dict[str, Any],
+        source: dict[str, Any],
+    ) -> None:
+        target["global"].copy_(source["global"])
+        target["strategicGlobal"].copy_(source["strategicGlobal"])
+        for key, (table, mask) in target["masked"].items():
+            source_table, source_mask = source["masked"][key]
+            table.copy_(source_table)
+            mask.copy_(source_mask)
+        target["map"][0].copy_(source["map"][0])
+        target["map"][1].copy_(source["map"][1])
+        for key, (table, mask) in target["strategic"].items():
+            source_table, source_mask = source["strategic"][key]
+            table.copy_(source_table)
+            mask.copy_(source_mask)
+
+    def _capture_act_cuda_graph(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> dict[str, Any]:
+        static_prepared = self._act_graph_static_prepared(prepared)
+        static_actions = self._act_graph_static_tensor(actions)
+        static_action_mask = self._act_graph_static_tensor(action_mask)
+
+        warmup_stream = torch.cuda.Stream(device=self.device)
+        warmup_stream.wait_stream(torch.cuda.current_stream(self.device))
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(2):
+                self.model.forward_prepared_batch(
+                    static_prepared,
+                    static_actions,
+                    static_action_mask,
+                )
+        torch.cuda.current_stream(self.device).wait_stream(warmup_stream)
+        torch.cuda.synchronize(self.device)
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            outputs = self.model.forward_prepared_batch(
+                static_prepared,
+                static_actions,
+                static_action_mask,
+            )
+        torch.cuda.synchronize(self.device)
+
+        return {
+            "prepared": static_prepared,
+            "actions": static_actions,
+            "actionMask": static_action_mask,
+            "graph": graph,
+            "outputs": outputs,
+        }
+
+    def _act_forward_hot_cuda_graph(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not self._act_cuda_graph_enabled:
+            return self._act_forward(prepared, actions, action_mask)
+
+        signature = self._act_graph_signature(
+            prepared,
+            actions,
+            action_mask,
+        )
+        seen = self._act_cuda_graph_seen.get(signature, 0) + 1
+        self._act_cuda_graph_seen[signature] = seen
+
+        entry = self._act_cuda_graph_cache.get(signature)
+        if entry is None:
+            if (
+                seen < self._act_cuda_graph_min_hits
+                or len(self._act_cuda_graph_cache)
+                >= self._act_cuda_graph_max_entries
+            ):
+                self._act_cuda_graph_fallbacks += 1
+                return self._act_forward(prepared, actions, action_mask)
+            entry = self._capture_act_cuda_graph(
+                prepared,
+                actions,
+                action_mask,
+            )
+            self._act_cuda_graph_cache[signature] = entry
+            self._act_cuda_graph_captures += 1
+
+        self._act_graph_copy_prepared(entry["prepared"], prepared)
+        entry["actions"].copy_(actions)
+        entry["actionMask"].copy_(action_mask)
+        entry["graph"].replay()
+        self._act_cuda_graph_replays += 1
+        return entry["outputs"]
+
+    def act_cuda_graph_stats(self) -> dict[str, Any]:
+        return {
+            "enabled": self._act_cuda_graph_enabled,
+            "minHits": self._act_cuda_graph_min_hits,
+            "maxEntries": self._act_cuda_graph_max_entries,
+            "seenSignatures": len(self._act_cuda_graph_seen),
+            "capturedGraphs": self._act_cuda_graph_captures,
+            "graphReplays": self._act_cuda_graph_replays,
+            "fallbackForwards": self._act_cuda_graph_fallbacks,
+        }
+
     def act_prepared_batch(
         self,
         prepared_observations: dict[str, Any],
@@ -255,8 +492,12 @@ class PpoTrainer:
 
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = self._act_forward(
-                prepared_observations, prepared_actions, action_mask
+            logits, values, _, _, returned_mask = (
+                self._act_forward_hot_cuda_graph(
+                    prepared_observations,
+                    prepared_actions,
+                    action_mask,
+                )
             )
             if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
                 raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
@@ -365,6 +606,7 @@ class PpoTrainer:
         if self._accumulation is not None:
             raise RuntimeError("A PPO accumulated update is already active")
         self._act_state_branch_cache.clear()
+        self._act_cuda_graph_cache.clear()
         if not isinstance(total_samples, int) or isinstance(total_samples, bool) or total_samples <= 0:
             raise ValueError("PPO total sample count must be a positive integer")
         self.model.train(True)
