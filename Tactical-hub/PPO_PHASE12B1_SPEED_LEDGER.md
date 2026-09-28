@@ -724,3 +724,42 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    PPO math, replay chunk size, environment count 8 and checkpoint schema.
 6. Do not run 50k until another material structural gap is removed or the remaining gap is
    sufficiently characterized.
+
+
+## V6-T game-step re-profile after bounded attack-distance
+- Diagnostic branch: experiment/ppo-fast-batch-v6t-game-step-profile
+- Diagnostic commit: 02e361908751fc914971ecb699864d6aaba797ab
+- Baseline: V6-T e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Baseline game step: 484.92 ms; instrumented candidate: 492.72 ms.
+- Instrumentation overhead is small and candidate remains exact.
+- Internal game-step split:
+  - apply: 240.71 ms
+  - enumerate: 193.86 ms
+  - runtime clone: 26.32 ms
+  - unaccounted: 31.00 ms
+- Apply by phase:
+  - movement_input: 152.84 ms
+  - attack_input: 83.87 ms
+  - strategist_action_input: 2.03 ms
+  - strategist_action_resolution: 1.96 ms
+- Apply by kind hotspots:
+  - movement: 93.80 ms / 344 calls
+  - resolve_battle: 82.25 ms / 24 calls
+  - submit_team_production: 39.48 ms / 32 calls
+  - submit_movement: 18.99 ms / 112 calls
+- Enumeration by phase:
+  - movement_input: 131.12 ms / 520 calls
+  - attack_input: 61.36 ms / 408 calls
+  - strategist_action_input: 1.17 ms
+  - strategist_action_resolution: 0.20 ms
+- Conclusion: after V6-T, movement apply + movement enumeration are the largest remaining
+  measured game-step costs. Further battle work is no longer the first Node-side target.
+
+## Next steps after V6-T game-step re-profile
+1. Keep V6-T as production baseline.
+2. Profile movement enumeration and movement apply separately before changing movement logic.
+3. Preserve legal movement set/order, exact destination values, retreat semantics, collision rules,
+   bridges/bases/roads, RNG, state transitions and trajectory semantics.
+4. Do not combine movement enumeration and movement-apply optimizations in one candidate.
