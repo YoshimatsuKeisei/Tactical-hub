@@ -37,6 +37,9 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    replay_shape_profile = (
+        os.environ.get("PPO_REPLAY_SHAPE_PROFILE") == "1"
+    )
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -64,6 +67,7 @@ def main():
     packed_h2d_workspace = None
     replay_h2d_workspace = None
     timings = {}
+    replay_shape_counts: dict[tuple[Any, ...], int] = {}
     legal_action_counts = []
     retained_chunks = {}
     consumed_retention_ids = set()
@@ -398,6 +402,74 @@ def main():
         if profile and trainer is not None and trainer.device.type == "cuda":
             torch.cuda.synchronize(trainer.device)
 
+    def replay_tensor_signature(tensor):
+        return {
+            "shape": [int(value) for value in tensor.shape],
+            "stride": [int(value) for value in tensor.stride()],
+            "dtype": str(tensor.dtype),
+        }
+
+    def replay_input_signature(
+        prepared,
+        actions,
+        action_mask,
+        targets,
+        old,
+        advantages,
+        returns,
+    ):
+        payload = {
+            "global": replay_tensor_signature(prepared["global"]),
+            "strategicGlobal": replay_tensor_signature(
+                prepared["strategicGlobal"]
+            ),
+            "masked": {
+                key: {
+                    "table": replay_tensor_signature(table),
+                    "mask": replay_tensor_signature(mask),
+                }
+                for key, (table, mask) in sorted(
+                    prepared["masked"].items()
+                )
+            },
+            "map": {
+                "table": replay_tensor_signature(prepared["map"][0]),
+                "mask": replay_tensor_signature(prepared["map"][1]),
+            },
+            "strategic": {
+                key: {
+                    "table": replay_tensor_signature(table),
+                    "mask": replay_tensor_signature(mask),
+                }
+                for key, (table, mask) in sorted(
+                    prepared["strategic"].items()
+                )
+            },
+            "actions": replay_tensor_signature(actions),
+            "actionMask": replay_tensor_signature(action_mask),
+            "targets": replay_tensor_signature(targets),
+            "oldLogProbabilities": replay_tensor_signature(old),
+            "advantages": replay_tensor_signature(advantages),
+            "returns": replay_tensor_signature(returns),
+            "nonempty": {
+                key: bool(value)
+                for key, value in sorted(
+                    (prepared.get("_nonempty") or {}).items()
+                )
+            },
+            "validPrefixCount": {
+                key: int(value)
+                for key, value in sorted(
+                    (prepared.get("_validPrefixCount") or {}).items()
+                )
+            },
+        }
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def read_binary(byte_length):
         if byte_length < 0:
             raise ValueError("Packed PPO byteLength must be non-negative")
@@ -682,6 +754,19 @@ def main():
                     "returns",
                     scalar_values[sample_count * 2:],
                 )
+                if replay_shape_profile:
+                    signature = replay_input_signature(
+                        prepared,
+                        actions,
+                        action_mask,
+                        targets,
+                        old,
+                        advantages,
+                        returns,
+                    )
+                    replay_shape_counts[signature] = (
+                        replay_shape_counts.get(signature, 0) + 1
+                    )
                 result = trainer.accumulate_prepared_chunk(
                     prepared,
                     actions,
@@ -1046,6 +1131,45 @@ def main():
                     sys.stderr.write("[PPO profile python] " + json.dumps(
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
+                    sys.stderr.flush()
+                if replay_shape_profile:
+                    counts = sorted(
+                        replay_shape_counts.values(),
+                        reverse=True,
+                    )
+                    total_calls = sum(counts)
+                    repeated_counts = [
+                        count for count in counts if count > 1
+                    ]
+                    reused_after_first = sum(
+                        count - 1 for count in repeated_counts
+                    )
+                    shape_summary = {
+                        "totalReplayChunks": total_calls,
+                        "uniqueExactSignatures": len(counts),
+                        "singletonSignatures": sum(
+                            1 for count in counts if count == 1
+                        ),
+                        "repeatedSignatures": len(repeated_counts),
+                        "callsOnRepeatedSignatures": sum(
+                            repeated_counts
+                        ),
+                        "reusedCallsAfterFirst": reused_after_first,
+                        "exactReuseRateAfterFirst": (
+                            reused_after_first / total_calls
+                            if total_calls
+                            else 0.0
+                        ),
+                        "topExactCounts": counts[:20],
+                    }
+                    sys.stderr.write(
+                        "[PPO replay shape profile] "
+                        + json.dumps(
+                            shape_summary,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
                     sys.stderr.flush()
                 graph_stats = trainer.act_cuda_graph_stats()
                 if graph_stats.get("enabled"):
