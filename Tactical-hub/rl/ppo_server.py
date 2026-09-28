@@ -263,6 +263,11 @@ def main():
             "header": {
                 "tensors": message["tensors"],
                 "batchSize": 1,
+                **(
+                    {"rowCompaction": dict(message["rowCompaction"])}
+                    if message.get("rowCompaction")
+                    else {}
+                ),
             },
             "payload": payload,
             "selectedActionIndex": int(selected_action_index),
@@ -286,6 +291,11 @@ def main():
             "header": {
                 "tensors": message["tensors"],
                 "batchSize": int(message["batchSize"]),
+                **(
+                    {"rowCompaction": dict(message["rowCompaction"])}
+                    if message.get("rowCompaction")
+                    else {}
+                ),
             },
             "payload": payload,
             "selectedActionIndices": [
@@ -312,6 +322,11 @@ def main():
             "header": {
                 "tensors": message["tensors"],
                 "batchSize": int(message["batchSize"]),
+                **(
+                    {"rowCompaction": dict(message["rowCompaction"])}
+                    if message.get("rowCompaction")
+                    else {}
+                ),
             },
             "payload": payload,
             "selectedActionIndices": [
@@ -402,6 +417,11 @@ def main():
                     "header": {
                         "tensors": message["tensors"],
                         "batchSize": batch_size,
+                        **(
+                            {"rowCompaction": dict(message["rowCompaction"])}
+                            if message.get("rowCompaction")
+                            else {}
+                        ),
                     },
                     "compressed": bytes(compressed),
                     "rawByteLength": raw_byte_length,
@@ -503,6 +523,19 @@ def main():
                         ]
                     )
 
+                row_compactions = [
+                    record["header"].get("rowCompaction")
+                    for record in records
+                ]
+                first_row_compaction = row_compactions[0]
+                if any(
+                    value != first_row_compaction
+                    for value in row_compactions[1:]
+                ):
+                    raise ValueError(
+                        "PPO retained batch row-compaction metadata mismatch"
+                    )
+
                 views = combine_packed_batch_views(
                     decoded_records,
                     selected_action_groups,
@@ -511,6 +544,7 @@ def main():
                     prepare_packed_tensors(
                         views,
                         trainer.device,
+                        logical_row_counts=first_row_compaction,
                     )
                 )
                 scalar_values = np.frombuffer(
@@ -616,8 +650,24 @@ def main():
                     decoded_records.append(decode_packed_views(record["header"], raw))
                     selected_action_indices.append(int(record["selectedActionIndex"]))
 
+                row_compactions = [
+                    record["header"].get("rowCompaction")
+                    for record in records
+                ]
+                first_row_compaction = row_compactions[0]
+                if any(
+                    value != first_row_compaction
+                    for value in row_compactions[1:]
+                ):
+                    raise ValueError(
+                        "PPO retained row-compaction metadata mismatch"
+                    )
                 views = combine_single_sample_packed_views(decoded_records, selected_action_indices)
-                prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                prepared, actions, action_mask, targets = prepare_packed_tensors(
+                    views,
+                    trainer.device,
+                    logical_row_counts=first_row_compaction,
+                )
                 scalar_values = np.frombuffer(scalar_payload, dtype=np.dtype("<f4"))
                 old = torch.from_numpy(scalar_values[:batch_size]).to(device=trainer.device, dtype=torch.float32)
                 advantages = torch.from_numpy(scalar_values[batch_size:batch_size * 2]).to(device=trainer.device, dtype=torch.float32)
