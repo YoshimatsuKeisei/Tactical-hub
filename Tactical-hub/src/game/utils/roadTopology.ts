@@ -263,8 +263,8 @@ export function getRoadAttackDistance(
   const targetKey = attackPathKey(to);
   const queue: { position: UnitPosition; distance: number }[] = [{ position: from, distance: 0 }];
   const visited = new Set([attackPathKey(from)]);
-  while (queue.length) {
-    const current = queue.shift()!;
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index];
     if (attackPathKey(current.position) === targetKey) return current.distance;
     for (const neighbor of attackPathNeighbors(state, current.position, context)) {
       const key = attackPathKey(neighbor);
