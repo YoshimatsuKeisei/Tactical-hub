@@ -20,6 +20,7 @@ from rl.bc_packed import (
     packed_views_audit,
     prepare_packed_tensors,
     prepare_packed_tensors_grouped_h2d,
+    split_packed_batch_samples,
 )
 from rl.device import report_torch_device, resolve_torch_device
 from rl.ppo_trainer import PpoTrainer
@@ -35,7 +36,7 @@ def main():
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
-    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache"):
+    if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
     packed_h2d_workspace = None
     timings = {}
@@ -129,6 +130,23 @@ def main():
             ):
                 raise ValueError(f"Duplicate PPO retentionId: {retention_id}")
             pending_retention_ids.add(retention_id)
+
+    def reserve_retention_ids(retention_ids):
+        if not retention_ids or any(not retention_id for retention_id in retention_ids):
+            raise ValueError("PPO retentionIds must not contain empty values")
+        if len(set(retention_ids)) != len(retention_ids):
+            raise ValueError("PPO retentionIds must be unique within a batch")
+        with retention_lock:
+            duplicate = next((
+                retention_id
+                for retention_id in retention_ids
+                if retention_id in retained_chunks
+                or retention_id in pending_retention_ids
+                or retention_id in consumed_retention_ids
+            ), None)
+            if duplicate is not None:
+                raise ValueError(f"Duplicate PPO retentionId: {duplicate}")
+            pending_retention_ids.update(retention_ids)
 
     def enqueue_retained_act(retention_id, message, payload, selected_action_index):
         with retention_lock:
@@ -387,14 +405,29 @@ def main():
                     and packed_prepare_mode == "grouped_h2d_skip_empty_manual_categorical_state_cache"
                     else None
                 )
-                if kind == "packedAct" and packed_prepare_mode in ("grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache"):
+                grouped_act_prepare = (
+                    kind == "packedAct"
+                    and packed_prepare_mode in (
+                        "grouped_h2d",
+                        "grouped_h2d_persistent",
+                        "grouped_h2d_skip_empty",
+                        "grouped_h2d_valid_prefix",
+                        "grouped_h2d_skip_empty_fast_guards",
+                        "grouped_h2d_skip_empty_manual_categorical",
+                        "grouped_h2d_skip_empty_manual_categorical_state_cache",
+                    )
+                ) or (
+                    kind == "packedActBatch"
+                    and packed_prepare_mode == "fast_batch_v1"
+                )
+                if grouped_act_prepare:
                     prepared, actions, action_mask, targets = prepare_packed_tensors_grouped_h2d(
                         message,
                         payload,
                         trainer.device,
                         include_targets=False,
                         workspace=packed_h2d_workspace,
-                        include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache"),
+                        include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
                     )
@@ -436,8 +469,53 @@ def main():
                             action["actionIndex"],
                         )
                 elif kind == "packedActBatch":
-                    actions_result = trainer.act_prepared_batch(prepared, actions, action_mask)
-                    send({"type": "actions", "requestId": message["requestId"], **actions_result})
+                    check_retention_worker_error()
+                    retention_ids = [
+                        str(value)
+                        for value in message.get("retentionIds", [])
+                    ]
+                    retention_records = None
+                    if retention_ids:
+                        if len(retention_ids) != int(message.get("batchSize", 0)):
+                            raise ValueError(
+                                "packedActBatch retentionIds must match batchSize"
+                            )
+                        retention_records = split_packed_batch_samples(
+                            message,
+                            payload,
+                        )
+                        if len(retention_records) != len(retention_ids):
+                            raise ValueError(
+                                "packedActBatch retained sample split mismatch"
+                            )
+                    actions_result = trainer.act_prepared_batch(
+                        prepared,
+                        actions,
+                        action_mask,
+                        manual_categorical_mode=packed_prepare_mode == "fast_batch_v1",
+                    )
+                    if retention_ids and retention_records is not None:
+                        reserve_retention_ids(retention_ids)
+                        for (
+                            retention_id,
+                            record,
+                            selected_action_index,
+                        ) in zip(
+                            retention_ids,
+                            retention_records,
+                            actions_result["actionIndices"],
+                        ):
+                            enqueue_retained_act(
+                                retention_id,
+                                record["header"],
+                                record["payload"],
+                                selected_action_index,
+                            )
+                    send({
+                        "type": "actions",
+                        "requestId": message["requestId"],
+                        **actions_result,
+                    })
                 else:
                     if profile:
                         sync_device()
