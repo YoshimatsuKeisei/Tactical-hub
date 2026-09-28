@@ -397,3 +397,32 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Reject grouped replay H2D immediately if model/optimizer/gradient/RNG exactness fails.
 6. Do not reduce observation/action information or skip decisions.
 7. Do not run 50k until the remaining structural gap is materially reduced.
+
+
+## V6-M persistent replay H2D workspace — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6m-replay-h2d-workspace
+- Candidate: bb1e41a59cc2170efd21ac0f9a503819e6b4d8a8
+- Baseline: V6-L c0aeb13678c497fd2a41168ec9c99fc087d587da
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- CUDA Graph behavior unchanged on both paths:
+  29 captured graphs, 426 replays, 74 fallback forwards.
+- Replay: 4,991.27 -> 4,834.32 ms (~3.1% reduction).
+- Rollout: 12.054 -> 11.766 sec.
+- batchAct: 5,803.64 -> 5,529.41 ms in this paired run.
+- Internal total: 25.475 -> 20.255 sec.
+- External wall: 27.032 -> 21.770 sec (1.2417x paired diagnostic).
+- Replay sample order, chunk size, tensor shape/value/stride, gradient accumulation order,
+  PPO math and RNG semantics remained unchanged.
+- V6-M is the current fastest exact-verified baseline.
+
+## Next steps after V6-M
+1. Keep V6-M as the current baseline.
+2. Profile replay internals again before making another structural change.
+3. Split retained replay cost into decode/combine, tensor preparation/H2D,
+   model forward/objective/backward, and scalar preparation.
+4. Target only the largest measured remaining component.
+5. Do not change replay chunk size/sample order merely for speed.
+6. Do not reduce observation/action information or skip decisions.
+7. Do not run 50k until the remaining structural gap is materially reduced.
