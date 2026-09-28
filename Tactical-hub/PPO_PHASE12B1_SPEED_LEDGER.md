@@ -302,3 +302,36 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Keep sampling, RNG consumption, finite checks, host-scalar behavior, model input
    shape/value/stride and PPO math unchanged.
 6. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+
+
+## V6-K hot exact-shape CUDA Graph — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6k-cuda-graph-hot-clean
+- Candidate: 219c8bd00b109b77a5f5a1cf37715cdfa36ad157
+- Baseline: V6-I fdb0706627cd8cc6ce2837ae2d83f59fabda58de
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- CUDA Graph policy: exact signature only; minHits=3; maxEntries=12.
+- Seen exact signatures: 42.
+- Captured graphs: 12.
+- Graph replays: 232 / 500 actBatch calls (46.4%).
+- Fallback forwards: 268 / 500.
+- batchAct: 5,737.97 -> 5,350.23 ms (~6.8% reduction).
+- Replay: 4,815.17 -> 4,712.69 ms.
+- Rollout: 11.916 -> 11.557 sec.
+- Internal total: 24.865 -> 19.914 sec.
+- External wall: 26.398 -> 21.419 sec (1.2325x paired diagnostic).
+- Graph capture preserves model input information/shape/value/stride and keeps
+  sampling/RNG/finite checks/log-prob/host-scalar work outside the graph.
+- V6-K is the current fastest exact-verified baseline.
+
+## Next steps after V6-K
+1. Keep V6-K as the current baseline.
+2. The prior shape audit found 32 repeated exact signatures and 91.6% exact reuse,
+   but maxEntries=12 yielded only 46.4% graph replay coverage.
+3. Test a representation-identical maxEntries=32 variant once.
+4. Keep minHits=3 and all graph semantics unchanged; only expand cache capacity.
+5. Measure capture count, replay coverage, batchAct, wall, and GPU stability.
+6. If larger cache does not materially improve batchAct or causes memory/capture overhead,
+   keep V6-K and close graph-cache scaling.
+7. Do not change observation/action information, tensor shapes, PPO math, or RNG semantics.
