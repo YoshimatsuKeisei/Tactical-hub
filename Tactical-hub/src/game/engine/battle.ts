@@ -564,10 +564,13 @@ function resolveBattleInternal(
       const target = getAttackCandidates(next, unit.id)[0];
       return target ? [{ teamId: unit.ownerTeamId, attackerUnitId: unit.id, target, pass: false }] : [];
     });
+  profileMark("event_build.neutral_intents");
   const intents = next.turnState.actionIntents.flatMap(
     (intent) => intent.attackIntents ?? [],
   ).concat(neutralIntents.filter((neutral) => !next.turnState.actionIntents.some((intent) => intent.attackIntents?.some((saved) => saved.attackerUnitId === neutral.attackerUnitId))));
+  profileMark("event_build.intent_merge");
   const encouragedUnitIds = getEncouragedUnitIds(next);
+  profileMark("event_build.encouragement");
   const battleLogs: BattleLogDraft[] = [];
   const battleStartPositionsByUnitId = new Map(
     next.units.map((unit) => [
@@ -575,6 +578,7 @@ function resolveBattleInternal(
       structuredClone(unit.position) as UnitPosition,
     ]),
   );
+  profileMark("event_build.start_positions");
   const events = intents.flatMap((intent, index) => {
     if (intent.pass || !intent.target) return [];
     const attacker = next.units.find(
@@ -590,7 +594,7 @@ function resolveBattleInternal(
     }
     return battleEventForIntent(next, encouragedUnitIds, intent, index);
   });
-  profileMark("event_build");
+  profileMark("event_build.event_conversion");
   recordEffectiveBaseAttacks(next, events.flatMap((event) => {
     const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
     const target = next.units.find((unit) => unit.id === event.target.unitId);
