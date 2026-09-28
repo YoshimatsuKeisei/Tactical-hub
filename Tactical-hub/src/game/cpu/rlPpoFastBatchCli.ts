@@ -2,6 +2,8 @@ import { runPpoFastBatchSmoke } from "./rlPpoFastBatch";
 import { PythonPpoClient } from "./pythonPpoClient";
 
 const args = process.argv.slice(2);
+if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
+if (args.includes("--node-profile")) process.env.PPO_NODE_PROFILE = "1";
 const value = (name: string) => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
