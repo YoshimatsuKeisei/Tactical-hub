@@ -101,26 +101,18 @@ export type PpoFastBatchInput = {
   client?: PythonPpoClient;
 };
 
-function createFastEnvironment(
-  profiler?: PpoTimingProfiler,
-  shouldProfile: () => boolean = () => true,
-) {
+function createFastEnvironment(profiler?: PpoTimingProfiler) {
   const instrumentation = profiler
     ? {
         cpuStep: {
           rlInPlacePhaseTransitions: true,
           onRuntimeClone(milliseconds: number) {
-            if (shouldProfile()) {
-              profiler.record("fast_rollout_game_runtime_clone", milliseconds);
-            }
+            profiler.record("fast_rollout_game_runtime_clone", milliseconds);
           },
           onPolicy(milliseconds: number) {
-            if (shouldProfile()) {
-              profiler.record("fast_rollout_game_policy", milliseconds);
-            }
+            profiler.record("fast_rollout_game_policy", milliseconds);
           },
           onApply(milliseconds: number, decision: { kind: string }, phaseBefore: string) {
-            if (!shouldProfile()) return;
             profiler.record("fast_rollout_game_apply", milliseconds);
             profiler.record(
               `fast_rollout_game_apply_kind.${decision.kind}`,
@@ -132,13 +124,10 @@ function createFastEnvironment(
             );
           },
           onLog(milliseconds: number) {
-            if (shouldProfile()) {
-              profiler.record("fast_rollout_game_log", milliseconds);
-            }
+            profiler.record("fast_rollout_game_log", milliseconds);
           },
         },
         onEnumerate(milliseconds: number, phase: string) {
-          if (!shouldProfile()) return;
           profiler.record("fast_rollout_game_enumerate", milliseconds);
           profiler.record(
             `fast_rollout_game_enumerate_phase.${phase}`,
@@ -235,13 +224,11 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   }
 
   const firstGameSeed = input.seed + initialized.episodeCount;
-  let gameStepProfileActive = false;
   const slots: FastBatchSlot[] = Array.from(
     { length: environmentCount },
     (_, environmentIndex) => {
       const environment = createFastEnvironment(
         profiler.enabled ? profiler : undefined,
-        () => gameStepProfileActive,
       );
       const seed = firstGameSeed + environmentIndex;
       environment.reset(seed, 4);
@@ -359,7 +346,6 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
   };
 
   try {
-    gameStepProfileActive = true;
     const rolloutStarted = performance.now();
 
     while (slots.some((slot) => !slot.finished)) {
