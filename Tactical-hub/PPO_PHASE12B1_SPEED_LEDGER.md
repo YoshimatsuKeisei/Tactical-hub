@@ -353,3 +353,32 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    host scalar extraction and PPO update math outside the graph.
 6. Preserve exact model input shape/value/stride; never add padding or drop information.
 7. Reject the route immediately if model/optimizer/RNG exactness fails.
+
+
+## V6-J persistent state-restore buffers — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-persistent-state-restore
+- Candidate: fcaf0deae68a7b96795d08d0b5b6ff87a65f81a9
+- Baseline: V6-I fdb0706627cd8cc6ce2837ae2d83f59fabda58de
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- Raw retention: 340,830,768 bytes on both paths.
+- External wall 27.288 -> 22.859 sec (1.1938x paired diagnostic).
+- Internal total 25.716 -> 21.225 sec.
+- Rollout 12.375 -> 12.313 sec.
+- Replay 4.888 -> 5.139 sec; replay was unchanged by this candidate, so treat this as run variance.
+- batchAct 5,957.56 -> 5,770.18 ms (~3.1% reduction).
+- The candidate preserves the same full logical-row tensor shapes/values/strides and
+  only reuses the GPU buffers used to restore padded units/bases/constructions.
+- V6-J is the current exact-verified baseline for CUDA Graph exploration.
+
+## Next steps after V6-J
+1. Keep V6-J as the current baseline.
+2. Implement exact-signature CUDA Graph caching for act model forward only.
+3. Capture only hot exact signatures; do not introduce bucket/padded shapes.
+4. Keep sampling, RNG consumption, finite checks, distribution/log-prob and host-scalar
+   extraction outside the graph.
+5. Preserve the exact model input tensor shape/value/stride and PPO math.
+6. Exact-compare against V6-J at 4k before any larger run.
+7. If graph capture is not exact or stage-local batchAct does not improve, close the route quickly.
+8. Do not run 50k until the remaining gap to the 20x target is materially reduced.
