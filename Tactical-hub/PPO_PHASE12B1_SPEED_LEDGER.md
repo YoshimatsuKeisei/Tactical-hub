@@ -673,3 +673,21 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 6. Do not replace unrestricted getRoadAttackDistance for other callers.
 7. Cache only finite exact distances into AttackEnumerationContext; do not cache bounded Infinity into the unrestricted pair-distance cache.
 8. Gate at 1k exact before any 4k run; 50k remains NOT RUN.
+
+
+## V6-T bounded attack-distance — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v6t-bounded-attack-distance
+- Commit: e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Baseline: V6-Q fdd9de2c65eec2a95be3a387d30eb36973fe4502
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Local TypeScript static check: PASS.
+- Related battle/heuristic tests: 45/45 PASS.
+- Change: add a dedicated bounded attack-path BFS for attack-candidate legality only.
+- The bounded BFS returns the exact shortest integer distance when reachable within the attacker's exact range; otherwise it returns Infinity.
+- Unrestricted getRoadAttackDistance remains unchanged for other callers.
+- Only finite exact bounded distances are cached into AttackEnumerationContext; bounded Infinity is not cached as an unrestricted pair distance.
+- Game step: 673.14 -> 459.07 ms = 1.4663x speedup (~31.8% reduction).
+- External wall: 15.647 -> 10.019 sec, but batchAct/replay also moved materially and wall is not used as isolated evidence.
+- Decision: 1k gate passed strongly. Proceed to 4k paired exactness/performance gate before promotion.
+- 50k remains NOT RUN.
