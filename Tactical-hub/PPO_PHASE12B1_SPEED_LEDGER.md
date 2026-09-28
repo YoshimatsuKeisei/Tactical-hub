@@ -91,10 +91,29 @@ Updated: 2026-09-28
   loop variable record during retention replay, causing TypeError at finishUpdate when PPO_PROFILE=1.
   Node profiling is unaffected and was used for the successful 8k comparison.
 
+## V6-C direct sparse Action encoder — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6-direct-sparse-actions
+- Candidate tested: 1d7468a1015402932f42b82a1c1689b361850162
+- Baseline: V6-B 085216a1342da2ea313305f4276eda61e7f4797f
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semanticExact=true; checkpointCoreExact=true.
+- model/optimizer/CPU RNG/CUDA RNG/counters/FeatureSpec/hyperparameters/seed all exact.
+- retention structure exact, fully drained, and retention bytes exactly equal.
+- Retained raw bytes: 340,830,768 on both V6-B and V6-C.
+- Retained compressed bytes: 23,168,575 on both V6-B and V6-C.
+- Action encode: 2,771.44 ms -> 1,008.67 ms (~63.6% reduction, ~2.75x).
+- batchAct: 7,620.58 ms -> 6,552.42 ms.
+- Replay: 5,544.59 ms -> 5,066.12 ms.
+- External wall: 34.313 sec -> 25.048 sec (1.3699x diagnostic).
+- The 4k wall comparison shows substantial run-to-run variance; do not treat 1.3699x
+  as the stable full-PPO speedup until an 8k comparison confirms it.
+- Direct sparse encoder output and the prior dense-scan sparse transport payload were
+  verified byte-identical before the Kaggle smoke.
+
 ## Next steps
-1. Integrate the direct sparse Action encoder proven byte-exact in Probe-02.
-2. Keep V6-B sparse transport + sparse retention/replay unchanged while replacing only dense Action generation.
-3. Run a small exactness smoke first, then an 8k profile if exact.
+1. Run V6-B vs V6-C at 8k with Node profiling and full exactness checks.
+2. Confirm Action encode reduction and overall wall improvement scale beyond 4k.
+3. If exact and repeatable, make V6-C the current fastest verified Action path.
 4. Then evaluate direct compact Observation generation.
 5. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
