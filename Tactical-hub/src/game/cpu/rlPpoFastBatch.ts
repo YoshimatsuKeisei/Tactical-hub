@@ -17,6 +17,7 @@ import {
   type PpoHyperparameters,
   type PpoRetentionStats,
 } from "./pythonPpoClient";
+import { PpoTimingProfiler } from "./rlPpoProfiler";
 import {
   DEFAULT_PPO_HYPERPARAMETERS,
   finalizeTerminalTrajectory,
@@ -92,6 +93,7 @@ function retentionSummary(stats: PpoRetentionStats | undefined) {
 }
 
 export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
+  const profiler = new PpoTimingProfiler();
   const environmentCount = input.environmentCount ?? 8;
   if (environmentCount !== 8) {
     throw new Error("PPO fast_batch_v1 requires exactly 8 environments");
@@ -301,8 +303,14 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
           continue;
         }
 
-        const observation = slot.environment.getObservationForEncoding(actor);
-        const legal = slot.environment.getLegalActionsForEncoding(actor);
+        const observation = profiler.measure(
+          "fast_rollout_observation",
+          () => slot.environment.getObservationForEncoding(actor),
+        );
+        const legal = profiler.measure(
+          "fast_rollout_legal_actions",
+          () => slot.environment.getLegalActionsForEncoding(actor),
+        );
         if (!legal.length) {
           slot.reason = "no_legal_actions";
           await finalizeSlot(slot);
@@ -319,11 +327,17 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
           continue;
         }
 
-        const encodedObservation = encodeRlObservationV2(
-          observation,
-          slot.encoderCache,
+        const encodedObservation = profiler.measure(
+          "fast_rollout_encode_observation",
+          () => encodeRlObservationV2(
+            observation,
+            slot.encoderCache,
+          ),
         );
-        const encodedActions = encodeRlLegalActionsV2(observation, legal);
+        const encodedActions = profiler.measure(
+          "fast_rollout_encode_actions",
+          () => encodeRlLegalActionsV2(observation, legal),
+        );
         mergeLegalActionCount += legal.filter(
           (action) => action.actionType === "merge_infantry",
         ).length;
@@ -341,20 +355,26 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
           encodedObservation,
           encodedActions,
           retentionId,
-          progressHash: slot.environment.getProgressHash(),
+          progressHash: profiler.measure(
+            "fast_rollout_progress_hash",
+            () => slot.environment.getProgressHash(),
+          ),
         });
       }
 
       if (!batch.length) continue;
 
-      const selected = await client.actBatch(
-        batch.map((entry) => ({
-          observation: entry.encodedObservation,
-          legalActions: entry.encodedActions,
-        })),
-        {
-          retentionIds: batch.map((entry) => entry.retentionId),
-        },
+      const selected = await profiler.measureAsync(
+        "fast_rollout_batch_act",
+        () => client.actBatch(
+          batch.map((entry) => ({
+            observation: entry.encodedObservation,
+            legalActions: entry.encodedActions,
+          })),
+          {
+            retentionIds: batch.map((entry) => entry.retentionId),
+          },
+        ),
       );
 
       batchRounds += 1;
@@ -366,7 +386,10 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
         entry.slot.retentionIds.push(entry.retentionId);
         outstandingRetentionIds.add(entry.retentionId);
 
-        entry.slot.environment.stepWithoutObservation(action.actionKey);
+        profiler.measure(
+          "fast_rollout_game_step",
+          () => entry.slot.environment.stepWithoutObservation(action.actionKey),
+        );
         entry.slot.trajectory.push({
           decisionIndex: entry.slot.trajectory.length,
           turnNumber: entry.observation.turnNumber,
@@ -381,7 +404,10 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
         });
 
         if (
-          entry.slot.environment.getProgressHash()
+          profiler.measure(
+            "fast_rollout_progress_hash_after",
+            () => entry.slot.environment.getProgressHash(),
+          )
           === entry.progressHash
         ) {
           entry.slot.reason = "phase_stall";
@@ -435,7 +461,10 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
       );
     }
 
-    await client.beginUpdate(totalSamples);
+    await profiler.measureAsync(
+      "fast_begin_update",
+      () => client.beginUpdate(totalSamples),
+    );
     const retentionBeforeUpdate = await client.retentionStats();
 
     let validatedSamples = 0;
@@ -449,12 +478,14 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
         memoryLogInterval,
         fastRlMovement: true,
         fastRlPhaseTransitions: true,
+        profiler,
       });
       replayedSamples += await replayPpoTrajectoryFromRetention({
         rollout,
         client,
         chunkSize: replayChunkSize,
         memoryLogInterval,
+        profiler,
         onConsumed: (retentionId) => {
           outstandingRetentionIds.delete(retentionId);
         },
@@ -485,7 +516,10 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
       );
     }
 
-    const update = await client.finishUpdate(learnableRollouts.length);
+    const update = await profiler.measureAsync(
+      "fast_finish_update",
+      () => client.finishUpdate(learnableRollouts.length),
+    );
 
     const victoryEpisodeCount = summaries.filter(
       (summary) => summary.outcomeKind === "victory",
@@ -509,9 +543,12 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
       replayedSamples,
     };
 
-    const saved = await client.save(
-      input.outputCheckpoint,
-      metadata,
+    const saved = await profiler.measureAsync(
+      "fast_checkpoint_save",
+      () => client.save(
+        input.outputCheckpoint,
+        metadata,
+      ),
     );
     const bestSaved = input.bestCheckpoint
       ? await client.save(
@@ -564,6 +601,7 @@ export async function runPpoFastBatchSmoke(input: PpoFastBatchInput) {
         // Preserve the original fast-mode error.
       }
     }
+    profiler.report("fast_batch_final");
     await client.close();
   }
 }
