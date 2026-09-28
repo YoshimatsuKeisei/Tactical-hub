@@ -504,28 +504,28 @@ def main():
                 decoded_records = []
                 selected_action_groups = []
                 template_descriptors = records[0]["header"]["tensors"]
-                for record in records:
+                for retained_record in records:
                     raw = bytearray(
                         zlib.decompress(
-                            record["compressed"],
+                            retained_record["compressed"],
                             wbits=-zlib.MAX_WBITS,
                         )
                     )
                     if (
-                        len(raw) != record["rawByteLength"]
+                        len(raw) != retained_record["rawByteLength"]
                         or hashlib.sha256(raw).hexdigest()
-                        != record["rawSha256"]
+                        != retained_record["rawSha256"]
                     ):
                         raise ValueError(
                             "PPO retained batch payload integrity mismatch"
                         )
                     decoded_records.append(
-                        decode_packed_views(record["header"], raw)
+                        decode_packed_views(retained_record["header"], raw)
                     )
                     selected_action_groups.append(
                         [
                             int(value)
-                            for value in record["selectedActionIndices"]
+                            for value in retained_record["selectedActionIndices"]
                         ]
                     )
 
@@ -622,7 +622,7 @@ def main():
                     else None
                 )
                 with retention_lock:
-                    for retention_id, record in zip(
+                    for retention_id, retained_record in zip(
                         retention_ids,
                         records,
                     ):
@@ -635,7 +635,7 @@ def main():
                         )
                         retention_totals[
                             "currentRetainedBytes"
-                        ] -= len(record["compressed"])
+                        ] -= len(retained_record["compressed"])
                 response = {
                     "type": "updateChunkAccepted",
                     "requestId": message["requestId"],
@@ -672,14 +672,14 @@ def main():
                 decoded_records = []
                 selected_action_indices = []
                 template_descriptors = records[0]["header"]["tensors"]
-                for record in records:
-                    if record["batchSize"] != 1:
+                for retained_record in records:
+                    if retained_record["batchSize"] != 1:
                         raise ValueError("PPO retained act record must have batchSize=1")
-                    raw = bytearray(zlib.decompress(record["compressed"], wbits=-zlib.MAX_WBITS))
-                    if len(raw) != record["rawByteLength"] or hashlib.sha256(raw).hexdigest() != record["rawSha256"]:
+                    raw = bytearray(zlib.decompress(retained_record["compressed"], wbits=-zlib.MAX_WBITS))
+                    if len(raw) != retained_record["rawByteLength"] or hashlib.sha256(raw).hexdigest() != retained_record["rawSha256"]:
                         raise ValueError("PPO retained payload integrity mismatch")
-                    decoded_records.append(decode_packed_views(record["header"], raw))
-                    selected_action_indices.append(int(record["selectedActionIndex"]))
+                    decoded_records.append(decode_packed_views(retained_record["header"], raw))
+                    selected_action_indices.append(int(retained_record["selectedActionIndex"]))
 
                 row_compactions = [
                     record["header"].get("rowCompaction")
@@ -712,10 +712,10 @@ def main():
                     else None
                 )
                 with retention_lock:
-                    for retention_id, record in zip(retention_ids, records):
+                    for retention_id, retained_record in zip(retention_ids, records):
                         retained_chunks.pop(retention_id, None)
                         consumed_retention_ids.add(retention_id)
-                        retention_totals["currentRetainedBytes"] -= len(record["compressed"])
+                        retention_totals["currentRetainedBytes"] -= len(retained_record["compressed"])
                 response = {"type": "updateChunkAccepted", "requestId": message["requestId"], **result}
                 if feature_audit is not None:
                     response["featureAudit"] = feature_audit
@@ -726,10 +726,10 @@ def main():
                 discarded_count = 0
                 with retention_lock:
                     for retention_id in retention_ids:
-                        record = retained_chunks.pop(retention_id, None)
+                        retained_record = retained_chunks.pop(retention_id, None)
                         pending_retention_ids.discard(retention_id)
-                        if record is not None:
-                            retention_totals["currentRetainedBytes"] -= len(record["compressed"])
+                        if retained_record is not None:
+                            retention_totals["currentRetainedBytes"] -= len(retained_record["compressed"])
                             discarded_count += 1
                 send({"type": "retentionDiscarded", "requestId": message["requestId"], "discardedCount": discarded_count})
             elif kind == "retentionStats":
