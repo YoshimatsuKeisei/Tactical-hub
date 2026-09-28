@@ -480,3 +480,20 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Do not alter replay chunk size, sample order, tensor shape/value/stride, gradient
    accumulation order, PPO objective, finite checks, RNG state or checkpoint schema.
 5. Do not reduce observation/action information.
+
+
+## V6-O production replay graphed forward — 1k exactness gate PASS
+- Branch: experiment/ppo-fast-batch-v6o-replay-graphed-forward
+- Candidate: 1596d823f422a59caa6e3fa9eb6f2b6c828ac7f0
+- Baseline: V6-N ea68bbd776c156e3ee0d9c484501d3c3327a35bc
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true.
+- semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Update equivalence diagnostics exact, including gradientHash.
+- Replay Graph: minHits=3, maxEntries=4, seenSignatures=8,
+  capturedGraphs=3, graphReplays=19, fallbackForwards=13.
+- Replay stage: 1,646.94 -> 1,421.51 ms (~13.7% reduction).
+- External wall: 16.235 -> 11.133 sec is diagnostic only and not attributed wholly to V6-O.
+- PyTorch emitted an AccumulateGrad stream-mismatch warning on the graphed path.
+  Exactness still passed, but V6-O is NOT yet promoted to baseline.
+- Next gate: 4k paired exactness/performance with the same commits and settings.
