@@ -73,7 +73,14 @@ export class PythonPpoClient {
   private stderr = "";
   private featureSpec?: RlFeatureSpecV2;
 
-  constructor(private readonly options: { command?: string; args?: string[]; cwd?: string; device?: RlTorchDevice; env?: NodeJS.ProcessEnv } = {}) {}
+  constructor(private readonly options: {
+    command?: string;
+    args?: string[];
+    cwd?: string;
+    device?: RlTorchDevice;
+    env?: NodeJS.ProcessEnv;
+    compactPaddedRows?: boolean;
+  } = {}) {}
 
   private wait() { return new Promise<Response>((resolve, reject) => this.waiting.push({ resolve, reject })); }
   private send(payload: unknown) {
@@ -88,6 +95,9 @@ export class PythonPpoClient {
       byteLength: packed.payload.byteLength,
       batchSize: packed.batchSize,
       tensors: packed.tensors,
+      ...(packed.rowCompaction
+        ? { rowCompaction: packed.rowCompaction }
+        : {}),
     })}\n`);
     this.process.stdin.write(packed.payload);
   }
@@ -131,7 +141,15 @@ export class PythonPpoClient {
     const responsePromise = this.wait();
     this.sendPreparedPacked(
       { type: "packedAct", requestId, ...(options.retentionId ? { retentionId: options.retentionId } : {}) },
-      packPpoActInput(observation, legalActions.actions, this.featureSpec),
+      packPpoActInput(
+        observation,
+        legalActions.actions,
+        this.featureSpec,
+        {
+          compactMaskedPrefixes:
+            this.options.compactPaddedRows ?? false,
+        },
+      ),
     );
     const response = await responsePromise;
     if (response.type === "error") throw new Error(response.message);
@@ -178,8 +196,15 @@ export class PythonPpoClient {
         ...(retentionBatchId ? { retentionBatchId } : {}),
       },
       packPpoActBatchInput(
-        samples.map(({ observation, legalActions }) => ({ observation, actions: legalActions.actions })),
+        samples.map(({ observation, legalActions }) => ({
+          observation,
+          actions: legalActions.actions,
+        })),
         this.featureSpec,
+        {
+          compactMaskedPrefixes:
+            this.options.compactPaddedRows ?? false,
+        },
       ),
     );
     const response = await responsePromise;
