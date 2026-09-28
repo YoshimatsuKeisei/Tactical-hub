@@ -47,21 +47,22 @@ Updated: 2026-09-28
 - V4 Node worker pool: exact at 8k but wall worsened 58.253 -> 60.613 sec.
 - Do not change 8 env to 16/32 without explicit approval.
 
-## Current experiment
+## V6-A verified result
 - Branch: experiment/ppo-fast-batch-v6-sparse-action-transport
-- Implementation commit: 89c1c7c
-- Packing-test commit: 38cf3fd
-- Stage A only: sparse Action transport for packedActBatch, retention explicitly disabled.
-- Direct sparse Action encoder is NOT integrated yet; current packer scans encoded dense rows.
-- Purpose: prove production transport/GPU-restore/model/RNG exactness before retention changes.
+- Candidate tested: 62d1cb57dbe4d46d5ced507aa6f3ab12c0d2d494
+- 8 env, seeds 9-16, 100 rounds; 720 timed decisions/path after warmup.
+- allExact=true; mismatchCount=0.
+- parameter/optimizer/RNG/gradient hashes exact.
+- final state hashes exact.
+- Dense Action bytes 1,012,480 -> sparse 7,872 (99.2225% reduction).
+- Whole packed payload 1,677,776 -> 673,168 (59.8774% reduction).
+- Diagnostic round-trip: 1.657566 -> 1.521167 ms/decision (1.0897x).
+- This timing is transport inference diagnostic only, NOT full PPO throughput.
+- Direct sparse Action encoder is still NOT integrated; packer scans dense encoded rows.
 ## Next steps
-1. Run GPU equivalence probe against V5 dense path:
-   - 8 env, seeds 9-16
-   - same checkpoint/update2 source
-   - same encoded samples to dense and sparse clients
-   - compare actions/logProbabilities/values, final state hashes, model/optimizer/RNG diagnostics
-2. If exact, integrate sparse retention/replay without changing PPO semantics.
-3. Then run full small PPO exactness smoke against V5.
+1. Integrate sparse retention/replay without changing PPO semantics.
+2. Run full small PPO exactness smoke against V5.
+3. Require model/optimizer/CPU RNG/CUDA RNG/counters/rollout hashes/workload/retention/validation/allExact.
 4. Only after exactness PASS, benchmark larger workload.
 5. Do not run 50k until the structural path is proven promising.
 
