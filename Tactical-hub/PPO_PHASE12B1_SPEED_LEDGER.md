@@ -327,3 +327,29 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 5. Only after those addresses are stable, test exact-shape CUDA Graph for model forward only.
 6. Keep sampling/RNG/finite checks/host scalars outside the graph and do not change PPO math.
 7. Do not run 50k until the remaining gap to the 20x target is materially reduced.
+
+
+## V6-J persistent logical-row restore buffers — CLOSED
+- Branch: experiment/ppo-fast-batch-v6-persistent-state-restore
+- Candidate: fcaf0deae68a7b96795d08d0b5b6ff87a65f81a9
+- Baseline: V6-I fdb0706627cd8cc6ce2837ae2d83f59fabda58de
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters all exact.
+- retention structure/raw/stored bytes/drain all exact.
+- batchAct: 5,957.56 -> 5,770.18 ms (~3.1% reduction).
+- Replay: 4,866.36 -> 5,117.34 ms (~5.2% regression).
+- Targeted batchAct+replay total: 10,823.92 -> 10,887.52 ms (slight regression).
+- External wall: 27.288 -> 22.859 sec, but this gain is not explained by the
+  targeted stages and is therefore treated as run noise / overlap effects.
+- Conclusion: representation remains exact, but there is no isolated net speed gain.
+  Do not adopt V6-J; keep V6-I as the baseline.
+
+## Next steps after V6-J
+1. Keep V6-I as the verified fastest baseline.
+2. Exact-shape CUDA Graph exploration is justified by the 91.6% exact-signature reuse audit.
+3. Do not capture every signature: top 12 exact signatures account for 406/500 calls (81.2%).
+4. Capture only hot exact signatures and cap graph-cache size to control GPU memory.
+5. Graph only model forward. Keep sampling, RNG, finite checks, distribution/log-prob,
+   host scalar extraction and PPO update math outside the graph.
+6. Preserve exact model input shape/value/stride; never add padding or drop information.
+7. Reject the route immediately if model/optimizer/RNG exactness fails.
