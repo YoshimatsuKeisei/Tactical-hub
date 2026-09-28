@@ -224,12 +224,23 @@ Updated: 2026-09-28
 - batchAct 5,521.17 -> 5,107.68 ms (~7.5% reduction).
 - V6-G is the current fastest exact-verified baseline.
 
+## V6-H inference prefix buffer — CLOSED
+- Candidate combined with V6-G: 68059b75999cc45831311a53413891f3d6f86b05
+- Baseline: V6-G 45d13c43a36de3e0e3e0b5d79f8669c1bfac8e01
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- retention bytes/counters/CPU RNG/CUDA RNG remained exact.
+- modelExact=false and optimizerExact=false.
+- semanticDiffKeys were update and diagnostics.
+- batchAct 5,512.16 -> 5,532.09 ms: no structural speed gain.
+- Conclusion: running valid-prefix rows through smaller Linear shapes still changes floating-point
+  execution enough to violate bit-exactness. Do not adopt this route.
+
 ## Next steps
 1. Keep V6-G as the current baseline.
-2. Inspect exact-shape CUDA Graph capture for act model forward only.
-3. Keep sampling, RNG consumption, finite checks and host-scalar behavior unchanged.
-4. Never pad to a new bucket shape just to enable capture; V6-E proved shape changes break bit-exactness.
-5. If exact-shape graph reuse is too sparse or capture overhead dominates, close the route quickly.
+2. Reuse the sparse Action dense-restore buffer and sparse index GPU buffer across act rounds.
+3. Preserve the exact dense Action tensor shape/values/strides seen by the model.
+4. Only after Action restore addresses are stable, revisit exact-shape CUDA Graph capture.
+5. Keep sampling, RNG consumption, finite checks and host-scalar behavior unchanged.
 6. After GPU forward work, return to Node observation/game-step structural cost.
 7. Do not run 50k until the remaining gap to the 20x target is materially reduced.
 
