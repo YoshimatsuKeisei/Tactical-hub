@@ -4,6 +4,7 @@ import { RlEnvironmentV2 } from "../cpu/rlEnvironment";
 import { createRlFeatureSpecV2 } from "../cpu/rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
+  encodeRlObservationCompactV2,
   encodeRlObservationV2,
 } from "../cpu/rlObservationEncoder";
 import { packPpoActBatchInput } from "../cpu/rlPpoPackedBatch";
@@ -119,5 +120,85 @@ describe("PPO compact masked-prefix rows", () => {
     ).toBeLessThan(
       normal.payload.byteLength,
     );
+  });
+
+  it("packs direct compact Observation bytes exactly like post-encode compaction", () => {
+    const samples = Array.from(
+      { length: 8 },
+      (_, index) => {
+        const environment = new RlEnvironmentV2(
+          undefined,
+          true,
+          {
+            cpuStep: {
+              rlInPlacePhaseTransitions: true,
+            },
+          },
+        );
+        const initial = environment.reset(9 + index, 4);
+        const actor = environment.getCurrentActorTeamId();
+        if (!actor) {
+          throw new Error("Missing direct compact actor");
+        }
+        const observation = environment.getObservationForEncoding(actor);
+        const legal = environment.getLegalActionsForEncoding(actor);
+        if (!legal.length) {
+          throw new Error("Missing direct compact legal action");
+        }
+        const actions = encodeRlLegalActionsV2(
+          observation,
+          legal,
+        ).actions;
+        return {
+          initial,
+          standardObservation: encodeRlObservationV2(
+            observation,
+            createRlObservationEncoderCache(),
+          ),
+          compactObservation: encodeRlObservationCompactV2(
+            observation,
+            createRlObservationEncoderCache(),
+          ),
+          actions,
+        };
+      },
+    );
+
+    const featureSpec = createRlFeatureSpecV2(samples[0].initial);
+    const baseline = packPpoActBatchInput(
+      samples.map(({ standardObservation, actions }) => ({
+        observation: standardObservation,
+        actions,
+      })),
+      featureSpec,
+      { compactMaskedPrefixes: true },
+    );
+    const direct = packPpoActBatchInput(
+      samples.map(({ compactObservation, actions }) => ({
+        observation: compactObservation,
+        actions,
+      })),
+      featureSpec,
+      { compactMaskedPrefixes: true },
+    );
+
+    expect(direct.rowCompaction).toEqual(baseline.rowCompaction);
+    expect(direct.tensors).toEqual(baseline.tensors);
+    expect(Buffer.compare(direct.payload, baseline.payload)).toBe(0);
+
+    for (const sample of samples) {
+      expect(sample.compactObservation.rowCompaction).toEqual(
+        baseline.rowCompaction,
+      );
+      expect(
+        sample.compactObservation.unitMask.every(Boolean),
+      ).toBe(true);
+      expect(
+        sample.compactObservation.baseMask.every(Boolean),
+      ).toBe(true);
+      expect(
+        sample.compactObservation.constructionMask.every(Boolean),
+      ).toBe(true);
+    }
   });
 });

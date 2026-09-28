@@ -62,6 +62,10 @@ export type EncodedStrategicState = {
   teleportIntents: number[][];
 };
 
+export type EncodedObservationRowCompaction = Partial<
+  Record<"units" | "bases" | "constructions", number>
+>;
+
 export type EncodedObservation = {
   schemaVersion: number;
   global: number[];
@@ -75,6 +79,7 @@ export type EncodedObservation = {
   constructions: number[][];
   constructionMask: number[];
   strategicState: EncodedStrategicState;
+  rowCompaction?: EncodedObservationRowCompaction;
 };
 
 export type RlObservationFeatureSpec = {
@@ -475,7 +480,12 @@ function paddedRows(rows: number[][], length: number, width: number, cache?: RlO
   return result;
 }
 
-function encodeRlObservationForVersion(observation: RlObservation, schemaVersion: 1 | 2, encoderCache?: RlObservationEncoderCache): EncodedObservation {
+function encodeRlObservationForVersion(
+  observation: RlObservation,
+  schemaVersion: 1 | 2,
+  encoderCache?: RlObservationEncoderCache,
+  compactPaddedRows = false,
+): EncodedObservation {
   const teams = orderedTeams(observation);
   const bases = [...observation.bases].sort((left, right) => {
     const leftCoord = left.coords[0], rightCoord = right.coords[0];
@@ -523,6 +533,41 @@ function encodeRlObservationForVersion(observation: RlObservation, schemaVersion
   const encodedConstructions = sortedConstructions.map((construction) => encodeConstruction(context, construction));
   const constructionWidth = encodedConstructions[0]?.length ?? encodeConstruction(context, { id: "", kind: "bridge", tiles: [], placedTurn: 0, active: false }).length;
 
+  const outputUnits = compactPaddedRows
+    ? encodedUnits
+    : paddedRows(encodedUnits, maxUnits, unitWidth, encoderCache);
+  const outputUnitMask = compactPaddedRows
+    ? encodedUnits.map(() => 1)
+    : [...units.map(() => 1), ...Array(maxUnits - units.length).fill(0)];
+  const outputBases = compactPaddedRows
+    ? encodedBases
+    : paddedRows(encodedBases, maxBases, baseWidth, encoderCache);
+  const outputBaseMask = compactPaddedRows
+    ? encodedBases.map(() => 1)
+    : [...bases.map(() => 1), ...Array(maxBases - bases.length).fill(0)];
+  const outputConstructions = compactPaddedRows
+    ? encodedConstructions
+    : paddedRows(
+      encodedConstructions,
+      maxConstructions,
+      constructionWidth,
+      encoderCache,
+    );
+  const outputConstructionMask = compactPaddedRows
+    ? encodedConstructions.map(() => 1)
+    : [
+      ...encodedConstructions.map(() => 1),
+      ...Array(maxConstructions - encodedConstructions.length).fill(0),
+    ];
+  const rowCompaction: EncodedObservationRowCompaction | undefined =
+    compactPaddedRows
+      ? {
+        units: maxUnits,
+        bases: maxBases,
+        constructions: maxConstructions,
+      }
+      : undefined;
+
   return {
     schemaVersion,
     global: [
@@ -549,14 +594,15 @@ function encodeRlObservationForVersion(observation: RlObservation, schemaVersion
       context.movementSeatOrderIndex.get(team.id) ?? -1,
     ]),
     teamMask: teams.map(() => 1),
-    units: paddedRows(encodedUnits, maxUnits, unitWidth, encoderCache),
-    unitMask: [...units.map(() => 1), ...Array(maxUnits - units.length).fill(0)],
+    units: outputUnits,
+    unitMask: outputUnitMask,
     map: encodeMap(context),
-    bases: paddedRows(encodedBases, maxBases, baseWidth, encoderCache),
-    baseMask: [...bases.map(() => 1), ...Array(maxBases - bases.length).fill(0)],
-    constructions: paddedRows(encodedConstructions, maxConstructions, constructionWidth, encoderCache),
-    constructionMask: [...encodedConstructions.map(() => 1), ...Array(maxConstructions - encodedConstructions.length).fill(0)],
+    bases: outputBases,
+    baseMask: outputBaseMask,
+    constructions: outputConstructions,
+    constructionMask: outputConstructionMask,
     strategicState: encodeStrategicState(context),
+    ...(rowCompaction ? { rowCompaction } : {}),
   };
 }
 
@@ -569,6 +615,23 @@ export const encodeRlObservationV1 = encodeRlObservation;
 /** Future BC/RL encoder; v1 rows are unchanged and heavy formation is v2-only. */
 export function encodeRlObservationV2(observation: RlObservation, encoderCache?: RlObservationEncoderCache) {
   return encodeRlObservationForVersion(observation, 2, encoderCache);
+}
+
+/**
+ * PPO-only V2 path that omits trailing padded zero rows for the branches already
+ * compacted by the packed transport. rowCompaction preserves the original
+ * logical row counts so Python reconstructs the same dense tensors.
+ */
+export function encodeRlObservationCompactV2(
+  observation: RlObservation,
+  encoderCache?: RlObservationEncoderCache,
+) {
+  return encodeRlObservationForVersion(
+    observation,
+    2,
+    encoderCache,
+    true,
+  );
 }
 
 /**

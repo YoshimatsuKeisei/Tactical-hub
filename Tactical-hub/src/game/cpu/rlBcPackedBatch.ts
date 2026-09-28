@@ -117,35 +117,83 @@ export function packBcEncodedSamples(
         || name === "constructions"
       )
     ) {
-      const originalRowCounts = rows.map((batch) => batch.length);
-      if (
-        originalRowCounts.some(
-          (count) => count !== originalRowCounts[0],
-        )
-      ) {
-        throw new Error(
-          `${name} compact rows require a stable logical row count`,
-        );
-      }
-      const originalRows = originalRowCounts[0] ?? 0;
-      const validCounts = explicitMasks.map((mask) =>
-        validMaskPrefixLength(mask, originalRows, name),
+      const declaredLogicalRows = observations.map(
+        (value) => value.rowCompaction?.[name],
       );
-      rows = rows.map((batch, index) => {
-        const valid = validCounts[index];
-        if (valid > 0) return batch.slice(0, valid);
-        // Keep one masked zero input row so the encoder remains in the
-        // autograd graph and Adam observes grad=0 instead of grad=None.
-        if (batch.length) return [batch[0].map(() => 0)];
-        return [Array(width).fill(0)];
-      });
-      explicitMasks = explicitMasks.map((mask, index) => {
-        const valid = validCounts[index];
-        return valid > 0
-          ? mask.slice(0, valid)
-          : [0];
-      });
-      rowCompaction[name] = originalRows;
+      const directCompact = declaredLogicalRows.some(
+        (count) => count !== undefined,
+      );
+
+      if (directCompact) {
+        if (declaredLogicalRows.some((count) => count === undefined)) {
+          throw new Error(
+            `${name} direct compact rows require metadata for every sample`,
+          );
+        }
+        const originalRows = declaredLogicalRows[0] ?? 0;
+        if (
+          declaredLogicalRows.some(
+            (count) => count !== originalRows,
+          )
+        ) {
+          throw new Error(
+            `${name} direct compact rows require a stable logical row count`,
+          );
+        }
+        const validCounts = rows.map((batch, index) => {
+          if (batch.length > originalRows) {
+            throw new Error(
+              `${name} direct compact row count exceeds logical row count`,
+            );
+          }
+          const mask = explicitMasks[index];
+          if (mask.length !== batch.length || mask.some((value) => !value)) {
+            throw new Error(
+              `${name} direct compact mask must be all-valid and match rows`,
+            );
+          }
+          return batch.length;
+        });
+        rows = rows.map((batch, index) => {
+          if (validCounts[index] > 0) return batch;
+          // Preserve the existing autograd behavior for an empty branch.
+          return [Array(width).fill(0)];
+        });
+        explicitMasks = validCounts.map((valid) =>
+          valid > 0 ? Array(valid).fill(1) : [0]
+        );
+        rowCompaction[name] = originalRows;
+      } else {
+        const originalRowCounts = rows.map((batch) => batch.length);
+        if (
+          originalRowCounts.some(
+            (count) => count !== originalRowCounts[0],
+          )
+        ) {
+          throw new Error(
+            `${name} compact rows require a stable logical row count`,
+          );
+        }
+        const originalRows = originalRowCounts[0] ?? 0;
+        const validCounts = explicitMasks.map((mask) =>
+          validMaskPrefixLength(mask, originalRows, name),
+        );
+        rows = rows.map((batch, index) => {
+          const valid = validCounts[index];
+          if (valid > 0) return batch.slice(0, valid);
+          // Keep one masked zero input row so the encoder remains in the
+          // autograd graph and Adam observes grad=0 instead of grad=None.
+          if (batch.length) return [batch[0].map(() => 0)];
+          return [Array(width).fill(0)];
+        });
+        explicitMasks = explicitMasks.map((mask, index) => {
+          const valid = validCounts[index];
+          return valid > 0
+            ? mask.slice(0, valid)
+            : [0];
+        });
+        rowCompaction[name] = originalRows;
+      }
     }
 
     const [tensor, presence] = paddedFloatRows(

@@ -15,6 +15,7 @@ import {
 import { createRlFeatureSpecV2 } from "./rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
+  encodeRlObservationCompactV2,
   encodeRlObservationV2,
 } from "./rlObservationEncoder";
 import {
@@ -81,11 +82,13 @@ export type PpoFastBatchInput = {
   memoryLogInterval?: number;
   validationWorkerCount?: number;
   directSparseActions?: boolean;
+  directCompactObservation?: boolean;
   modeLabel?:
     | "fast_batch_v2"
     | "fast_batch_v5_compact_rows"
     | "fast_batch_v6_sparse_action_retention"
-    | "fast_batch_v6_direct_sparse_actions";
+    | "fast_batch_v6_direct_sparse_actions"
+    | "fast_batch_v6_direct_compact_observation";
   client?: PythonPpoClient;
 };
 
@@ -347,10 +350,15 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
 
         const encodedObservation = profiler.measure(
           "fast_rollout_encode_observation",
-          () => encodeRlObservationV2(
-            observation,
-            slot.encoderCache,
-          ),
+          () => input.directCompactObservation
+            ? encodeRlObservationCompactV2(
+              observation,
+              slot.encoderCache,
+            )
+            : encodeRlObservationV2(
+              observation,
+              slot.encoderCache,
+            ),
         );
         const encodedActions = profiler.measure(
           "fast_rollout_encode_actions",
