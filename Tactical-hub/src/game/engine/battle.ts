@@ -17,7 +17,7 @@ import { beginStrategistActionPhase, beginStrategistActionPhaseInPlaceForRl } fr
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage } from "./kingCampaign";
-import { isLegalProfilingEnabled, measureLegalSegment } from "../cpu/legalEnumerationProfile";
+import { isLegalProfilingEnabled, measureLegalSegment, withLegalProfileSink } from "../cpu/legalEnumerationProfile";
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
 import { isHeavyInfantry } from "./heavyInfantry";
 import { isUnitVisibleToTeam } from "../visibility";
@@ -561,11 +561,26 @@ function resolveBattleInternal(
     .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed" && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "neutral")
     .sort((left, right) => left.id.localeCompare(right.id));
   profileMark("event_build.neutral_filter_sort");
-  const neutralAttackContext = getAttackEnumerationContext(next);
+  const neutralLegalSink = profileSink
+    ? (category: string, milliseconds: number) => {
+        profileSink(`event_build.neutral.${category}`, milliseconds);
+      }
+    : undefined;
+  const neutralAttackContext = profileSink
+    ? withLegalProfileSink(
+        neutralLegalSink,
+        () => getAttackEnumerationContext(next),
+      )
+    : getAttackEnumerationContext(next);
   profileMark("event_build.neutral_context");
   const neutralIntents: AttackIntent[] = neutralUnits.flatMap((unit) => {
     const candidateStarted = profileSink ? performance.now() : 0;
-    const target = getAttackCandidates(next, unit.id, neutralAttackContext)[0];
+    const target = profileSink
+      ? withLegalProfileSink(
+          neutralLegalSink,
+          () => getAttackCandidates(next, unit.id, neutralAttackContext)[0],
+        )
+      : getAttackCandidates(next, unit.id, neutralAttackContext)[0];
     if (profileSink) {
       profileSink(
         "event_build.neutral_candidate_search",
