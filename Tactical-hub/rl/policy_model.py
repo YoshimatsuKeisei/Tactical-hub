@@ -127,6 +127,10 @@ class TacticalPolicyValueNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 1),
         )
+        self._inference_prefix_buffers: dict[
+            tuple[str, int, int],
+            torch.Tensor,
+        ] = {}
 
     @property
     def device(self) -> torch.device:
@@ -195,6 +199,7 @@ class TacticalPolicyValueNetwork(nn.Module):
         map_table, map_mask = prepared["map"]
         nonempty = prepared.get("_nonempty")
         valid_prefix_counts = prepared.get("_validPrefixCount")
+        compact_transferred_rows = prepared.get("_compactTransferredRows")
 
         def pooled(key: str, encoder: nn.Module, table: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
             if nonempty is not None and nonempty.get(key) is False:
@@ -203,6 +208,51 @@ class TacticalPolicyValueNetwork(nn.Module):
                     dtype=table.dtype,
                     device=table.device,
                 )
+
+            compact_count = (
+                None
+                if compact_transferred_rows is None
+                else compact_transferred_rows.get(key)
+            )
+            if (
+                compact_count is not None
+                and not torch.is_grad_enabled()
+                and compact_count < table.shape[1]
+            ):
+                if compact_count <= 0:
+                    return torch.zeros(
+                        (table.shape[0], 64),
+                        dtype=table.dtype,
+                        device=table.device,
+                    )
+                encoded_valid = encoder(table[:, :compact_count, :])
+                buffer_key = (
+                    key,
+                    int(table.shape[0]),
+                    int(table.shape[1]),
+                )
+                encoded = self._inference_prefix_buffers.get(buffer_key)
+                expected_shape = (
+                    int(table.shape[0]),
+                    int(table.shape[1]),
+                    int(encoded_valid.shape[-1]),
+                )
+                if (
+                    encoded is None
+                    or tuple(encoded.shape) != expected_shape
+                    or encoded.dtype != encoded_valid.dtype
+                    or encoded.device != encoded_valid.device
+                ):
+                    encoded = torch.empty(
+                        expected_shape,
+                        dtype=encoded_valid.dtype,
+                        device=encoded_valid.device,
+                    )
+                    self._inference_prefix_buffers[buffer_key] = encoded
+                encoded.zero_()
+                encoded[:, :compact_count, :].copy_(encoded_valid)
+                return batched_masked_mean_pool(encoded, mask)
+
             valid_count = None if valid_prefix_counts is None else valid_prefix_counts.get(key)
             if valid_count is not None and valid_count < table.shape[1]:
                 if valid_count <= 0:
