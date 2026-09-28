@@ -191,9 +191,12 @@ export class PpoRolloutWorkerPool {
         worker.on("error", (error) => {
           const pending = handle.pending;
           handle.pending = undefined;
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
           pending?.reject(
             new Error(
-              `PPO rollout worker ${workerId} process error: ${error.message}`,
+              `PPO rollout worker ${workerId} process error: ${message}`,
             ),
           );
         });
