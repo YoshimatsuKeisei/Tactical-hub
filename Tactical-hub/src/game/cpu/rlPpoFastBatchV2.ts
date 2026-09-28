@@ -123,6 +123,12 @@ function createFastEnvironment(profiler?: PpoTimingProfiler) {
               milliseconds,
             );
           },
+          onBattleStage(stage: string, milliseconds: number) {
+            profiler.record(
+              `fast_rollout_game_battle.${stage}`,
+              milliseconds,
+            );
+          },
           onLog(milliseconds: number) {
             profiler.record("fast_rollout_game_log", milliseconds);
           },

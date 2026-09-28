@@ -32,6 +32,11 @@ type BattleLogDraft = {
   relatedIds?: string[];
 };
 
+export type BattleProfileSink = (
+  stage: string,
+  milliseconds: number,
+) => void;
+
 const SUCCESS_DENOMINATORS: Partial<
   Record<UnitType, Partial<Record<UnitType, number>>>
 > = {
@@ -542,7 +547,15 @@ function resolveBattleInternal(
   state: GameState,
   rng: () => number,
   inPlaceForRl: boolean,
+  profileSink?: BattleProfileSink,
 ): GameState {
+  let profileStarted = profileSink ? performance.now() : 0;
+  const profileMark = (stage: string) => {
+    if (!profileSink) return;
+    const now = performance.now();
+    profileSink(stage, now - profileStarted);
+    profileStarted = now;
+  };
   const next = inPlaceForRl ? state : structuredClone(state) as GameState;
   const neutralIntents: AttackIntent[] = next.units
     .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed" && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "neutral")
@@ -577,6 +590,7 @@ function resolveBattleInternal(
     }
     return battleEventForIntent(next, encouragedUnitIds, intent, index);
   });
+  profileMark("event_build");
   recordEffectiveBaseAttacks(next, events.flatMap((event) => {
     const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
     const target = next.units.find((unit) => unit.id === event.target.unitId);
@@ -597,6 +611,7 @@ function resolveBattleInternal(
   const aliveAtBattleStart = new Set(
     next.units.filter(isAlive).map((unit) => unit.id),
   );
+  profileMark("pre_hit_metadata");
 
   const hitEvents = events.filter((event) => {
     const attacker = next.units.find(
@@ -616,6 +631,7 @@ function resolveBattleInternal(
 
     return Boolean(attacker && target && hit);
   });
+  profileMark("hit_resolution");
 
   const damageByUnitId = new Map<string, number>();
   for (const event of hitEvents) {
@@ -664,6 +680,7 @@ function resolveBattleInternal(
       );
     }
   }
+  profileMark("damage_application");
 
   const attackedUnitIds = new Set(events.map((event) => event.attackerUnitId));
   const targetedUnitIds = new Set(events.map((event) => event.target.unitId));
@@ -714,6 +731,7 @@ function resolveBattleInternal(
     ...intent,
     attackIntents: [],
   }));
+  profileMark("turn_flags_and_logs");
   let captured = false;
   const fallenBases: FallenBasePlan[] = [];
   for (const base of [...next.bases]) {
@@ -748,6 +766,7 @@ function resolveBattleInternal(
     captured = completeSiegeCapture(next, fallen.siege, fallen.candidateTeamIds, "annihilation", rng) || captured;
   }
   defeatTeamsWithoutBases(next, kingDefeatedTeamIds);
+  profileMark("capture_and_king_resolution");
   next.unitTurnFlags = next.unitTurnFlags.map((flag) => {
     if (!flag.retreatEligible) return flag;
     const unit = next.units.find((candidate) => candidate.id === flag.unitId);
@@ -760,21 +779,26 @@ function resolveBattleInternal(
     if (unit && isAlive(unit) && team?.status === "active" && currentRoute && hasRetreatStep) return flag;
     return { ...flag, retreatEligible: false, retreatEligibilityReason: "no legal route to a currently controlled friendly base" };
   });
+  profileMark("retreat_revalidation");
   next.units = next.units.map((unit) => isAlive(unit) && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "active"
     ? unit
     : { ...unit, statuses: unit.statuses.filter((status) => status.kind !== "retreating") });
   clearInvalidRetreatTargets(next);
   captured = captured || kingDefeatApplied;
   resetInactiveSieges(next);
+  profileMark("status_cleanup");
   if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
     next.phaseAfterRewards = "strategist_action_input";
     next.phase = "reward_placement";
   } else next.phase = "strategist_action_input";
   next.turnState.phase = next.phase;
+  profileMark("phase_selection");
   if (next.phase !== "strategist_action_input") return next;
-  return inPlaceForRl
+  const resolved = inPlaceForRl
     ? beginStrategistActionPhaseInPlaceForRl(next)
     : beginStrategistActionPhase(next);
+  profileMark("strategist_phase_begin");
+  return resolved;
 }
 
 export function resolveBattle(
@@ -788,6 +812,7 @@ export function resolveBattle(
 export function resolveBattleInPlaceForRl(
   state: GameState,
   rng: () => number = Math.random,
+  profileSink?: BattleProfileSink,
 ): GameState {
-  return resolveBattleInternal(state, rng, true);
+  return resolveBattleInternal(state, rng, true, profileSink);
 }

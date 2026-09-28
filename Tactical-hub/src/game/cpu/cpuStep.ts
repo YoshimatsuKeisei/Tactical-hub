@@ -29,6 +29,7 @@ export type CpuStepInstrumentation = {
   onPolicy?: (milliseconds: number) => void;
   onRuntimeClone?: (milliseconds: number) => void;
   onApply?: (milliseconds: number, decision: CpuDecision, phaseBefore: GameState["phase"], phaseAfter: GameState["phase"], turnBefore: number, turnAfter: number) => void;
+  onBattleStage?: (stage: string, milliseconds: number) => void;
   onLog?: (milliseconds: number) => void;
   onDecision?: (decision: CpuDecision) => void;
 };
@@ -125,7 +126,11 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       for (const intent of runtime.hiddenAttackIntents) writeLog(intent.teamId, intent.pass ? "attack pass" : "attack", `${intent.attackerUnitId}${intent.target ? ` -> ${intent.target.unitId}` : ""}`);
       next = runtime.hiddenAttackIntents.reduce((current, intent) => saveAttackIntent(current, intent), state);
       next = instrumentation?.rlInPlacePhaseTransitions
-        ? resolveBattleInPlaceForRl(next, injectedRng(runtime))
+        ? resolveBattleInPlaceForRl(
+          next,
+          injectedRng(runtime),
+          instrumentation?.onBattleStage,
+        )
         : resolveBattle(next, injectedRng(runtime));
       writeLog(undefined, "resolve simultaneous battle");
       break;
