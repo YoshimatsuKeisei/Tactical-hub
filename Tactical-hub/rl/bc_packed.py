@@ -361,25 +361,46 @@ def _apply_logical_row_counts(
     if not logical_row_counts:
         return
 
-    normalized: dict[str, int] = {}
     for key in ("units", "bases", "constructions"):
         if key not in logical_row_counts:
             continue
         logical_rows = int(logical_row_counts[key])
         table, mask = prepared["masked"][key]
-        if logical_rows < int(table.shape[1]):
+        transferred_rows = int(table.shape[1])
+        if logical_rows < transferred_rows:
             raise ValueError(
                 f"Packed logical row count is smaller than transferred rows: "
-                f"{key} {logical_rows} < {int(table.shape[1])}"
+                f"{key} {logical_rows} < {transferred_rows}"
             )
-        if int(mask.shape[1]) != int(table.shape[1]):
+        if int(mask.shape[1]) != transferred_rows:
             raise ValueError(
                 f"Packed compact table/mask shape mismatch: {key}"
             )
-        normalized[key] = logical_rows
+        if logical_rows == transferred_rows:
+            continue
 
-    if normalized:
-        prepared["_logicalRowCount"] = normalized
+        trailing_rows = logical_rows - transferred_rows
+        table_padding = torch.zeros(
+            (
+                table.shape[0],
+                trailing_rows,
+                table.shape[2],
+            ),
+            dtype=table.dtype,
+            device=table.device,
+        )
+        mask_padding = torch.zeros(
+            (
+                mask.shape[0],
+                trailing_rows,
+            ),
+            dtype=mask.dtype,
+            device=mask.device,
+        )
+        prepared["masked"][key] = (
+            torch.cat((table, table_padding), dim=1),
+            torch.cat((mask, mask_padding), dim=1),
+        )
 
 
 def prepare_packed_tensors_grouped_h2d(
