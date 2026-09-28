@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import zlib
+from typing import Any
 
 import numpy as np
 import torch
@@ -37,6 +38,19 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    replay_cuda_graph_microprobe = (
+        os.environ.get("PPO_REPLAY_CUDAGRAPH_MICROPROBE") == "1"
+    )
+    replay_cuda_graph_probe_min_hits = int(
+        os.environ.get(
+            "PPO_REPLAY_CUDAGRAPH_MICROPROBE_MIN_HITS",
+            "3",
+        )
+    )
+    if replay_cuda_graph_probe_min_hits < 2:
+        raise ValueError(
+            "PPO_REPLAY_CUDAGRAPH_MICROPROBE_MIN_HITS must be >= 2"
+        )
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -65,6 +79,8 @@ def main():
     replay_h2d_workspace = None
     timings = {}
     legal_action_counts = []
+    replay_cuda_graph_probe_counts: dict[tuple[Any, ...], int] = {}
+    replay_cuda_graph_probe_result: dict[str, Any] | None = None
     retained_chunks = {}
     consumed_retention_ids = set()
     retention_totals = {
@@ -398,6 +414,95 @@ def main():
         if profile and trainer is not None and trainer.device.type == "cuda":
             torch.cuda.synchronize(trainer.device)
 
+    def replay_probe_tensor_signature(
+        tensor: torch.Tensor,
+    ) -> tuple[Any, ...]:
+        return (
+            tuple(int(value) for value in tensor.shape),
+            tuple(int(value) for value in tensor.stride()),
+            str(tensor.dtype),
+        )
+
+    def replay_probe_signature(
+        prepared,
+        actions,
+        action_mask,
+        targets,
+        old,
+        advantages,
+        returns,
+    ) -> tuple[Any, ...]:
+        return (
+            (
+                "global",
+                replay_probe_tensor_signature(prepared["global"]),
+            ),
+            (
+                "strategicGlobal",
+                replay_probe_tensor_signature(
+                    prepared["strategicGlobal"]
+                ),
+            ),
+            (
+                "masked",
+                tuple(
+                    (
+                        key,
+                        replay_probe_tensor_signature(table),
+                        replay_probe_tensor_signature(mask),
+                    )
+                    for key, (table, mask) in sorted(
+                        prepared["masked"].items()
+                    )
+                ),
+            ),
+            (
+                "map",
+                replay_probe_tensor_signature(prepared["map"][0]),
+                replay_probe_tensor_signature(prepared["map"][1]),
+            ),
+            (
+                "strategic",
+                tuple(
+                    (
+                        key,
+                        replay_probe_tensor_signature(table),
+                        replay_probe_tensor_signature(mask),
+                    )
+                    for key, (table, mask) in sorted(
+                        prepared["strategic"].items()
+                    )
+                ),
+            ),
+            ("actions", replay_probe_tensor_signature(actions)),
+            ("actionMask", replay_probe_tensor_signature(action_mask)),
+            ("targets", replay_probe_tensor_signature(targets)),
+            ("old", replay_probe_tensor_signature(old)),
+            ("advantages", replay_probe_tensor_signature(advantages)),
+            ("returns", replay_probe_tensor_signature(returns)),
+            (
+                "nonempty",
+                tuple(
+                    (key, bool(value))
+                    for key, value in sorted(
+                        (prepared.get("_nonempty") or {}).items()
+                    )
+                ),
+            ),
+            (
+                "validPrefix",
+                tuple(
+                    (key, int(value))
+                    for key, value in sorted(
+                        (
+                            prepared.get("_validPrefixCount")
+                            or {}
+                        ).items()
+                    )
+                ),
+            ),
+        )
+
     def read_binary(byte_length):
         if byte_length < 0:
             raise ValueError("Packed PPO byteLength must be non-negative")
@@ -682,6 +787,80 @@ def main():
                     "returns",
                     scalar_values[sample_count * 2:],
                 )
+
+                if (
+                    replay_cuda_graph_microprobe
+                    and replay_cuda_graph_probe_result is None
+                ):
+                    probe_signature = replay_probe_signature(
+                        prepared,
+                        actions,
+                        action_mask,
+                        targets,
+                        old,
+                        advantages,
+                        returns,
+                    )
+                    probe_hits = (
+                        replay_cuda_graph_probe_counts.get(
+                            probe_signature,
+                            0,
+                        )
+                        + 1
+                    )
+                    replay_cuda_graph_probe_counts[
+                        probe_signature
+                    ] = probe_hits
+                    if (
+                        probe_hits
+                        >= replay_cuda_graph_probe_min_hits
+                    ):
+                        accumulation = trainer._accumulation
+                        if accumulation is None:
+                            raise RuntimeError(
+                                "Replay CUDA Graph microprobe "
+                                "requires active accumulation"
+                            )
+                        trainer._run_replay_cudagraph_microprobe(
+                            prepared,
+                            actions,
+                            action_mask,
+                            targets,
+                            old,
+                            advantages,
+                            returns,
+                            int(
+                                accumulation[
+                                    "totalSamples"
+                                ]
+                            ),
+                        )
+                        replay_cuda_graph_probe_result = (
+                            trainer.replay_cudagraph_microprobe_stats()
+                            or {
+                                "status": "failed",
+                                "allExact": False,
+                                "error": "microprobe produced no result",
+                            }
+                        )
+                        replay_cuda_graph_probe_result[
+                            "signatureHitCount"
+                        ] = probe_hits
+                        replay_cuda_graph_probe_result[
+                            "minHits"
+                        ] = (
+                            replay_cuda_graph_probe_min_hits
+                        )
+                        sys.stderr.write(
+                            "[PPO replay cuda graph microprobe] "
+                            + json.dumps(
+                                replay_cuda_graph_probe_result,
+                                separators=(",", ":"),
+                            )
+                            + "\n"
+                        )
+                        sys.stderr.flush()
+
                 result = trainer.accumulate_prepared_chunk(
                     prepared,
                     actions,
@@ -1046,6 +1225,33 @@ def main():
                     sys.stderr.write("[PPO profile python] " + json.dumps(
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
+                    sys.stderr.flush()
+                if (
+                    replay_cuda_graph_microprobe
+                    and replay_cuda_graph_probe_result is None
+                ):
+                    max_hits = max(
+                        replay_cuda_graph_probe_counts.values(),
+                        default=0,
+                    )
+                    sys.stderr.write(
+                        "[PPO replay cuda graph microprobe] "
+                        + json.dumps(
+                            {
+                                "status": "not_run",
+                                "allExact": None,
+                                "minHits": (
+                                    replay_cuda_graph_probe_min_hits
+                                ),
+                                "seenSignatures": len(
+                                    replay_cuda_graph_probe_counts
+                                ),
+                                "maxObservedHits": max_hits,
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
                     sys.stderr.flush()
                 graph_stats = trainer.act_cuda_graph_stats()
                 if graph_stats.get("enabled"):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import copy
 import hashlib
 import os
 import tempfile
@@ -9,10 +10,87 @@ import time
 import torch
 from torch.nn import functional as F
 
-from rl.policy_model import TacticalPolicyValueNetwork
+from rl.policy_model import STRATEGIC_TABLES, TacticalPolicyValueNetwork
 
 
 PPO_CHECKPOINT_SCHEMA_VERSION = 1
+
+_REPLAY_GRAPH_MASKED_KEYS = (
+    "teams",
+    "units",
+    "bases",
+    "constructions",
+)
+
+
+class _PreparedReplayGraphModule(torch.nn.Module):
+    def __init__(
+        self,
+        model: TacticalPolicyValueNetwork,
+        nonempty: dict[str, bool] | None,
+        valid_prefix_counts: dict[str, int] | None,
+    ):
+        super().__init__()
+        self.model = model
+        self.nonempty = None if nonempty is None else dict(nonempty)
+        self.valid_prefix_counts = (
+            None
+            if valid_prefix_counts is None
+            else dict(valid_prefix_counts)
+        )
+
+    def forward(
+        self,
+        *args: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        index = 0
+        prepared: dict[str, Any] = {
+            "global": args[index],
+            "strategicGlobal": args[index + 1],
+            "masked": {},
+            "strategic": {},
+        }
+        index += 2
+
+        for key in _REPLAY_GRAPH_MASKED_KEYS:
+            prepared["masked"][key] = (
+                args[index],
+                args[index + 1],
+            )
+            index += 2
+
+        prepared["map"] = (
+            args[index],
+            args[index + 1],
+        )
+        index += 2
+
+        for name in STRATEGIC_TABLES:
+            prepared["strategic"][name] = (
+                args[index],
+                args[index + 1],
+            )
+            index += 2
+
+        action_rows = args[index]
+        action_mask = args[index + 1]
+        index += 2
+        if index != len(args):
+            raise ValueError(
+                "Replay CUDA Graph argument count mismatch"
+            )
+
+        if self.nonempty is not None:
+            prepared["_nonempty"] = self.nonempty
+        if self.valid_prefix_counts is not None:
+            prepared["_validPrefixCount"] = self.valid_prefix_counts
+
+        logits, values, _, _, _ = self.model.forward_prepared_batch(
+            prepared,
+            action_rows,
+            action_mask,
+        )
+        return logits, values
 
 
 class PpoTrainer:
@@ -67,6 +145,25 @@ class PpoTrainer:
         self._act_cuda_graph_captures = 0
         self._act_cuda_graph_replays = 0
         self._act_cuda_graph_fallbacks = 0
+        self._replay_cudagraph_microprobe_enabled = (
+            os.environ.get("PPO_REPLAY_CUDAGRAPH_MICROPROBE") == "1"
+        )
+        if (
+            self._replay_cudagraph_microprobe_enabled
+            and self.device.type != "cuda"
+        ):
+            raise ValueError(
+                "PPO_REPLAY_CUDAGRAPH_MICROPROBE requires CUDA"
+            )
+        self._replay_cudagraph_microprobe_repeats = int(
+            os.environ.get("PPO_REPLAY_CUDAGRAPH_MICROPROBE_REPEATS", "12")
+        )
+        if self._replay_cudagraph_microprobe_repeats <= 0:
+            raise ValueError(
+                "PPO_REPLAY_CUDAGRAPH_MICROPROBE_REPEATS must be positive"
+            )
+        self._replay_cudagraph_microprobe_done = False
+        self._replay_cudagraph_microprobe_result: dict[str, Any] | None = None
 
     def load_initial_model(self, path: str) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -601,6 +698,358 @@ class PpoTrainer:
             "logProbabilities": log_probabilities,
             "values": values_out,
         }
+
+    @staticmethod
+    def _replay_graph_args(
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]:
+        values: list[torch.Tensor] = [
+            prepared["global"],
+            prepared["strategicGlobal"],
+        ]
+        for key in _REPLAY_GRAPH_MASKED_KEYS:
+            table, mask = prepared["masked"][key]
+            values.extend((table, mask))
+
+        map_table, map_mask = prepared["map"]
+        values.extend((map_table, map_mask))
+
+        for name in STRATEGIC_TABLES:
+            table, mask = prepared["strategic"][name]
+            values.extend((table, mask))
+
+        values.extend((actions, action_mask))
+        return tuple(values)
+
+    def _replay_probe_objective(
+        self,
+        logits: torch.Tensor,
+        values: torch.Tensor,
+        selected: torch.Tensor,
+        old_log_probabilities: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+        total_samples: int,
+    ) -> dict[str, torch.Tensor]:
+        distribution = torch.distributions.Categorical(logits=logits)
+        log_probabilities = distribution.log_prob(selected)
+        entropies = distribution.entropy()
+        ratio = torch.exp(
+            log_probabilities - old_log_probabilities
+        )
+        clip_epsilon = float(
+            self.hyperparameters["clipEpsilon"]
+        )
+        clipped_objective = torch.minimum(
+            ratio * advantages,
+            torch.clamp(
+                ratio,
+                1 - clip_epsilon,
+                1 + clip_epsilon,
+            ) * advantages,
+        )
+        squared_errors = F.mse_loss(
+            values,
+            returns,
+            reduction="none",
+        )
+        loss = (
+            -clipped_objective.sum()
+            + float(self.hyperparameters["valueCoefficient"])
+            * squared_errors.sum()
+            - float(self.hyperparameters["entropyCoefficient"])
+            * entropies.sum()
+        ) / total_samples
+        return {
+            "logProbabilities": log_probabilities,
+            "entropies": entropies,
+            "clippedObjective": clipped_objective,
+            "squaredErrors": squared_errors,
+            "loss": loss,
+        }
+
+    @staticmethod
+    def _exact_tensor(
+        left: torch.Tensor,
+        right: torch.Tensor,
+    ) -> bool:
+        return (
+            left.dtype == right.dtype
+            and tuple(left.shape) == tuple(right.shape)
+            and torch.equal(left, right)
+        )
+
+    @staticmethod
+    def _module_gradient_hash(
+        module: torch.nn.Module,
+    ) -> str:
+        digest = hashlib.sha256()
+        for name, parameter in sorted(module.named_parameters()):
+            digest.update(name.encode())
+            if parameter.grad is None:
+                digest.update(b"<none>")
+            else:
+                digest.update(
+                    parameter.grad.detach()
+                    .cpu()
+                    .contiguous()
+                    .numpy()
+                    .tobytes()
+                )
+        return digest.hexdigest()
+
+    def _run_replay_cudagraph_microprobe(
+        self,
+        prepared: dict[str, Any],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        selected: torch.Tensor,
+        old_log_probabilities: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+        total_samples: int,
+    ) -> None:
+        if (
+            not self._replay_cudagraph_microprobe_enabled
+            or self._replay_cudagraph_microprobe_done
+        ):
+            return
+
+        self._replay_cudagraph_microprobe_done = True
+        cpu_rng = torch.get_rng_state().clone()
+        cuda_rng = [
+            state.clone()
+            for state in torch.cuda.get_rng_state_all()
+        ]
+        try:
+            eager_model = copy.deepcopy(self.model)
+            graph_model = copy.deepcopy(self.model)
+            eager_model.train(self.model.training)
+            graph_model.train(self.model.training)
+
+            args = self._replay_graph_args(
+                prepared,
+                actions,
+                action_mask,
+            )
+            wrapper = _PreparedReplayGraphModule(
+                graph_model,
+                prepared.get("_nonempty"),
+                prepared.get("_validPrefixCount"),
+            )
+            capture_started = time.perf_counter()
+            graphed = torch.cuda.make_graphed_callables(
+                wrapper,
+                args,
+                num_warmup_iters=3,
+                allow_unused_input=True,
+            )
+            torch.cuda.synchronize(self.device)
+            capture_ms = (
+                time.perf_counter() - capture_started
+            ) * 1000.0
+
+            eager_model.zero_grad(set_to_none=True)
+            eager_logits, eager_values, _, _, _ = (
+                eager_model.forward_prepared_batch(
+                    prepared,
+                    actions,
+                    action_mask,
+                )
+            )
+            eager_objective = self._replay_probe_objective(
+                eager_logits,
+                eager_values,
+                selected,
+                old_log_probabilities,
+                advantages,
+                returns,
+                total_samples,
+            )
+            eager_objective["loss"].backward()
+
+            graph_model.zero_grad(set_to_none=True)
+            graph_logits, graph_values = graphed(*args)
+            graph_objective = self._replay_probe_objective(
+                graph_logits,
+                graph_values,
+                selected,
+                old_log_probabilities,
+                advantages,
+                returns,
+                total_samples,
+            )
+            graph_objective["loss"].backward()
+
+            checks = {
+                "logitsExact": self._exact_tensor(
+                    eager_logits.detach(),
+                    graph_logits.detach(),
+                ),
+                "valuesExact": self._exact_tensor(
+                    eager_values.detach(),
+                    graph_values.detach(),
+                ),
+            }
+            for key in (
+                "logProbabilities",
+                "entropies",
+                "clippedObjective",
+                "squaredErrors",
+                "loss",
+            ):
+                checks[f"{key}Exact"] = self._exact_tensor(
+                    eager_objective[key].detach(),
+                    graph_objective[key].detach(),
+                )
+
+            eager_parameters = dict(
+                eager_model.named_parameters()
+            )
+            graph_parameters = dict(
+                graph_model.named_parameters()
+            )
+            grad_none_mismatch = None
+            gradient_value_mismatch = None
+            for name in sorted(eager_parameters):
+                eager_grad = eager_parameters[name].grad
+                graph_grad = graph_parameters[name].grad
+                if (eager_grad is None) != (graph_grad is None):
+                    grad_none_mismatch = name
+                    break
+                if eager_grad is None:
+                    continue
+                if not self._exact_tensor(
+                    eager_grad,
+                    graph_grad,
+                ):
+                    gradient_value_mismatch = name
+                    break
+            checks["gradNoneExact"] = grad_none_mismatch is None
+            checks["gradientValuesExact"] = (
+                gradient_value_mismatch is None
+            )
+            checks["gradientsExact"] = (
+                checks["gradNoneExact"]
+                and checks["gradientValuesExact"]
+            )
+            gradient_mismatch = (
+                grad_none_mismatch
+                or gradient_value_mismatch
+            )
+            eager_gradient_hash = self._module_gradient_hash(
+                eager_model
+            )
+            graph_gradient_hash = self._module_gradient_hash(
+                graph_model
+            )
+            checks["gradientHashExact"] = (
+                eager_gradient_hash == graph_gradient_hash
+            )
+
+            def eager_iteration() -> None:
+                eager_model.zero_grad(set_to_none=True)
+                logits, values, _, _, _ = (
+                    eager_model.forward_prepared_batch(
+                        prepared,
+                        actions,
+                        action_mask,
+                    )
+                )
+                objective = self._replay_probe_objective(
+                    logits,
+                    values,
+                    selected,
+                    old_log_probabilities,
+                    advantages,
+                    returns,
+                    total_samples,
+                )
+                objective["loss"].backward()
+
+            def graphed_iteration() -> None:
+                graph_model.zero_grad(set_to_none=True)
+                logits, values = graphed(*args)
+                objective = self._replay_probe_objective(
+                    logits,
+                    values,
+                    selected,
+                    old_log_probabilities,
+                    advantages,
+                    returns,
+                    total_samples,
+                )
+                objective["loss"].backward()
+
+            for _ in range(2):
+                eager_iteration()
+                graphed_iteration()
+            torch.cuda.synchronize(self.device)
+
+            repeats = self._replay_cudagraph_microprobe_repeats
+            eager_started = time.perf_counter()
+            for _ in range(repeats):
+                eager_iteration()
+            torch.cuda.synchronize(self.device)
+            eager_ms = (
+                time.perf_counter() - eager_started
+            ) * 1000.0
+
+            graph_started = time.perf_counter()
+            for _ in range(repeats):
+                graphed_iteration()
+            torch.cuda.synchronize(self.device)
+            graphed_ms = (
+                time.perf_counter() - graph_started
+            ) * 1000.0
+
+            all_exact = all(checks.values())
+            self._replay_cudagraph_microprobe_result = {
+                "status": "passed" if all_exact else "failed",
+                "allExact": all_exact,
+                "checks": checks,
+                "firstGradientMismatch": gradient_mismatch,
+                "eagerGradientHash": eager_gradient_hash,
+                "graphGradientHash": graph_gradient_hash,
+                "batchSize": int(actions.shape[0]),
+                "maxActions": int(actions.shape[1]),
+                "actionWidth": int(actions.shape[2]),
+                "captureMs": round(capture_ms, 3),
+                "repeats": repeats,
+                "eagerTotalMs": round(eager_ms, 3),
+                "graphedTotalMs": round(graphed_ms, 3),
+                "eagerMsPerIteration": round(
+                    eager_ms / repeats,
+                    3,
+                ),
+                "graphedMsPerIteration": round(
+                    graphed_ms / repeats,
+                    3,
+                ),
+                "speedup": (
+                    round(eager_ms / graphed_ms, 4)
+                    if graphed_ms > 0
+                    else None
+                ),
+            }
+        except Exception as error:
+            self._replay_cudagraph_microprobe_result = {
+                "status": "failed",
+                "allExact": False,
+                "error": (
+                    f"{type(error).__name__}: {error}"
+                ),
+            }
+        finally:
+            torch.set_rng_state(cpu_rng)
+            torch.cuda.set_rng_state_all(cuda_rng)
+
+    def replay_cudagraph_microprobe_stats(
+        self,
+    ) -> dict[str, Any] | None:
+        return self._replay_cudagraph_microprobe_result
 
     def begin_accumulated_update(self, total_samples: int) -> dict[str, int]:
         if self._accumulation is not None:
