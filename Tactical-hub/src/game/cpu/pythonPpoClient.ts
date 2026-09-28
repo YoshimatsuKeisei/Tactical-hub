@@ -2,7 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { createInterface, type Interface } from "node:readline";
-import type { EncodedLegalActionsV2 } from "./rlActionEncoder";
+import type {
+  EncodedLegalActionsSparseV2,
+  EncodedLegalActionsV2,
+} from "./rlActionEncoder";
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
 import type { EncodedObservation } from "./rlObservationEncoder";
 import type { RlSelectedTorchDevice, RlTorchDevice } from "./rlTorchDevice";
@@ -163,7 +166,10 @@ export class PythonPpoClient {
   }
 
   async actBatch(
-    samples: Array<{ observation: EncodedObservation; legalActions: EncodedLegalActionsV2 }>,
+    samples: Array<{
+      observation: EncodedObservation;
+      legalActions: EncodedLegalActionsV2 | EncodedLegalActionsSparseV2;
+    }>,
     options: { retentionIds?: string[]; retentionBatchId?: string } = {},
   ) {
     if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
@@ -196,6 +202,20 @@ export class PythonPpoClient {
         "Sparse Action transport does not support per-sample retentionIds",
       );
     }
+    const directSparseCount = samples.filter(
+      ({ legalActions }) => "sparseActions" in legalActions,
+    ).length;
+    if (directSparseCount !== 0 && directSparseCount !== samples.length) {
+      throw new Error(
+        "PPO action batch cannot mix dense and direct sparse legal actions",
+      );
+    }
+    if (directSparseCount && !sparseActionTransport) {
+      throw new Error(
+        "Direct sparse legal actions require sparse Action transport",
+      );
+    }
+
     const requestId = this.nextRequestId++;
     const responsePromise = this.wait();
     this.sendPreparedPacked(
@@ -206,10 +226,17 @@ export class PythonPpoClient {
         ...(retentionBatchId ? { retentionBatchId } : {}),
       },
       packPpoActBatchInput(
-        samples.map(({ observation, legalActions }) => ({
-          observation,
-          actions: legalActions.actions,
-        })),
+        samples.map(({ observation, legalActions }) =>
+          "sparseActions" in legalActions
+            ? {
+              observation,
+              sparseActions: legalActions.sparseActions,
+            }
+            : {
+              observation,
+              actions: legalActions.actions,
+            }
+        ),
         this.featureSpec,
         {
           compactMaskedPrefixes:

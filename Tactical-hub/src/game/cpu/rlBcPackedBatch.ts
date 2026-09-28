@@ -1,4 +1,5 @@
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
+import type { SparseActionRow } from "./rlActionEncoder";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
 
 export type PackedTensorDescriptor = {
@@ -58,6 +59,7 @@ export type PackedBcBatch = {
 export type PackBcEncodedSamplesOptions = {
   compactMaskedPrefixes?: boolean;
   sparseActions?: boolean;
+  directSparseActions?: SparseActionRow[][];
 };
 
 function validMaskPrefixLength(
@@ -175,34 +177,103 @@ export function packBcEncodedSamples(
     floats.push(tensor);
     masks.push({ name: `strategicMask.${name}`, dtype: "uint8", shape: [samples.length, tensor.shape[1]], bytes: Buffer.from(presence.buffer) });
   }
-  const actionRows = samples.map((sample) => sample.actions);
-  if (actionRows.some((batch) => batch.some((row) => row.length !== featureSpec.actionFeatureWidth))) {
+  const directSparseActions = options.directSparseActions;
+  if (directSparseActions && !options.sparseActions) {
+    throw new Error("direct sparse actions require sparseActions transport");
+  }
+  if (directSparseActions && directSparseActions.length !== samples.length) {
+    throw new Error("direct sparse action batch size does not match samples");
+  }
+
+  const actionRows = directSparseActions
+    ? undefined
+    : samples.map((sample) => sample.actions);
+  if (
+    actionRows
+    && actionRows.some(
+      (batch) => batch.some(
+        (row) => row.length !== featureSpec.actionFeatureWidth,
+      ),
+    )
+  ) {
     throw new Error("action feature width does not match Feature Spec");
   }
-  const maxActionRows = Math.max(0, ...actionRows.map((rows) => rows.length));
+  if (directSparseActions) {
+    for (const rows of directSparseActions) {
+      for (const row of rows) {
+        if (row.width !== featureSpec.actionFeatureWidth) {
+          throw new Error(
+            "direct sparse action feature width does not match Feature Spec",
+          );
+        }
+        if (row.indices.length !== row.values.length) {
+          throw new Error("direct sparse action index/value count mismatch");
+        }
+        let previous = -1;
+        for (const index of row.indices) {
+          if (
+            !Number.isInteger(index)
+            || index < 0
+            || index >= featureSpec.actionFeatureWidth
+            || index <= previous
+          ) {
+            throw new Error(
+              "direct sparse action indices must be strictly increasing and in range",
+            );
+          }
+          previous = index;
+        }
+      }
+    }
+  }
+
+  const actionRowCounts = directSparseActions
+    ? directSparseActions.map((rows) => rows.length)
+    : actionRows!.map((rows) => rows.length);
+  const maxActionRows = Math.max(0, ...actionRowCounts);
   const actionPresence = new Uint8Array(samples.length * maxActionRows);
-  actionRows.forEach((rows, batch) => rows.forEach((_row, rowIndex) => {
-    actionPresence[batch * maxActionRows + rowIndex] = 1;
-  }));
+  actionRowCounts.forEach((count, batch) => {
+    for (let rowIndex = 0; rowIndex < count; rowIndex += 1) {
+      actionPresence[batch * maxActionRows + rowIndex] = 1;
+    }
+  });
+
   const targets = Int32Array.from(samples.map((sample) => sample.targetIndex));
   const integers: PendingTensor[] = [{ name: "targets", dtype: "int32", shape: [samples.length], bytes: Buffer.from(targets.buffer) }];
   let actionSparseShape: [number, number, number] | undefined;
   if (options.sparseActions) {
     const sparseIndices: number[] = [];
     const sparseValues: number[] = [];
-    actionRows.forEach((rows, batch) => rows.forEach((row, rowIndex) => row.forEach((item, featureIndex) => {
-      if (item !== 0) {
-        sparseIndices.push((batch * maxActionRows + rowIndex) * featureSpec.actionFeatureWidth + featureIndex);
-        sparseValues.push(item);
-      }
-    })));
+    if (directSparseActions) {
+      directSparseActions.forEach((rows, batch) => rows.forEach((row, rowIndex) => {
+        const base = (
+          (batch * maxActionRows + rowIndex)
+          * featureSpec.actionFeatureWidth
+        );
+        row.indices.forEach((featureIndex, offset) => {
+          sparseIndices.push(base + featureIndex);
+          sparseValues.push(row.values[offset]);
+        });
+      }));
+    } else {
+      actionRows!.forEach((rows, batch) => rows.forEach((row, rowIndex) => row.forEach((item, featureIndex) => {
+        if (item !== 0) {
+          sparseIndices.push((batch * maxActionRows + rowIndex) * featureSpec.actionFeatureWidth + featureIndex);
+          sparseValues.push(item);
+        }
+      })));
+    }
     const indices = Int32Array.from(sparseIndices);
     const values = Float32Array.from(sparseValues);
     integers.push({ name: "actionSparseIndices", dtype: "int32", shape: [indices.length], bytes: Buffer.from(indices.buffer) });
     floats.push({ name: "actionSparseValues", dtype: "float32", shape: [values.length], bytes: Buffer.from(values.buffer) });
     actionSparseShape = [samples.length, maxActionRows, featureSpec.actionFeatureWidth];
   } else {
-    const [actions] = paddedFloatRows("actions", actionRows, featureSpec.actionFeatureWidth);
+    const [actions] = paddedFloatRows(
+      "actions",
+      actionRows!,
+      featureSpec.actionFeatureWidth,
+    );
     floats.push(actions);
   }
   masks.push({ name: "actionMask", dtype: "uint8", shape: [samples.length, maxActionRows], bytes: Buffer.from(actionPresence.buffer) });

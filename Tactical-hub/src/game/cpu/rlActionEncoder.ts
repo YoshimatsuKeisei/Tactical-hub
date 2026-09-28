@@ -35,6 +35,18 @@ export type EncodedLegalActions = {
 };
 export type EncodedLegalActionsV2 = Omit<EncodedLegalActions, "schemaVersion"> & { schemaVersion: 2 };
 
+export type SparseActionRow = {
+  indices: number[];
+  values: number[];
+  width: number;
+};
+
+export type EncodedLegalActionsSparseV2 = {
+  schemaVersion: 2;
+  sparseActions: SparseActionRow[];
+  actionKeys: string[];
+};
+
 export const RL_ACTION_SCHEMA_BLOCKS = [
   "actionType",
   "isPass",
@@ -62,6 +74,55 @@ export const RL_ACTION_SCHEMA_BLOCKS_V2 = [
 const oneHot = (value: string | undefined, values: readonly string[]) => values.map((entry) => Number(value === entry));
 const normalized = (value: number, size: number) => size <= 1 ? 0 : Math.max(0, Math.min(1, value / (size - 1)));
 const coordKey = (x: number, y: number) => `${x},${y}`;
+
+class SparseActionWriter {
+  readonly indices: number[] = [];
+  readonly values: number[] = [];
+  cursor = 0;
+
+  emit(value: number) {
+    if (value !== 0) {
+      this.indices.push(this.cursor);
+      this.values.push(value);
+    }
+    this.cursor += 1;
+  }
+
+  skip(width: number) {
+    this.cursor += width;
+  }
+
+  oneHot(value: string | undefined, values: readonly string[]) {
+    for (const entry of values) this.emit(Number(value === entry));
+  }
+
+  oneAt(index: number | undefined, width: number) {
+    if (index !== undefined && index >= 0 && index < width) {
+      this.indices.push(this.cursor + index);
+      this.values.push(1);
+    }
+    this.cursor += width;
+  }
+
+  binaryMask(indices: Iterable<number>, width: number) {
+    const unique = [...new Set(indices)]
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < width)
+      .sort((left, right) => left - right);
+    for (const index of unique) {
+      this.indices.push(this.cursor + index);
+      this.values.push(1);
+    }
+    this.cursor += width;
+  }
+
+  finish(): SparseActionRow {
+    return {
+      indices: this.indices,
+      values: this.values,
+      width: this.cursor,
+    };
+  }
+}
 
 type EncodingContext = {
   observation: RlObservation;
@@ -300,6 +361,305 @@ function tileSetMask(context: EncodingContext, tileIds: string[] | undefined) {
   return mask;
 }
 
+function assertSparseWidth(
+  writer: SparseActionWriter,
+  start: number,
+  expected: number,
+  label: string,
+) {
+  const actual = writer.cursor - start;
+  if (actual !== expected) {
+    throw new Error(`${label} sparse width mismatch: ${actual} != ${expected}`);
+  }
+}
+
+function writeTeamRefSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  teamId: string | undefined,
+) {
+  writer.oneAt(
+    context.teamIndex.get(teamId ?? "") ?? context.teams.length,
+    context.teams.length + 1,
+  );
+}
+
+function writeUnitRefSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  unitId: string | undefined,
+) {
+  const start = writer.cursor;
+  const unit = unitId
+    ? context.observation.units.find(
+      (entry) => entry.id === unitId && entry.position.kind !== "removed",
+    )
+    : undefined;
+  if (!unit) {
+    writer.skip(context.unitSemanticWidth);
+    return;
+  }
+
+  writer.emit(1);
+  writer.oneAt(context.unitIndex.get(unit.id), context.maxUnits);
+  writeTeamRefSparse(writer, context, unit.ownerTeamId);
+  writer.oneHot(unit.type, RL_UNIT_TYPES);
+  writer.emit(unit.hp);
+  writer.oneHot(unit.position.kind, RL_POSITION_KINDS);
+
+  const coord = positionCoord(context.observation, unit.position);
+  writer.emit(Number(Boolean(coord)));
+  writer.emit(coord ? normalized(coord.x, context.observation.map.width) : 0);
+  writer.emit(coord ? normalized(coord.y, context.observation.map.height) : 0);
+
+  const position = unit.position;
+  const baseSlot = position.kind === "base"
+    ? context.bases
+      .find((base) => base.id === position.baseId)
+      ?.slots.find((entry) => entry.id === position.slotId)
+    : undefined;
+  writer.emit(baseSlot ? baseSlot.localRow : 0);
+  writer.emit(baseSlot ? baseSlot.localCol : 0);
+  writer.emit(Number(unit.statuses.some((status) => status.kind === "retreating")));
+  writer.emit(Number(unit.statuses.some((status) => status.kind === "encouraged")));
+  writer.emit(Number(unit.statuses.some((status) => status.kind === "cannot_attack")));
+  writer.oneHot(unit.role, RL_STRATEGIST_ROLES);
+
+  assertSparseWidth(writer, start, context.unitSemanticWidth, "unitRef");
+}
+
+function writeBaseRefSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  baseId: string | undefined,
+) {
+  const start = writer.cursor;
+  const base = baseId
+    ? context.bases.find((entry) => entry.id === baseId)
+    : undefined;
+  if (!base) {
+    writer.skip(context.baseSemanticWidth);
+    return;
+  }
+
+  writer.emit(1);
+  writer.oneAt(context.baseIndex.get(base.id), context.bases.length);
+  writer.emit(Number(base.type === "home"));
+  writer.emit(Number(base.type === "neutral"));
+  writeTeamRefSparse(writer, context, base.ownerTeamId);
+
+  const centroid = base.coords.length
+    ? {
+      x: base.coords.reduce((sum, coord) => sum + coord.x, 0) / base.coords.length,
+      y: base.coords.reduce((sum, coord) => sum + coord.y, 0) / base.coords.length,
+    }
+    : undefined;
+  writer.emit(Number(Boolean(centroid)));
+  writer.emit(centroid ? normalized(centroid.x, context.observation.map.width) : 0);
+  writer.emit(centroid ? normalized(centroid.y, context.observation.map.height) : 0);
+  writer.emit(base.slots.length);
+  writer.emit(base.slots.filter((slot) => Boolean(slot.unitId)).length);
+  writer.emit(base.slots.filter((slot) => slot.kind === "front" && Boolean(slot.unitId)).length);
+  writer.emit(base.slots.filter((slot) => slot.kind === "protected" && Boolean(slot.unitId)).length);
+  writeTeamRefSparse(writer, context, base.occupationPriorityTeamId);
+
+  assertSparseWidth(writer, start, context.baseSemanticWidth, "baseRef");
+}
+
+function writeConstructionRefSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  constructionId: string | undefined,
+) {
+  const start = writer.cursor;
+  const construction = constructionId
+    ? context.constructions.find((entry) => entry.id === constructionId)
+    : undefined;
+  if (!construction) {
+    writer.skip(context.constructionSemanticWidth);
+    return;
+  }
+
+  writer.emit(1);
+  writer.oneAt(
+    context.constructionIndex.get(construction.id),
+    context.observation.map.tiles.length,
+  );
+  writer.emit(Number(construction.kind === "bridge"));
+  writer.emit(Number(construction.kind === "obstacle"));
+  writer.emit(Number(construction.active));
+  writeTeamRefSparse(writer, context, construction.ownerTeamId);
+  writer.emit(construction.tiles.length);
+
+  const centroid = construction.tiles.length
+    ? {
+      x: construction.tiles.reduce((sum, tile) => sum + tile.x, 0) / construction.tiles.length,
+      y: construction.tiles.reduce((sum, tile) => sum + tile.y, 0) / construction.tiles.length,
+    }
+    : undefined;
+  writer.emit(Number(Boolean(centroid)));
+  writer.emit(centroid ? normalized(centroid.x, context.observation.map.width) : 0);
+  writer.emit(centroid ? normalized(centroid.y, context.observation.map.height) : 0);
+
+  assertSparseWidth(
+    writer,
+    start,
+    context.constructionSemanticWidth,
+    "constructionRef",
+  );
+}
+
+function writeTileRefSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  tileId: string | undefined,
+) {
+  const start = writer.cursor;
+  const destination = parseDestination(context, tileId);
+  if (!destination) {
+    writer.skip(context.tileSemanticWidth);
+    return;
+  }
+
+  const coord = "x" in destination
+    && typeof destination.x === "number"
+    && typeof destination.y === "number"
+    ? { x: destination.x, y: destination.y }
+    : undefined;
+  const tile = coord ? context.tiles.get(coordKey(coord.x, coord.y)) : undefined;
+  const baseId = destination.kind === "base" ? destination.baseId : tile?.baseId;
+  const base = baseId
+    ? context.bases.find((entry) => entry.id === baseId)
+    : undefined;
+  const construction = destination.kind === "bridge"
+    ? destination.construction
+    : coord
+      ? context.constructions.find(
+        (entry) => entry.active
+          && entry.tiles.some((cell) => cell.x === coord.x && cell.y === coord.y),
+      )
+      : undefined;
+
+  writer.emit(1);
+  writer.oneHot(destination.kind, RL_POSITION_KINDS);
+  writer.emit(Number(Boolean(coord)));
+  writer.emit(coord ? normalized(coord.x, context.observation.map.width) : 0);
+  writer.emit(coord ? normalized(coord.y, context.observation.map.height) : 0);
+  writer.oneHot(tile?.terrain, RL_TERRAIN_TYPES);
+  writer.emit(Number(Boolean(tile?.roadSectionId)));
+  writer.emit(Number(Boolean(base)));
+  writeTeamRefSparse(writer, context, base?.ownerTeamId);
+  writer.emit(Number(construction?.kind === "bridge"));
+  writer.emit(Number(construction?.kind === "obstacle"));
+  writeTeamRefSparse(writer, context, construction?.ownerTeamId);
+
+  assertSparseWidth(writer, start, context.tileSemanticWidth, "tileRef");
+}
+
+function writeRewardRefSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  requestId: string | undefined,
+) {
+  const start = writer.cursor;
+  const request = requestId
+    ? context.observation.rewardPlacementRequests.find(
+      (entry) => entry.id === requestId,
+    )
+    : undefined;
+  if (!request) {
+    writer.skip(context.rewardSemanticWidth);
+    return;
+  }
+
+  writer.emit(1);
+  writer.oneHot(request.rewardType, RL_REWARD_TYPES);
+  writeTeamRefSparse(writer, context, request.teamId);
+  writeBaseRefSparse(writer, context, request.sourceBaseId);
+  writeBaseRefSparse(writer, context, request.fixedBaseId);
+  writeBaseRefSparse(
+    writer,
+    context,
+    request.eligibleBaseIds.length === 1
+      ? request.eligibleBaseIds[0]
+      : undefined,
+  );
+  writeUnitRefSparse(writer, context, request.sourceKingUnitId);
+  writer.binaryMask(
+    context.bases.flatMap((base, index) =>
+      request.eligibleBaseIds.includes(base.id) ? [index] : []
+    ),
+    context.bases.length,
+  );
+  writer.emit(Number(request.destinationKind === "fixed"));
+  writer.emit(Number(request.destinationKind === "selectable"));
+
+  assertSparseWidth(writer, start, context.rewardSemanticWidth, "rewardRef");
+}
+
+function writeTileSetMaskSparse(
+  writer: SparseActionWriter,
+  context: EncodingContext,
+  tileIds: string[] | undefined,
+) {
+  const width = context.observation.map.width * context.observation.map.height;
+  const indices: number[] = [];
+  for (const tileId of tileIds ?? []) {
+    const match = /^(-?\d+),(-?\d+)$/.exec(tileId);
+    if (!match) continue;
+    const x = Number(match[1]);
+    const y = Number(match[2]);
+    if (
+      x >= 0
+      && x < context.observation.map.width
+      && y >= 0
+      && y < context.observation.map.height
+    ) {
+      indices.push(y * context.observation.map.width + x);
+    }
+  }
+  writer.binaryMask(indices, width);
+}
+
+function encodeSparseAction(
+  context: EncodingContext,
+  action: RlLegalAction,
+  schemaVersion: 1 | 2,
+): SparseActionRow {
+  const writer = new SparseActionWriter();
+  const base = action.baseId
+    ? context.bases.find((entry) => entry.id === action.baseId)
+    : undefined;
+  const slot = base?.slots.find((entry) => entry.id === action.slotId);
+
+  writer.oneHot(
+    action.actionType,
+    schemaVersion === 1 ? RL_ACTION_TYPES : RL_ACTION_TYPES_V2,
+  );
+  writer.emit(Number(action.isPass));
+  writeTeamRefSparse(writer, context, action.actorTeamId);
+  writeUnitRefSparse(writer, context, action.unitId);
+  writeUnitRefSparse(writer, context, action.targetId);
+  if (schemaVersion === 2) {
+    writeUnitRefSparse(writer, context, action.partnerUnitId);
+  }
+  writeTileRefSparse(writer, context, action.tileId);
+  writeBaseRefSparse(writer, context, action.baseId);
+  writer.emit(Number(Boolean(slot)));
+  writer.emit(Number(slot?.kind === "front"));
+  writer.emit(Number(slot?.kind === "protected"));
+  writeUnitRefSparse(writer, context, slot?.unitId);
+  writer.oneHot(action.unitType, RL_UNIT_TYPES);
+  writer.oneHot(action.strategistRole, RL_STRATEGIST_ROLES);
+  writer.oneHot(action.strategistActionKind, RL_STRATEGIST_ACTIONS);
+  writeRewardRefSparse(writer, context, action.requestId);
+  writeConstructionRefSparse(writer, context, action.constructionId);
+  writer.emit(action.tileIds?.length ?? 0);
+  writeTileSetMaskSparse(writer, context, action.tileIds);
+
+  return writer.finish();
+}
+
 function encodeAction(context: EncodingContext, action: RlLegalAction, schemaVersion: 1 | 2) {
   const base = action.baseId ? context.bases.find((entry) => entry.id === action.baseId) : undefined;
   const slot = base?.slots.find((entry) => entry.id === action.slotId);
@@ -338,6 +698,20 @@ export function encodeRlLegalActionsV2(observation: RlObservation, legalActions:
   return {
     schemaVersion: 2,
     actions: legalActions.map((action) => encodeAction(context, action, 2)),
+    actionKeys: legalActions.map((action) => action.actionKey),
+  };
+}
+
+export function encodeRlLegalActionsSparseV2(
+  observation: RlObservation,
+  legalActions: readonly RlLegalAction[],
+): EncodedLegalActionsSparseV2 {
+  const context = createContext(observation);
+  return {
+    schemaVersion: 2,
+    sparseActions: legalActions.map((action) =>
+      encodeSparseAction(context, action, 2)
+    ),
     actionKeys: legalActions.map((action) => action.actionKey),
   };
 }

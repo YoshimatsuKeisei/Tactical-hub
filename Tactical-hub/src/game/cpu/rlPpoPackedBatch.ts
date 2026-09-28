@@ -1,3 +1,4 @@
+import type { SparseActionRow } from "./rlActionEncoder";
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
 import {
   packBcEncodedSamples,
@@ -88,14 +89,33 @@ export function packPpoActInput(
 }
 
 export function packPpoActBatchInput(
-  samples: Array<{ observation: EncodedObservation; actions: number[][] }>,
+  samples: Array<
+    | { observation: EncodedObservation; actions: number[][] }
+    | { observation: EncodedObservation; sparseActions: SparseActionRow[] }
+  >,
   featureSpec: RlFeatureSpecV2,
   options: PackBcEncodedSamplesOptions = {},
 ) {
   if (!samples.length) throw new Error("Cannot pack an empty PPO action batch");
+  const sparseSamples = samples.filter(
+    (sample): sample is { observation: EncodedObservation; sparseActions: SparseActionRow[] } =>
+      "sparseActions" in sample,
+  );
+  if (sparseSamples.length !== 0 && sparseSamples.length !== samples.length) {
+    throw new Error("PPO action batch cannot mix dense and direct sparse actions");
+  }
   return packBcEncodedSamples(
-    samples.map((sample) => ({ ...sample, targetIndex: 0 })),
+    samples.map((sample) => ({
+      observation: sample.observation,
+      actions: "actions" in sample ? sample.actions : [],
+      targetIndex: 0,
+    })),
     featureSpec,
-    options,
+    {
+      ...options,
+      ...(sparseSamples.length
+        ? { directSparseActions: sparseSamples.map((sample) => sample.sparseActions) }
+        : {}),
+    },
   );
 }

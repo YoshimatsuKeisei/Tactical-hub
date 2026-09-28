@@ -1,5 +1,10 @@
 import { performance } from "node:perf_hooks";
-import { encodeRlLegalActionsV2 } from "./rlActionEncoder";
+import {
+  encodeRlLegalActionsSparseV2,
+  encodeRlLegalActionsV2,
+  type EncodedLegalActionsSparseV2,
+  type EncodedLegalActionsV2,
+} from "./rlActionEncoder";
 import { RlEnvironmentV2, type RlResult } from "./rlEnvironment";
 import {
   adjudicatePpoTimeLimit,
@@ -75,7 +80,12 @@ export type PpoFastBatchInput = {
   replayChunkSize?: number;
   memoryLogInterval?: number;
   validationWorkerCount?: number;
-  modeLabel?: "fast_batch_v2" | "fast_batch_v5_compact_rows" | "fast_batch_v6_sparse_action_retention";
+  directSparseActions?: boolean;
+  modeLabel?:
+    | "fast_batch_v2"
+    | "fast_batch_v5_compact_rows"
+    | "fast_batch_v6_sparse_action_retention"
+    | "fast_batch_v6_direct_sparse_actions";
   client?: PythonPpoClient;
 };
 
@@ -292,7 +302,7 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
         actor: string;
         observation: ReturnType<FastBatchSlot["environment"]["getObservationForEncoding"]>;
         encodedObservation: ReturnType<typeof encodeRlObservationV2>;
-        encodedActions: ReturnType<typeof encodeRlLegalActionsV2>;
+        encodedActions: EncodedLegalActionsV2 | EncodedLegalActionsSparseV2;
         progressHash: string;
       }> = [];
 
@@ -344,7 +354,9 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
         );
         const encodedActions = profiler.measure(
           "fast_rollout_encode_actions",
-          () => encodeRlLegalActionsV2(observation, legal),
+          () => input.directSparseActions
+            ? encodeRlLegalActionsSparseV2(observation, legal)
+            : encodeRlLegalActionsV2(observation, legal),
         );
         mergeLegalActionCount += legal.filter(
           (action) => action.actionType === "merge_infantry",
