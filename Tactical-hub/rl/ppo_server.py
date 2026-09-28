@@ -532,7 +532,7 @@ def main():
                             views,
                             trainer.device,
                             workspace=replay_h2d_workspace,
-                            include_nonempty_metadata=True,
+                            include_nonempty_metadata=False,
                         )
                     )
                 else:
