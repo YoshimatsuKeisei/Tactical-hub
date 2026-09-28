@@ -492,6 +492,7 @@ def prepare_packed_tensors_grouped_h2d(
     workspace: PackedH2dWorkspace | None = None,
     include_nonempty_metadata: bool = False,
     include_valid_prefix_metadata: bool = False,
+    include_compact_transfer_metadata: bool = False,
     validate_action_mask_cpu: bool = False,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
@@ -615,6 +616,12 @@ def prepare_packed_tensors_grouped_h2d(
             for name in strategic_names
         },
     }
+    if include_compact_transfer_metadata and header.get("rowCompaction"):
+        prepared["_compactTransferredRows"] = {
+            key: int(prepared["masked"][key][0].shape[1])
+            for key in ("units", "bases", "constructions")
+            if key in header["rowCompaction"]
+        }
     _apply_logical_row_counts(
         prepared,
         header.get("rowCompaction"),

@@ -37,6 +37,9 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    use_inference_prefix_buffer = (
+        os.environ.get("PPO_INFERENCE_PREFIX_BUFFER") == "1"
+    )
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -851,6 +854,7 @@ def main():
                         workspace=packed_h2d_workspace,
                         include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
+                        include_compact_transfer_metadata=use_inference_prefix_buffer,
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
                     )
                 else:
