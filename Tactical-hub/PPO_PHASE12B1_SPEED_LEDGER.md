@@ -1235,3 +1235,20 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Cache lifetime must remain the existing RoadAttackTopologyContext lifetime; never share across states.
 - Run local battle/topology tests, then 1k paired exactness gate; 4k only if exact and materially faster.
 - 50k remains NOT RUN.
+
+
+## V6-Z lazy attack-path-neighbor memoization — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v6z-attack-neighbor-cache
+- Implementation commit: 40bc790d9c83fda34ef455b3b16b7cacd2f125ec
+- Baseline: V6-X bc6de8002a7137d30eaf58451d1846825862ac21
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Local TypeScript static check: PASS.
+- Related battle/heuristic/bridge tests: 47/47 PASS.
+- Change: RoadAttackTopologyContext lazily memoizes the exact ordered attackPathNeighbors result by attackPathKey(position).
+- No whole-graph precomputation; context-free behavior remains unchanged.
+- Cache lifetime is the existing state-scoped RoadAttackTopologyContext lifetime.
+- Game step: 402.61 -> 375.51 ms = 1.07217x speedup (~6.73% reduction).
+- Unchanged batchAct/replay/external-wall differences are treated as run variability.
+- Decision: 1k gate passed materially. Proceed to 4k paired exactness/performance gate.
+- 50k remains NOT RUN.
