@@ -16,6 +16,10 @@ import {
 } from "./rlPpoSelfPlay";
 import type { PpoUpdateScalarSample } from "./rlPpoPackedBatch";
 import { PpoRolloutWorkerV7Pool } from "./rlPpoRolloutWorkerV7Pool";
+import {
+  combinePackedSingleSampleBatchesV7,
+  fromTransferablePackedBcBatch,
+} from "./rlPpoWorkerPackedV7";
 import type {
   PpoRolloutWorkerV7EpisodeSummary,
   PpoRolloutWorkerV7Finalized,
@@ -187,6 +191,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
     legalActionsMs: 0,
     encodeObservationMs: 0,
     encodeActionsMs: 0,
+    packMs: 0,
     gameStepMs: 0,
   };
 
@@ -197,6 +202,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
     rolloutWorkerCpuTiming.legalActionsMs += value.legalActionsMs;
     rolloutWorkerCpuTiming.encodeObservationMs += value.encodeObservationMs;
     rolloutWorkerCpuTiming.encodeActionsMs += value.encodeActionsMs;
+    rolloutWorkerCpuTiming.packMs += value.packMs;
     rolloutWorkerCpuTiming.gameStepMs += value.gameStepMs;
   };
 
@@ -253,14 +259,20 @@ export async function runPpoFastBatchV7WorkersSmoke(
         );
       }
 
-      const retentionBatchId = `fast-v7c-round-${batchRounds}`;
+      const retentionBatchId = `fast-v7d-round-${batchRounds}`;
+      const packed = profiler.measure(
+        "fast_worker_combine_packed",
+        () => combinePackedSingleSampleBatchesV7(
+          prepared.samples.map(
+            (sample) => fromTransferablePackedBcBatch(sample.packed),
+          ),
+        ),
+      );
       const selected = await profiler.measureAsync(
         "fast_worker_batch_act",
-        () => client.actBatch(
-          prepared.samples.map((sample) => ({
-            observation: sample.observation,
-            legalActions: sample.legalActions,
-          })),
+        () => client.actPackedBatch(
+          packed,
+          prepared.samples.map((sample) => sample.actionKeys),
           { retentionBatchId },
         ),
       );
@@ -529,8 +541,8 @@ export async function runPpoFastBatchV7WorkersSmoke(
     ).length;
 
     const metadata = {
-      purpose: "phase_12b_v7c_rollout_workers",
-      ppoMode: "fast_batch_v7c_rollout_workers",
+      purpose: "phase_12b_v7d_worker_packed_transfer",
+      ppoMode: "fast_batch_v7d_worker_packed_transfer",
       environmentCount,
       seeds,
       mergeOrder: Array.from(
@@ -566,7 +578,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
     const totalMs = performance.now() - started;
 
     return {
-      mode: "fast_batch_v7c_rollout_workers",
+      mode: "fast_batch_v7d_worker_packed_transfer",
       environmentCount,
       seeds,
       mergeOrder: Array.from(
@@ -627,7 +639,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
         // Preserve the original fast-mode error.
       }
     }
-    profiler.report("fast_batch_v7c_rollout_workers_final");
+    profiler.report("fast_batch_v7d_worker_packed_transfer_final");
     await client.close();
   }
 }
