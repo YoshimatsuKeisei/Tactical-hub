@@ -1426,3 +1426,27 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Residual profiling found movement enumeration, attack enumeration and battle resolution as remaining costs, but no next exact-preserving structural candidate with a clearly material expected gain was identified.
 - Decision: stop micro-optimization here for Phase 12B-1. The original deferred 50k validation has now been completed successfully.
 - Next work should use V7-A as the fixed baseline and move to the next PPO validation/training objective rather than continue unmeasured micro-tuning.
+
+
+## V7-C rollout workers 1k exact gate — EXACT BUT SLOWER
+- Branch: experiment/ppo-fast-batch-v7c-rollout-workers
+- Candidate commit: 1875b0b5e6976f0dc30ea49e2bafdc69685292b1
+- Kaggle Version 139: COMPLETE.
+- Probe: ppo_v7c_rollout_workers_1k_gate.
+- Workload: fixed update2, 8 environments x 125 decisions = 1,000 decisions.
+- allExact=true.
+- Exact checks passed for semantic summaries, update result, parameter/optimizer/RNG/gradient hashes, model/optimizer checkpoint state, CPU/CUDA RNG state, counters, Feature Spec, hyperparameters, seed and sample counts.
+- Baseline V7-A wall: 13.8175 sec.
+- Candidate V7-C wall: 14.8610 sec.
+- wallSpeedup: 0.92978x (~7.55% slower).
+- Baseline rollout: 2,966.08 ms.
+- Candidate rollout: 5,583.37 ms.
+- rolloutSpeedup: 0.53123x (~1.88x slower).
+- Baseline replay: 1,788.22 ms.
+- Candidate replay: 1,853.16 ms (roughly neutral/noisy).
+- Candidate 4-worker prepare barrier: 3,149.16 ms.
+- Candidate apply barrier: 366.69 ms.
+- Sum of measured worker CPU work: ~1,626.34 ms across observation/legal-action/encode/game-step.
+- Interpretation: worker semantic parallelism is valid, but deep structured-clone/IPC of encoded observations and sparse actions dominates the prepare barrier and more than erases the CPU parallelism gain.
+- Decision: do not promote V7-C as-is. Preserve the exact worker architecture as evidence, but next attempt must reduce worker-to-parent transport rather than add more workers.
+- Next candidate direction: worker-side packing + transferable binary payloads, while keeping central Python/GPU actBatch ordering, current raw retention/replay, RNG ordering and V7-A semantics unchanged.
