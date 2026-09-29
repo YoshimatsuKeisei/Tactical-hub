@@ -419,7 +419,11 @@ export function getMovementCandidates(
   if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
   if (semantics === "current") {
     const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
-    return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(createTeamVisibleState(state, unit.ownerTeamId), unitId)
+    const visibleState = measureLegalSegment(
+      "movementVisibleState",
+      () => createTeamVisibleState(state, unit.ownerTeamId),
+    );
+    return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(visibleState, unitId)
       .map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
   }
   const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
@@ -466,8 +470,11 @@ export function validateMovementPath(
 ): MovementValidationResult {
   if (!samePosition(unit.position, from))
     return { valid: false, reason: "unit is no longer at the source position" };
-  const path = getMovementPaths(state, unit.id).find((candidate) =>
-    samePosition(candidate.destination, to),
+  const path = measureLegalSegment(
+    "movementApplyValidationPathSearch",
+    () => getMovementPaths(state, unit.id).find((candidate) =>
+      samePosition(candidate.destination, to),
+    ),
   );
   return path
     ? { valid: true, path }

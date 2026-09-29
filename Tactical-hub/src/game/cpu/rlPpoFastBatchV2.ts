@@ -123,6 +123,12 @@ function createFastEnvironment(profiler?: PpoTimingProfiler) {
               milliseconds,
             );
           },
+          onLegalSegment(scope: "policy" | "apply", category: string, milliseconds: number) {
+            profiler.record(
+              `fast_rollout_game_legal.${scope}.${category}`,
+              milliseconds,
+            );
+          },
           onLog(milliseconds: number) {
             profiler.record("fast_rollout_game_log", milliseconds);
           },

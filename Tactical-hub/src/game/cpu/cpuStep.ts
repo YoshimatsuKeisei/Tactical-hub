@@ -8,6 +8,7 @@ import { mergeHeavyInfantry } from "../engine/heavyInfantry";
 import type { GameState } from "../types";
 import { positionKey } from "../utils/position";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
+import { withLegalProfileSink } from "./legalEnumerationProfile";
 import type { CpuActionLog, CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./types";
 
 function contextKey(state: GameState) { return `${state.turnNumber}:${state.phase}`; }
@@ -29,6 +30,7 @@ export type CpuStepInstrumentation = {
   onPolicy?: (milliseconds: number) => void;
   onRuntimeClone?: (milliseconds: number) => void;
   onApply?: (milliseconds: number, decision: CpuDecision, phaseBefore: GameState["phase"], phaseAfter: GameState["phase"], turnBefore: number, turnAfter: number) => void;
+  onLegalSegment?: (scope: "policy" | "apply", category: string, milliseconds: number) => void;
   onLog?: (milliseconds: number) => void;
   onDecision?: (decision: CpuDecision) => void;
 };
@@ -61,7 +63,12 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     return { state, runtime, applied: false };
   }
   const policyStarted = instrumentation?.onPolicy ? performance.now() : 0;
-  const decision = policy(state, runtime, settings);
+  const decision = instrumentation?.onLegalSegment
+    ? withLegalProfileSink(
+        (category, milliseconds) => instrumentation.onLegalSegment?.("policy", category, milliseconds),
+        () => policy(state, runtime, settings),
+      )
+    : policy(state, runtime, settings);
   instrumentation?.onPolicy?.(performance.now() - policyStarted);
   if (!decision) return { state, runtime, applied: false, waitingForHuman: true };
   instrumentation?.onDecision?.(decision);
@@ -87,11 +94,17 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       const unit = state.units.find((entry) => entry.id === decision.unitId);
       if (decision.to && unit) {
         const intent = { teamId: decision.teamId, unitId: unit.id, from: unit.position, to: decision.to, stay: false } as const;
-        next = instrumentation?.movementSemantics === "legacy_batched"
+        const applyMovement = () => instrumentation?.movementSemantics === "legacy_batched"
           ? saveMovementIntent(state, intent)
           : instrumentation?.rlInPlaceMovement
             ? commitUnitMovementInPlaceForRl(state, intent)
             : commitUnitMovement(state, intent);
+        next = instrumentation?.onLegalSegment
+          ? withLegalProfileSink(
+              (category, milliseconds) => instrumentation.onLegalSegment?.("apply", category, milliseconds),
+              applyMovement,
+            )
+          : applyMovement();
       }
       runtime.processedKeys.push(decision.actorKey);
       writeLog(decision.teamId, decision.to ? "move" : "movement pass", `${decision.unitId}${decision.to ? ` -> ${positionKey(decision.to)}` : ""}`);
