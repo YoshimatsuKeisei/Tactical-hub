@@ -255,12 +255,17 @@ export function getMovementPaths(
 
     if (current.position.kind === "base") {
       const nextCost = current.cost + 1;
+      const currentBaseId = current.position.baseId;
 
-      for (const destination of nextGroundPositionsFromBase(
-        state,
-        unit,
-        current.position.baseId,
-      )) {
+      const leaveBaseDestinations = measureLegalSegment(
+        "movementPathLeaveBaseExpansion",
+        () => nextGroundPositionsFromBase(
+          state,
+          unit,
+          currentBaseId,
+        ),
+      );
+      for (const destination of leaveBaseDestinations) {
         const path: MovementPath = {
           destination,
           cost: nextCost,
@@ -313,7 +318,10 @@ export function getMovementPaths(
       const key = tileKey(x, y);
       const nextCost = current.cost + 1;
 
-      const base = getBaseAtTile(state.bases, x, y);
+      const base = measureLegalSegment(
+        "movementPathBaseLookup",
+        () => getBaseAtTile(state.bases, x, y),
+      );
 
       if (base) {
         // Lake-to-base movement is intentionally undefined.
@@ -326,13 +334,23 @@ export function getMovementPaths(
          */
         if (
           current.position.kind === "tile" &&
-          !isGroundPositionConnectedToBase(state, current.position, base.id)
+          !measureLegalSegment(
+            "movementPathBaseConnectivity",
+            () => isGroundPositionConnectedToBase(state, current.position, base.id),
+          )
         ) {
           continue;
         }
 
-        for (const basePosition of emptyBasePositions(state, base.id)) {
-          if (!isLegalDestination(state, unit, basePosition)) continue;
+        const basePositions = measureLegalSegment(
+          "movementPathEmptyBasePositions",
+          () => emptyBasePositions(state, base.id),
+        );
+        for (const basePosition of basePositions) {
+          if (!measureLegalSegment(
+            "movementPathBaseDestinationLegal",
+            () => isLegalDestination(state, unit, basePosition),
+          )) continue;
           const enterPath: MovementPath = {
             destination: basePosition,
             cost: nextCost,
@@ -365,7 +383,10 @@ export function getMovementPaths(
         continue;
       }
 
-      const destination = positionForTile(state, unit, x, y);
+      const destination = measureLegalSegment(
+        "movementPathPositionForTile",
+        () => positionForTile(state, unit, x, y),
+      );
 
       if (!destination) {
         continue;
@@ -379,7 +400,10 @@ export function getMovementPaths(
        * 正式に経由した場合のみ成立する。
        */
       if (
-        !canMoveBetweenGroundPositions(state, current.position, destination)
+        !measureLegalSegment(
+          "movementPathGroundConnectivity",
+          () => canMoveBetweenGroundPositions(state, current.position, destination),
+        )
       ) {
         continue;
       }
