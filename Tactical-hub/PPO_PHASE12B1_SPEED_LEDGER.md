@@ -1371,3 +1371,18 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Keep V6-R full-distance lookup and V6-V per-search leave-base cache closed.
 - Next route: investigate movement path work that is unnecessary for destination-only legal-action enumeration.
 - 50k remains NOT RUN.
+
+
+## V7-B movement destination-only — CLOSED after 1k
+- Branch: experiment/ppo-fast-batch-v7b-movement-destination-only
+- Implementation commit: 9afdfea14587d12751c67fde799b2a8a494083bf
+- Baseline: V7-A 0a6c52e4fec9bcdb930f3bb2a962f3790383e8a6
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- Kaggle Version 133: COMPLETE.
+- allExact=true.
+- Game step: 322.54 -> 336.79 ms = 0.95769x speedup (~4.42% slower).
+- Focused tests: 64 PASS / 1 FAIL; the single cpuCandidateAccess failure reproduces identically on unchanged V7-A baseline and is not a V7-B regression.
+- Decision: exact but slower; V7-B is CLOSED and not promoted.
+- Keep V7-A as the production baseline.
+- Residual profiling and code audit found no remaining exact-preserving structural candidate with a clear material upside; return to the deferred 50k timing validation.
+- 50k remains NOT RUN at this point.
