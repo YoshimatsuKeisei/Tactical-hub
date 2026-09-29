@@ -1,5 +1,5 @@
 import { UNIT_STATS } from "../constants";
-import type { GameState, MovementIntent, Unit, UnitPosition } from "../types";
+import type { GameState, MovementIntent, Tile, Unit, UnitPosition } from "../types";
 import {
   getBaseAtTile,
   getTile,
@@ -159,13 +159,14 @@ function positionForTile(
     return undefined;
   const bridge = getBridgePositionAt(state, x, y);
   const position: UnitPosition = bridge ?? (tile.terrain === "lake" ? { kind: "water", x, y } : { kind: "tile", x, y });
-  return isLegalDestination(state, unit, position) ? position : undefined;
+  return isLegalDestinationInternal(state, unit, position, tile) ? position : undefined;
 }
 
-export function isLegalDestination(
+function isLegalDestinationInternal(
   state: GameState,
   unit: Unit,
   destination: UnitPosition,
+  knownTile?: Tile,
 ): boolean {
   if (destination.kind === "bridge") {
     const bridge = state.constructions.find((entry) => entry.active && entry.kind === "bridge" && entry.id === destination.bridgeId);
@@ -173,7 +174,7 @@ export function isLegalDestination(
     return Boolean(cell && !getUnitAtBoardCell(state, cell.x, cell.y) && !state.constructions.some((entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((tile) => tile.x === cell.x && tile.y === cell.y)));
   }
   if (destination.kind === "tile" || destination.kind === "water") {
-    const tile = getTile(state.map.tiles, destination.x, destination.y);
+    const tile = knownTile ?? getTile(state.map.tiles, destination.x, destination.y);
     if (!tile || tile.terrain === "outside" || tile.terrain === "base")
       return false;
     if (getUnitAtBoardCell(state, destination.x, destination.y)) return false;
@@ -186,6 +187,14 @@ export function isLegalDestination(
   if (destination.kind === "base")
     return baseCanBeEntered(state, destination.baseId, unit);
   return false;
+}
+
+export function isLegalDestination(
+  state: GameState,
+  unit: Unit,
+  destination: UnitPosition,
+): boolean {
+  return isLegalDestinationInternal(state, unit, destination);
 }
 
 function nextGroundPositionsFromBase(
