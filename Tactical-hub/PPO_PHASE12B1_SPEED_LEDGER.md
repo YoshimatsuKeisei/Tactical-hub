@@ -1278,3 +1278,52 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 3. Re-measure neutral attackRangeDistance and normal attackTargetSearch because both should be affected by V6-Z.
 4. Prefer another measured structural duplicate over broad precomputation.
 5. Keep 50k deferred until the post-V6-Z residual bottlenecks are characterized.
+
+
+## V6-Z post-promotion re-profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6z-neutral-reprofile
+- Diagnostic commit: dc7e1583507afaeea2f23fe0e9a078dbc016aac9
+- Baseline: V6-Z a5ef3d225581dd6cf49018cbd1179dee07d65172
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Detailed profiler overhead makes candidate game-step wall non-comparable.
+- Residual hotspots:
+  - movement enumeration: 123.93 ms
+  - attack enumeration: 80.71 ms
+  - resolve_battle: 85.72 ms / 24 calls
+  - submit_team_production: about 44 ms / 32 calls in subsequent production profiling
+  - neutral attackRangeDistance: 35.73 ms / 516 calls
+  - neutral attackTargetSearch: 63.69 ms / 360 calls
+  - normal attackRangeDistance: 14.93 ms / 264 calls
+  - normal attackTargetSearch: 57.52 ms / 288 calls
+- V6-Z materially reduced bounded attack-distance work but did not eliminate it.
+
+## V6-Z production-submit detail profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6z-production-profile
+- Diagnostic commit: b6f4157ffda16f6e1931af678a0fddb41ec905d9
+- Baseline: V6-Z a5ef3d225581dd6cf49018cbd1179dee07d65172
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- submit_team_production: 44.44 ms / 32 calls.
+- Internal split:
+  - structuredClone(state): 41.05 ms
+  - choices extraction: 0.25 ms
+  - applyProductionChoices: 1.60 ms
+  - cleanup: 0.37 ms
+- About 92% of submit-team-production time is the full GameState clone.
+- Existing production.test.ts test "produces before movement and lets the new unit move immediately"
+  fails identically on unchanged V6-Z baseline a5ef3d2; it is not a profiling regression.
+
+## Next candidate: V7-A RL-only in-place production submit
+- Branch: experiment/ppo-fast-batch-v7a-inplace-production
+- Implementation commit: 0a6c52e4fec9bcdb930f3bb2a962f3790383e8a6
+- General submitTeamProduction remains clone-based and unchanged.
+- RL fast environment explicitly opts into submitTeamProductionInPlaceForRl.
+- The in-place function preserves production-choice order, legality checks, unit ID generation,
+  base-slot mutation, unit insertion, logs, action-intent cleanup and completed-team bookkeeping.
+- Local TypeScript static check: PASS.
+- Direct cloned-submit vs RL-in-place full-state equality test: PASS.
+- immediateMovement + profiler tests: 14/14 PASS.
+- Kaggle Version 129 1k paired exactness gate: PENDING (currently queued).
+- Do not promote V7-A until Kaggle allExact and material game-step improvement are observed.
+- 50k remains NOT RUN.
