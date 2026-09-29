@@ -1386,3 +1386,43 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Keep V7-A as the production baseline.
 - Residual profiling and code audit found no remaining exact-preserving structural candidate with a clear material upside; return to the deferred 50k timing validation.
 - 50k remains NOT RUN at this point.
+
+
+## V7-A 50k timing validation — PASS
+- Branch: experiment/ppo-fast-batch-v7a-inplace-production
+- Production implementation commit: 0a6c52e4fec9bcdb930f3bb2a962f3790383e8a6
+- Kaggle Version 134: COMPLETE.
+- Probe: ppo_v7a_50k_time_validation.
+- Resume source: fixed update2 checkpoint.
+- Workload: 8 environments x 6,250 decision cap = 50,000 decisions maximum.
+- Actual decisions: 50,000.
+- Total samples: 50,000.
+- Production timing run used node profiler OFF.
+- integrityPass=true.
+- CUDA selected: PASS.
+- Resume counters: updateCount=2, episodeCount=2.
+- Output counters: updateCount=3, episodeCount=10.
+- Replay validation: 50,000 / 50,000 samples.
+- Replay accumulation: 50,000 / 50,000 samples.
+- Retention after replay: currentChunks=0, pendingChunks=0, currentRetainedBytes=0.
+- Final retention: currentChunks=0, pendingChunks=0, currentRetainedBytes=0.
+- Checkpoint kind, schemaVersion and featureSpec integrity checks: PASS.
+- Outcomes: 0 victory, 8 time-limit adjudicated, 0 abnormal truncated.
+- Per-environment decisions: [6250, 6250, 6250, 6250, 6250, 6250, 6250, 6250].
+- Wall time: 149.462 sec (~2 min 29 sec).
+- Internal total: 147,636.095 ms.
+- Rollout: 105,848.072 ms = 2.11696 ms/decision.
+- Replay/update validation section: 33,359.682 ms = 0.66719 ms/sample.
+- Peak raw retention before replay: 4,568,323,408 bytes (~4.57 GB decimal), fully drained after replay.
+- Historical 50k manifest recorded 1,131.09 sec on the older single-episode path. The raw wall-time ratio is about 7.57x and the elapsed-time reduction about 86.8%, but this is a historical cross-path comparison, not a paired exact performance gate.
+- Exact semantic equivalence of V7-A itself was established separately by the 1k and 4k paired gates; the 50k run is an integrity/timing validation, not another allExact paired run.
+
+## Phase 12B-1 speed-optimization closure
+- Current production baseline: V7-A RL-only in-place production submit.
+- 50k timing validation from the fixed update2 checkpoint: PASS.
+- Required checkpoint/replay/retention/integrity gates passed.
+- V7-B was exact but slower and remains CLOSED.
+- V6-R full distance lookup, V6-V leave-base per-search cache, V6-Y minor connectivity optimization and V7-B destination-only movement route remain CLOSED; do not revive them with minor variants.
+- Residual profiling found movement enumeration, attack enumeration and battle resolution as remaining costs, but no next exact-preserving structural candidate with a clearly material expected gain was identified.
+- Decision: stop micro-optimization here for Phase 12B-1. The original deferred 50k validation has now been completed successfully.
+- Next work should use V7-A as the fixed baseline and move to the next PPO validation/training objective rather than continue unmeasured micro-tuning.
