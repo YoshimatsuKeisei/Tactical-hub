@@ -1167,3 +1167,71 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 2. Profile resolve_battle internals before changing battle resolution.
 3. Current V6-X profile measured resolve_battle at 88.95 ms / 24 calls per 1k decisions.
 4. Do not alter RNG consumption, attack order, damage rolls, defeat/capture ordering, logs, rewards or state-transition semantics.
+
+
+## V6-X battle-resolution re-profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6x-battle-profile
+- Diagnostic commit: f4dc9eb32a28d0d5056a53d23c7292d4353eddc5
+- Baseline: V6-X 91f4c6f
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Detailed profiling adds material overhead; candidate game-step wall is not a speed comparison.
+- resolve_battle: 83.84 ms / 24 calls.
+- Battle-stage breakdown:
+  - event_build.neutral_intents: 65.57 ms
+  - event_build.encouragement: 3.79 ms
+  - event_build.start_positions: 2.24 ms
+  - pre_hit_metadata: 1.82 ms
+  - turn_flags_and_logs: 1.80 ms
+  - status_cleanup: 1.33 ms
+  - capture_and_king_resolution: 1.23 ms
+  - all other measured stages were below 1 ms each.
+- Conclusion: neutral attack-intent generation remains the dominant battle-resolution cost after V6-X.
+
+## V6-X neutral attack-candidate detail profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6x-neutral-profile
+- Diagnostic commit: bc84af2b724841956f20888dfa33a1574083f083
+- Baseline: V6-X 91f4c6f
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- neutral candidate search: 84.34 ms / 360 calls.
+- neutral attackTargetSearch: 83.53 ms / 360 calls.
+- neutral attackRangeDistance: 55.82 ms / 516 calls.
+- neutral attackAcrossBaseBlocking: 6.41 ms / 4,020 calls.
+- neutral attackFinalLegalCheck: 2.40 ms / 4,020 calls.
+- neutral attackLakeNinjaRule: 1.24 ms / 4,020 calls.
+- neutral attackBasicFilter: 1.02 ms / 360 calls.
+- Conclusion: bounded road attack-distance calculation accounts for roughly two thirds of neutral target-search cost.
+- Do not retry the closed V6-R full-distance-lookup route.
+
+## V6-X bounded attack-distance internal profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6x-neutral-distance-profile
+- Diagnostic commit: 703e47c1775fb1068ec72d346dae03091be5fb97
+- Baseline: V6-X 91f4c6f
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Fine-grained timing instrumentation inflates the profiled attackRangeDistance value, so use the substage split diagnostically rather than as a direct speed comparison.
+- Neutral bounded-distance profile:
+  - attackRangeDistance: 74.35 ms / 516 calls (instrumented)
+  - attackRangeNeighborExpansion: 66.70 ms
+  - ground-edge checks: 17.35 ms
+  - road/bridge coordinate lookup: 13.07 ms
+  - base-connect checks: 10.91 ms
+  - base lookup: 5.12 ms
+  - coordinate lookup: 1.76 ms
+- Active-team enumeration showed the same shape:
+  - attackRangeDistance: 28.55 ms / 264 calls
+  - neighbor expansion: 24.40 ms
+  - ground-edge checks: 8.60 ms
+  - road/bridge lookup: 5.07 ms.
+- Code audit: attackPathNeighbors is deterministic for a fixed GameState + RoadAttackTopologyContext + position, but is rebuilt on every bounded BFS visit.
+- RoadAttackTopologyContext is state-scoped. Neutral resolution creates one context and shares it across all neutral candidate searches; attack-input caching also requires identical units/bases/constructions references.
+
+## Next candidate: V6-Z lazy attack-path-neighbor memoization
+- Add a context-local Map keyed by attackPathKey(position) that stores the exact ordered neighbor list after first construction.
+- Only use this cache when a RoadAttackTopologyContext is present; context-free public behavior remains unchanged.
+- Do not precompute the whole graph and do not revive V6-R full-distance lookup.
+- Preserve neighbor ordering and exact UnitPosition values.
+- Cache lifetime must remain the existing RoadAttackTopologyContext lifetime; never share across states.
+- Run local battle/topology tests, then 1k paired exactness gate; 4k only if exact and materially faster.
+- 50k remains NOT RUN.
