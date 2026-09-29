@@ -1131,3 +1131,19 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
   - attackFinalLegalCheck: 4.18 ms / 4,488 calls
 - Next: inspect attackTargetSearch for repeated scans before selecting V6-Y.
 - 50k remains NOT RUN.
+
+
+## V6-Y road-section components — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v6y-road-section-components
+- Implementation commit: c087ffb14940f03b6879305895ad8c8d663a10be
+- Baseline: V6-X 91f4c6f
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Local TypeScript static check: PASS.
+- Related battle/construction tests: 50/50 PASS.
+- Change: precompute connected-component IDs from the existing road-section adjacency graph once per RoadAttackTopologyContext.
+- Context-backed connectivity checks now compare component IDs instead of repeating BFS for the same static graph.
+- Non-context areRoadSectionsDynamicallyConnected remains unchanged.
+- Game step: 397.18 -> 390.22 ms = 1.01784x speedup (~1.75% reduction).
+- Decision: plausible but modest gain; proceed to 4k paired exactness/performance gate.
+- 50k remains NOT RUN.
