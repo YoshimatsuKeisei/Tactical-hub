@@ -1327,3 +1327,15 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Kaggle Version 129 1k paired exactness gate: PENDING (currently queued).
 - Do not promote V7-A until Kaggle allExact and material game-step improvement are observed.
 - 50k remains NOT RUN.
+
+
+## V7-A RL-only in-place production — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v7a-inplace-production
+- Implementation commit: 0a6c52e4fec9bcdb930f3bb2a962f3790383e8a6
+- Baseline: V6-Z a5ef3d225581dd6cf49018cbd1179dee07d65172
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Game step: 433.66 -> 403.41 ms = 1.07499x speedup (~6.98% reduction).
+- General submitTeamProduction remains clone-based; only the RL fast environment opts into the in-place path.
+- Decision: 1k gate passed materially; proceed to 4k paired exactness/performance gate.
+- 50k remains NOT RUN.
