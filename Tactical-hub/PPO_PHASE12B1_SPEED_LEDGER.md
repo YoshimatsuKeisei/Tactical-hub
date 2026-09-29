@@ -1147,3 +1147,23 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Game step: 397.18 -> 390.22 ms = 1.01784x speedup (~1.75% reduction).
 - Decision: plausible but modest gain; proceed to 4k paired exactness/performance gate.
 - 50k remains NOT RUN.
+
+
+## V6-Y road-section components — CLOSED after 4k
+- Branch: experiment/ppo-fast-batch-v6y-road-section-components
+- Implementation commit: c087ffb14940f03b6879305895ad8c8d663a10be
+- Baseline: V6-X 91f4c6f
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Game step: 1,661.22 -> 1,642.81 ms = 1.01121x speedup (~1.11% reduction).
+- 1k had shown ~1.78%, but the 4k gain collapsed close to the established ~1% noise floor.
+- Decision: exact but not a sufficiently material pure improvement; V6-Y is NOT promoted.
+- Keep V6-X as the current exact baseline.
+- Do not retry road-section connectivity with only minor implementation variations.
+- 50k remains NOT RUN.
+
+## Next after V6-Y closure
+1. Keep V6-X as production baseline.
+2. Profile resolve_battle internals before changing battle resolution.
+3. Current V6-X profile measured resolve_battle at 88.95 ms / 24 calls per 1k decisions.
+4. Do not alter RNG consumption, attack order, damage rolls, defeat/capture ordering, logs, rewards or state-transition semantics.
