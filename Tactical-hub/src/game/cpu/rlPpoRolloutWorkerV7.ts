@@ -239,6 +239,7 @@ async function handlePrepare(
   if (!featureSpec || !hyperparameters || workerId < 0) {
     throw new Error("PPO V7 rollout worker is not initialized");
   }
+  const activeFeatureSpec = featureSpec;
   const stageTiming = timing();
   const finalized: PpoRolloutWorkerV7Finalized[] = [];
   const samples: Extract<
@@ -336,7 +337,7 @@ async function handlePrepare(
             observation: encodedObservation,
             sparseActions: encodedActions.sparseActions,
           }],
-          featureSpec,
+          activeFeatureSpec,
           {
             compactMaskedPrefixes: true,
             sparseActions: true,
