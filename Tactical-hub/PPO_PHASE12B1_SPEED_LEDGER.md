@@ -1065,3 +1065,31 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Decision: proceed to a 4k paired exactness/performance gate because the 1k gain is small but
   materially above the previously closed ~1% noise-floor route.
 - 50k remains NOT RUN.
+
+
+## V6-X known-tile reuse — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6x-known-tile-reuse
+- Implementation commit: bc162d6242118242f5ec600c35fe77b10e752a5e
+- Baseline: V6-W 9e7357f841f92bd515ef0fbba12074f78cfdceba
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Game step: 1,774.76 -> 1,715.63 ms = 1.03447x speedup (~3.33% reduction).
+- Observation encode: 1,126.81 -> 1,088.84 ms; Action encode: 858.50 -> 854.66 ms.
+- batchAct: 5,292.36 -> 5,059.12 ms; replay: 3,681.35 -> 3,629.67 ms.
+  These unchanged-path differences are treated as run variability and are not attributed to V6-X.
+- External wall: 22.177 -> 17.790 sec; full wall difference is not attributed solely to V6-X.
+- V6-X only reuses the Tile already fetched by positionForTile for its immediately following
+  tile/water legality check, removing one duplicate getTile scan.
+- Exported isLegalDestination semantics/signature, bridge handling, occupancy, obstacles,
+  water/ninja rules, terrain checks, candidate ordering and movement semantics remain unchanged.
+- V6-X is promoted as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next steps after V6-X
+1. Keep V6-X as production baseline.
+2. Re-profile current game-step before choosing V6-Y; do not rely only on V6-W timings.
+3. Compare residual movement enumeration, attackTargetSearch and resolve_battle after V6-X.
+4. Prefer another measured structural duplicate/repeated scan over a broad cache.
+5. Preserve legal action values/order, visibility, movement/attack rules, RNG, trajectory semantics,
+   PPO math, 8 environments, replay chunk size 32 and checkpoint schema.
