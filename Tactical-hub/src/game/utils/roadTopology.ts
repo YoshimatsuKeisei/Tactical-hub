@@ -115,6 +115,7 @@ export type RoadAttackTopologyContext = {
   readonly sectionAdjacency: ReadonlyMap<string, ReadonlySet<string>>;
   readonly roadOrBridgeByCoord: Map<string, UnitPosition | null>;
   readonly baseByCoord: ReadonlyMap<string, ReturnType<typeof getBaseAtTile>>;
+  readonly attackNeighborsByPositionKey: Map<string, readonly UnitPosition[]>;
 };
 
 function buildSectionAdjacency(state: GameState) {
@@ -132,7 +133,7 @@ function buildSectionAdjacency(state: GameState) {
 export function createRoadAttackTopologyContext(state: GameState): RoadAttackTopologyContext {
   const baseByCoord = new Map<string, ReturnType<typeof getBaseAtTile>>();
   for (const base of state.bases) for (const coord of base.coords) baseByCoord.set(`${coord.x},${coord.y}`, base);
-  return { sectionsByPositionKey: new Map(), sectionAdjacency: buildSectionAdjacency(state), roadOrBridgeByCoord: new Map(), baseByCoord };
+  return { sectionsByPositionKey: new Map(), sectionAdjacency: buildSectionAdjacency(state), roadOrBridgeByCoord: new Map(), baseByCoord, attackNeighborsByPositionKey: new Map() };
 }
 
 function contextRoadOrBridgePositionAt(state: GameState, x: number, y: number, context?: RoadAttackTopologyContext) {
@@ -202,6 +203,15 @@ function sectionsConnectPositions(
 }
 
 function attackPathNeighbors(state: GameState, position: UnitPosition, context?: RoadAttackTopologyContext) {
+  const cacheKey = context ? attackPathKey(position) : undefined;
+  if (context && cacheKey) {
+    const cached = context.attackNeighborsByPositionKey.get(cacheKey);
+    if (cached) return cached;
+  }
+  const remember = (value: UnitPosition[]) => {
+    if (context && cacheKey) context.attackNeighborsByPositionKey.set(cacheKey, value);
+    return value;
+  };
   const neighbors = new Map<string, UnitPosition>();
 
   if (position.kind === "base") {
@@ -213,12 +223,12 @@ function attackPathNeighbors(state: GameState, position: UnitPosition, context?:
         neighbors.set(attackPathKey(neighbor), neighbor);
       }
     }
-    return [...neighbors.values()];
+    return remember([...neighbors.values()]);
   }
 
-  if (position.kind !== "tile" && position.kind !== "bridge") return [];
+  if (position.kind !== "tile" && position.kind !== "bridge") return remember([]);
   const coord = getPositionCoord(state, position);
-  if (!coord) return [];
+  if (!coord) return remember([]);
 
   for (const { dx, dy } of adjacentDirections) {
     const x = coord.x + dx;
@@ -242,7 +252,7 @@ function attackPathNeighbors(state: GameState, position: UnitPosition, context?:
     )
       neighbors.set(attackPathKey(neighbor), neighbor);
   }
-  return [...neighbors.values()];
+  return remember([...neighbors.values()]);
 }
 
 /**
