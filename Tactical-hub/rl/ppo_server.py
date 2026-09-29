@@ -500,6 +500,8 @@ def main():
                     "rawSha256": raw_sha256,
                 })
             elif kind == "retainedBatchUpdateChunk":
+                if profile:
+                    retained_restore_start = time.perf_counter()
                 retention_ids = [
                     str(value)
                     for value in message.get("retentionIds", [])
@@ -682,6 +684,13 @@ def main():
                     "returns",
                     scalar_values[sample_count * 2:],
                 )
+                if profile:
+                    sync_device()
+                    record(
+                        "retained_batch_restore_prepare",
+                        time.perf_counter() - retained_restore_start,
+                    )
+                    retained_accumulate_start = time.perf_counter()
                 result = trainer.accumulate_prepared_chunk(
                     prepared,
                     actions,
@@ -691,6 +700,12 @@ def main():
                     advantages,
                     returns,
                 )
+                if profile:
+                    sync_device()
+                    record(
+                        "retained_batch_accumulate",
+                        time.perf_counter() - retained_accumulate_start,
+                    )
                 feature_audit = (
                     packed_views_audit(
                         views,
