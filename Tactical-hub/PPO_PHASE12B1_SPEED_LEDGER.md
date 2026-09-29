@@ -1450,3 +1450,28 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Interpretation: worker semantic parallelism is valid, but deep structured-clone/IPC of encoded observations and sparse actions dominates the prepare barrier and more than erases the CPU parallelism gain.
 - Decision: do not promote V7-C as-is. Preserve the exact worker architecture as evidence, but next attempt must reduce worker-to-parent transport rather than add more workers.
 - Next candidate direction: worker-side packing + transferable binary payloads, while keeping central Python/GPU actBatch ordering, current raw retention/replay, RNG ordering and V7-A semantics unchanged.
+
+
+## V7-D worker packed transfer 1k exact gate — EXACT, 4k REQUIRED
+- Branch: experiment/ppo-fast-batch-v7d-worker-packed-transfer
+- Candidate commit: 38018f87082e90cbd0cfdcfb1398b51ab89a00cc
+- Kaggle Version 142: COMPLETE.
+- Probe: ppo_v7d_worker_packed_transfer_1k_gate.
+- Workload: fixed update2, 8 environments x 125 decisions = 1,000 decisions.
+- allExact=true.
+- Exact checks passed for semantic summaries, update result, parameter/optimizer/RNG/gradient hashes, model/optimizer checkpoint state, CPU/CUDA RNG state, counters, Feature Spec, hyperparameters, seed and sample counts.
+- Baseline V7-A wall: 13.6635 sec.
+- Candidate V7-D wall: 12.5061 sec.
+- wallSpeedup: 1.09255x (~8.47% wall reduction).
+- Baseline rollout: 2,876.51 ms.
+- Candidate rollout: 3,091.17 ms.
+- rolloutSpeedup: 0.93056x (~7.46% rollout regression).
+- Baseline replay: 1,816.17 ms.
+- Candidate replay: 1,782.60 ms.
+- replaySpeedup: 1.01883x (roughly neutral / slightly faster).
+- Candidate 4-worker prepare barrier: 982.22 ms.
+- Candidate apply barrier: 458.30 ms.
+- Candidate worker CPU totals: observation 28.39 ms; legal actions 3.34 ms; observation encode 664.04 ms; action encode 480.09 ms; worker packing 909.31 ms; game-step 760.99 ms.
+- Compared with V7-C, prepare barrier improved from 3,149.16 ms to 982.22 ms (~3.21x), confirming transferable packed payloads removed most structured-clone overhead.
+- Interpretation: the intended transport bottleneck was materially reduced and exactness is preserved, but 1k rollout remains slower than V7-A; the overall wall improvement may include startup/update noise.
+- Decision: do not promote from 1k. Run a 4k paired exact gate before deciding whether V7-D is beneficial.
