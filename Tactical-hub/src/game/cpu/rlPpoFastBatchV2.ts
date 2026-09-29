@@ -105,7 +105,12 @@ function createFastEnvironment() {
   return new RlEnvironmentV2(
     undefined,
     true,
-    { cpuStep: { rlInPlacePhaseTransitions: true } },
+    {
+      cpuStep: {
+        rlInPlacePhaseTransitions: true,
+        rlPrevalidatedMovement: true,
+      },
+    },
   );
 }
 

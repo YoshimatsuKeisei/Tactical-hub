@@ -555,7 +555,12 @@ function getDefendedBaseIds(state: GameState) {
   )).map((base) => base.id);
 }
 
-function applySingleMovementInPlace(next: GameState, intent: MovementIntent, markStayMoved: boolean) {
+function applySingleMovementInPlace(
+  next: GameState,
+  intent: MovementIntent,
+  markStayMoved: boolean,
+  prevalidatedForRl = false,
+) {
   const unit = next.units.find((candidate) => candidate.id === intent.unitId);
   if (!unit) return false;
   if (intent.stay) {
@@ -585,10 +590,12 @@ function applySingleMovementInPlace(next: GameState, intent: MovementIntent, mar
     return true;
   }
 
-  const movement = validateMovementPath(next, unit, intent.from, intent.to);
-  if (!movement.valid) {
-    next.logs.push({ id: `log-move-fail-${next.logs.length}`, turnNumber: next.turnNumber, type: "movement", message: `${intent.unitId} failed to move to ${positionKey(intent.to)}: ${movement.reason}.`, relatedIds: [intent.unitId] });
-    return false;
+  if (!prevalidatedForRl) {
+    const movement = validateMovementPath(next, unit, intent.from, intent.to);
+    if (!movement.valid) {
+      next.logs.push({ id: `log-move-fail-${next.logs.length}`, turnNumber: next.turnNumber, type: "movement", message: `${intent.unitId} failed to move to ${positionKey(intent.to)}: ${movement.reason}.`, relatedIds: [intent.unitId] });
+      return false;
+    }
   }
   const retreatEffect = getRetreatMoveEffect(next, unit, intent.from, intent.to);
   const retreatTargetBaseId = retreatEffect === "start" ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to) : undefined;
@@ -617,7 +624,11 @@ export function commitUnitMovement(state: GameState, intent: MovementIntent): Ga
  * movement decisions can be applied in place without cloning the whole GameState.
  * General game/UI callers must continue using commitUnitMovement.
  */
-export function commitUnitMovementInPlaceForRl(state: GameState, intent: MovementIntent): GameState {
+export function commitUnitMovementInPlaceForRl(
+  state: GameState,
+  intent: MovementIntent,
+  prevalidatedForRl = false,
+): GameState {
   const unit = state.units.find((candidate) => candidate.id === intent.unitId);
   if (state.phase !== "movement_input" || state.currentMovementTeamId !== intent.teamId || unit?.ownerTeamId !== intent.teamId
     || state.movementCompletedTeamIds.includes(intent.teamId) || state.movedUnitIdsThisMovementPhase.includes(intent.unitId)
@@ -625,7 +636,7 @@ export function commitUnitMovementInPlaceForRl(state: GameState, intent: Movemen
   if (!state.movementDefendedBaseIdsAtTeamStart) {
     state.movementDefendedBaseIdsAtTeamStart = getDefendedBaseIds(state);
   }
-  if (!applySingleMovementInPlace(state, intent, true)) {
+  if (!applySingleMovementInPlace(state, intent, true, prevalidatedForRl)) {
     throw new Error("RL legal movement failed validation in the in-place fast path");
   }
   return state;

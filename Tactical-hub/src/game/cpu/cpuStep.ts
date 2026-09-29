@@ -23,6 +23,7 @@ export function syncCpuContext(runtime: CpuRuntime, state: GameState) {
 export type CpuStepInstrumentation = {
   movementSemantics?: MovementSemantics;
   rlInPlaceMovement?: boolean;
+  rlPrevalidatedMovement?: boolean;
   rlInPlacePhaseTransitions?: boolean;
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
@@ -90,7 +91,11 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
         next = instrumentation?.movementSemantics === "legacy_batched"
           ? saveMovementIntent(state, intent)
           : instrumentation?.rlInPlaceMovement
-            ? commitUnitMovementInPlaceForRl(state, intent)
+            ? commitUnitMovementInPlaceForRl(
+              state,
+              intent,
+              instrumentation.rlPrevalidatedMovement === true,
+            )
             : commitUnitMovement(state, intent);
       }
       runtime.processedKeys.push(decision.actorKey);

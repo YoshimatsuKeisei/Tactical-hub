@@ -156,6 +156,36 @@ describe("immediate movement semantics", () => {
     expect(fast.getResult()).toEqual(standard.getResult());
   });
 
+  it("keeps the RL prevalidated movement path state-identical across a long deterministic action sequence", () => {
+    const baseline = new RlEnvironmentV2(undefined, true);
+    const prevalidated = new RlEnvironmentV2(undefined, true, {
+      cpuStep: { rlPrevalidatedMovement: true },
+    });
+    baseline.reset(10, 4);
+    prevalidated.reset(10, 4);
+
+    for (let index = 0; index < 300 && !baseline.isTerminal(); index += 1) {
+      expect(prevalidated.getStateHash()).toBe(baseline.getStateHash());
+      const actor = baseline.getCurrentActorTeamId();
+      expect(actor).toBeTruthy();
+      expect(prevalidated.getCurrentActorTeamId()).toBe(actor);
+
+      const baselineActions = baseline.getLegalActionsForEncoding(actor!);
+      const fastActions = prevalidated.getLegalActionsForEncoding(actor!);
+      expect(fastActions.map((action) => action.actionKey)).toEqual(
+        baselineActions.map((action) => action.actionKey),
+      );
+
+      const actionKey = baselineActions[0]?.actionKey;
+      expect(actionKey).toBeTruthy();
+      baseline.stepWithoutObservation(actionKey!);
+      prevalidated.stepWithoutObservation(actionKey!);
+    }
+
+    expect(prevalidated.getStateHash()).toBe(baseline.getStateHash());
+    expect(prevalidated.getResult()).toEqual(baseline.getResult());
+  });
+
   it("keeps RL in-place phase submissions and resolutions state-identical across a long deterministic sequence", () => {
     const baseline = new RlEnvironmentV2(undefined, true);
     const phaseFast = new RlEnvironmentV2(undefined, true, {
