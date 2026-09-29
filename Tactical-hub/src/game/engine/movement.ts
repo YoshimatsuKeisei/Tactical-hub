@@ -242,6 +242,7 @@ export function getMovementPaths(
 
   const maxMove = UNIT_STATS[unit.type].move;
   const results = new Map<string, MovementPath>();
+  const leaveBaseDestinationsByBaseId = new Map<string, UnitPosition[]>();
   const queue: {
     position: UnitPosition;
     cost: number;
@@ -255,12 +256,18 @@ export function getMovementPaths(
 
     if (current.position.kind === "base") {
       const nextCost = current.cost + 1;
+      const currentBaseId = current.position.baseId;
+      let leaveBaseDestinations = leaveBaseDestinationsByBaseId.get(currentBaseId);
+      if (leaveBaseDestinations === undefined) {
+        leaveBaseDestinations = nextGroundPositionsFromBase(
+          state,
+          unit,
+          currentBaseId,
+        );
+        leaveBaseDestinationsByBaseId.set(currentBaseId, leaveBaseDestinations);
+      }
 
-      for (const destination of nextGroundPositionsFromBase(
-        state,
-        unit,
-        current.position.baseId,
-      )) {
+      for (const destination of leaveBaseDestinations) {
         const path: MovementPath = {
           destination,
           cost: nextCost,
