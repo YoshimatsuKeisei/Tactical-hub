@@ -875,3 +875,30 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    bridges/bases/roads, or movement semantics.
 5. Use a diagnostic-only branch first; do not combine profiling instrumentation with the next optimization.
 6. Keep 50k deferred until another material structural gap is removed or remaining costs are characterized.
+
+
+## V6-U movement-path detail profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6u-movement-path-profile
+- Diagnostic branch tip: 2463083 (profiling only).
+- Equivalent V6-T detail probe commit used for the isolated 1k split: 28578e1207d9d6cb5695411064721bae4442a2d3.
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true.
+- movementRangePathSearch: 94.68 ms / 352 calls.
+- Dominant internal stage: movementPathLeaveBaseExpansion = 58.86 ms / 219 calls (~62% of path-search time).
+- Other measured enumeration costs:
+  - movementPathPositionForTile: 8.57 ms / 1,762
+  - movementPathBaseConnectivity: 6.78 ms / 262
+  - movementPathGroundConnectivity: 3.19 ms / 628
+  - movementPathBaseLookup: 1.45 ms / 2,024
+  - movementPathBaseDestinationLegal: 1.40 ms / 591
+  - movementPathEmptyBasePositions: 0.63 ms / 262
+- Code audit: getMovementPaths may enqueue multiple BaseSlot positions for the same base.
+- nextGroundPositionsFromBase depends on state, unit and baseId, but not the source slotId.
+- Therefore repeated base-slot nodes can recompute the same leave-base destination list inside one path search.
+
+## Next candidate: V6-V per-search leave-base expansion cache
+- Cache nextGroundPositionsFromBase results by baseId only within one getMovementPaths invocation.
+- Do not share the cache across states or separate legal-enumeration calls.
+- Preserve destination values and insertion order exactly.
+- Do not change occupancy, visibility, bridge/base/road rules, retreat behavior or RNG.
+- Run local tests, then 1k paired exactness gate; 4k only if exact and materially faster.
