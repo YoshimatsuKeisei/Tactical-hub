@@ -191,15 +191,24 @@ function nextGroundPositionsFromBase(
   unit: Unit,
   baseId: string,
 ) {
-  const base = state.bases.find((candidate) => candidate.id === baseId);
+  const base = measureLegalSegment(
+    "movementPathLeaveBaseBaseLookup",
+    () => state.bases.find((candidate) => candidate.id === baseId),
+  );
   if (!base) return [];
   const positions = new Map<string, UnitPosition>();
   for (const coord of base.coords) {
     for (const { dx, dy } of directions) {
       const x = coord.x + dx;
       const y = coord.y + dy;
-      if (getBaseAtTile(state.bases, x, y)) continue;
-      const position = positionForTile(state, unit, x, y);
+      if (measureLegalSegment(
+        "movementPathLeaveBaseBaseCellCheck",
+        () => getBaseAtTile(state.bases, x, y),
+      )) continue;
+      const position = measureLegalSegment(
+        "movementPathLeaveBasePositionForTile",
+        () => positionForTile(state, unit, x, y),
+      );
 
       if (!position) {
         continue;
@@ -217,7 +226,10 @@ function nextGroundPositionsFromBase(
        */
       if (
         position.kind === "tile" &&
-        !isGroundPositionConnectedToBase(state, position, baseId)
+        !measureLegalSegment(
+          "movementPathLeaveBaseConnectivity",
+          () => isGroundPositionConnectedToBase(state, position, baseId),
+        )
       ) {
         continue;
       }
