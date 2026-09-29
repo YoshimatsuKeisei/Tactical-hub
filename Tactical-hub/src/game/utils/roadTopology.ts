@@ -1,4 +1,5 @@
 import type { GameState, TerrainType, UnitPosition } from "../types";
+import { isLegalProfilingEnabled, recordLegalSegment } from "../cpu/legalEnumerationProfile";
 import { getBaseAtTile, getTile } from "./position";
 
 const ROAD_TERRAINS = new Set<TerrainType>(["road", "baseGate", "reorganize"]);
@@ -201,15 +202,54 @@ function sectionsConnectPositions(
   );
 }
 
-function attackPathNeighbors(state: GameState, position: UnitPosition, context?: RoadAttackTopologyContext) {
+type AttackPathNeighborProfile = {
+  baseLookupMs: number;
+  roadOrBridgeLookupMs: number;
+  baseConnectMs: number;
+  groundEdgeMs: number;
+  coordinateMs: number;
+};
+
+function profileAttackPathPart<T>(
+  profile: AttackPathNeighborProfile | undefined,
+  field: keyof AttackPathNeighborProfile,
+  operation: () => T,
+): T {
+  if (!profile) return operation();
+  const started = performance.now();
+  const result = operation();
+  profile[field] += performance.now() - started;
+  return result;
+}
+
+function attackPathNeighbors(
+  state: GameState,
+  position: UnitPosition,
+  context?: RoadAttackTopologyContext,
+  profile?: AttackPathNeighborProfile,
+) {
   const neighbors = new Map<string, UnitPosition>();
 
   if (position.kind === "base") {
-    const base = state.bases.find((candidate) => candidate.id === position.baseId);
+    const base = profileAttackPathPart(
+      profile,
+      "baseLookupMs",
+      () => state.bases.find((candidate) => candidate.id === position.baseId),
+    );
     for (const coord of base?.coords ?? []) {
       for (const { dx, dy } of adjacentDirections) {
-        const neighbor = contextRoadOrBridgePositionAt(state, coord.x + dx, coord.y + dy, context);
-        if (!neighbor || !sectionsConnectPositions(state, position, neighbor, context)) continue;
+        const neighbor = profileAttackPathPart(
+          profile,
+          "roadOrBridgeLookupMs",
+          () => contextRoadOrBridgePositionAt(state, coord.x + dx, coord.y + dy, context),
+        );
+        if (!neighbor) continue;
+        const connects = profileAttackPathPart(
+          profile,
+          "baseConnectMs",
+          () => sectionsConnectPositions(state, position, neighbor, context),
+        );
+        if (!connects) continue;
         neighbors.set(attackPathKey(neighbor), neighbor);
       }
     }
@@ -217,29 +257,50 @@ function attackPathNeighbors(state: GameState, position: UnitPosition, context?:
   }
 
   if (position.kind !== "tile" && position.kind !== "bridge") return [];
-  const coord = getPositionCoord(state, position);
+  const coord = profileAttackPathPart(
+    profile,
+    "coordinateMs",
+    () => getPositionCoord(state, position),
+  );
   if (!coord) return [];
 
   for (const { dx, dy } of adjacentDirections) {
     const x = coord.x + dx;
     const y = coord.y + dy;
-    const base = context ? context.baseByCoord.get(`${x},${y}`) : getBaseAtTile(state.bases, x, y);
+    const base = profileAttackPathPart(
+      profile,
+      "baseLookupMs",
+      () => context ? context.baseByCoord.get(`${x},${y}`) : getBaseAtTile(state.bases, x, y),
+    );
     if (base) {
       const basePosition: UnitPosition = {
         kind: "base",
         baseId: base.id,
         slotId: "attack-path",
       };
-      if (sectionsConnectPositions(state, position, basePosition, context))
+      const connects = profileAttackPathPart(
+        profile,
+        "baseConnectMs",
+        () => sectionsConnectPositions(state, position, basePosition, context),
+      );
+      if (connects)
         neighbors.set(attackPathKey(basePosition), basePosition);
       continue;
     }
 
-    const neighbor = contextRoadOrBridgePositionAt(state, x, y, context);
-    if (
-      neighbor &&
-      canMoveBetweenGroundPositions(state, position, neighbor)
-    )
+    const neighbor = profileAttackPathPart(
+      profile,
+      "roadOrBridgeLookupMs",
+      () => contextRoadOrBridgePositionAt(state, x, y, context),
+    );
+    const connected = neighbor
+      ? profileAttackPathPart(
+          profile,
+          "groundEdgeMs",
+          () => canMoveBetweenGroundPositions(state, position, neighbor),
+        )
+      : false;
+    if (neighbor && connected)
       neighbors.set(attackPathKey(neighbor), neighbor);
   }
   return [...neighbors.values()];
@@ -290,21 +351,47 @@ export function getRoadAttackDistanceWithinRange(
     return distance <= maxDistance ? distance : Number.POSITIVE_INFINITY;
   }
   if (from.kind === "removed" || to.kind === "removed") return Number.POSITIVE_INFINITY;
+
+  const neighborProfile: AttackPathNeighborProfile | undefined = isLegalProfilingEnabled()
+    ? {
+        baseLookupMs: 0,
+        roadOrBridgeLookupMs: 0,
+        baseConnectMs: 0,
+        groundEdgeMs: 0,
+        coordinateMs: 0,
+      }
+    : undefined;
+  let neighborExpansionMs = 0;
+  const finish = (distance: number) => {
+    if (neighborProfile) {
+      recordLegalSegment("attackRangeNeighborExpansion", neighborExpansionMs);
+      recordLegalSegment("attackRangeNeighborBaseLookup", neighborProfile.baseLookupMs);
+      recordLegalSegment("attackRangeNeighborRoadOrBridgeLookup", neighborProfile.roadOrBridgeLookupMs);
+      recordLegalSegment("attackRangeNeighborBaseConnect", neighborProfile.baseConnectMs);
+      recordLegalSegment("attackRangeNeighborGroundEdge", neighborProfile.groundEdgeMs);
+      recordLegalSegment("attackRangeNeighborCoordinate", neighborProfile.coordinateMs);
+    }
+    return distance;
+  };
+
   const targetKey = attackPathKey(to);
   const queue: { position: UnitPosition; distance: number }[] = [{ position: from, distance: 0 }];
   const visited = new Set([attackPathKey(from)]);
   while (queue.length) {
     const current = queue.shift()!;
-    if (attackPathKey(current.position) === targetKey) return current.distance;
+    if (attackPathKey(current.position) === targetKey) return finish(current.distance);
     if (current.distance >= maxDistance) continue;
-    for (const neighbor of attackPathNeighbors(state, current.position, context)) {
+    const neighborStarted = neighborProfile ? performance.now() : 0;
+    const neighbors = attackPathNeighbors(state, current.position, context, neighborProfile);
+    if (neighborProfile) neighborExpansionMs += performance.now() - neighborStarted;
+    for (const neighbor of neighbors) {
       const key = attackPathKey(neighbor);
       if (visited.has(key)) continue;
       visited.add(key);
       queue.push({ position: neighbor, distance: current.distance + 1 });
     }
   }
-  return Number.POSITIVE_INFINITY;
+  return finish(Number.POSITIVE_INFINITY);
 }
 
 /**
