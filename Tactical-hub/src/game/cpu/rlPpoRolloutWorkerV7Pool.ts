@@ -37,6 +37,7 @@ function emptyTiming(): PpoRolloutWorkerV7Timing {
     legalActionsMs: 0,
     encodeObservationMs: 0,
     encodeActionsMs: 0,
+    packMs: 0,
     gameStepMs: 0,
   };
 }
@@ -49,6 +50,7 @@ function addTiming(
   target.legalActionsMs += source.legalActionsMs;
   target.encodeObservationMs += source.encodeObservationMs;
   target.encodeActionsMs += source.encodeActionsMs;
+  target.packMs += source.packMs;
   target.gameStepMs += source.gameStepMs;
 }
 
