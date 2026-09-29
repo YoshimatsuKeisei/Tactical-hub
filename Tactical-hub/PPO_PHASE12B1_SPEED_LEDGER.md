@@ -1354,3 +1354,20 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Decision: V7-A is promoted as the current fastest exact-verified baseline.
 - Re-profile residual game-step costs before selecting the next optimization route.
 - 50k remains NOT RUN.
+
+
+## V7-A residual game-step re-profile
+- Diagnostic branch: experiment/ppo-fast-batch-v7a-residual-reprofile
+- Diagnostic commit: c0ad03403dfdc5b8bd1b17b953bf92403bb17df3
+- Baseline: V7-A 0a6c52e4fec9bcdb930f3bb2a962f3790383e8a6
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; detailed profiler overhead makes candidate game-step wall non-comparable.
+- Baseline uninstrumented game-step: 350.90 ms; instrumented candidate: 416.03 ms.
+- Residual top-level costs: movement enumeration 110.24 ms, attack enumeration 72.43 ms, resolve_battle 82.33 ms / 24 calls.
+- Production submit is no longer a hotspot: submit_team_production 2.53 ms / 32 calls.
+- Movement detail: movementRangePathSearch 63.25 ms / 352 calls; leave-base expansion 23.33 ms / 219 calls.
+- Neutral battle detail: attackTargetSearch 62.47 ms / 360 calls; attackRangeDistance 35.97 ms / 516 calls.
+- Normal attack detail: attackTargetSearch 51.41 ms / 288 calls; attackRangeDistance 12.99 ms / 264 calls.
+- Keep V6-R full-distance lookup and V6-V per-search leave-base cache closed.
+- Next route: investigate movement path work that is unnecessary for destination-only legal-action enumeration.
+- 50k remains NOT RUN.
