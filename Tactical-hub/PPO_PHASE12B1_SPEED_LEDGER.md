@@ -843,3 +843,35 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 3. Do not combine enumeration-path optimization with another apply-path change.
 4. Preserve legal movement set/order, exact destination values, visibility, retreat, bridge/base/road
    semantics, state transitions, RNG and trajectory meaning.
+
+
+## V6-U prevalidated RL movement — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6u-prevalidated-movement-clean
+- Implementation commit: 1469f256ff1e53199ff537e83992d47c1728bc9d
+- Baseline: V6-T e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Game step: 1,965.85 -> 1,829.77 ms = 1.07437x speedup (~6.92% reduction).
+- Observation encode: 1,100.86 -> 1,106.18 ms and Action encode: 847.00 -> 834.89 ms;
+  unchanged-path differences are treated as run variability.
+- batchAct: 5,329.80 -> 5,086.86 ms; replay: 3,613.71 -> 3,803.79 ms;
+  these unchanged-path differences are treated as run variability.
+- External wall: 22.467 -> 18.232 sec, but full wall difference is not attributed solely to V6-U.
+- The general movement validator remains unchanged.
+- Only RL movement actions selected from the current legal-action list use the explicit
+  rlPrevalidatedMovement fast path.
+- Hidden-water collision handling remains before the skipped path revalidation.
+- V6-U is promoted as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next steps after V6-U
+1. Keep V6-U as production baseline.
+2. Re-profile movement enumeration/path-search internals on V6-U.
+3. The previous V6-T movement profile showed movementRangePathSearch at 91.60 ms / 352 calls per 1k,
+   much larger than movementVisibleState at 3.76 ms.
+4. Target redundant representation/allocation/topology work inside getMovementPaths without changing
+   candidate destinations, ordering, hidden-information behavior, retreat rules, occupancy rules,
+   bridges/bases/roads, or movement semantics.
+5. Use a diagnostic-only branch first; do not combine profiling instrumentation with the next optimization.
+6. Keep 50k deferred until another material structural gap is removed or remaining costs are characterized.
