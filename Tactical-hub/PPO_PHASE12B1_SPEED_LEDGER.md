@@ -1093,3 +1093,41 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Prefer another measured structural duplicate/repeated scan over a broad cache.
 5. Preserve legal action values/order, visibility, movement/attack rules, RNG, trajectory semantics,
    PPO math, 8 environments, replay chunk size 32 and checkpoint schema.
+
+
+## V6-X game-step + movement-path re-profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6x-game-step-profile
+- Diagnostic commit: 47208935b8504178b74e0a79b3943f4ee4319f57
+- Baseline: V6-X edfaaa4
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Baseline game step without detailed instrumentation: 439.26 ms.
+- Instrumented diagnostic game step: 480.84 ms; the slowdown is profiler overhead and is not a regression.
+- Instrumented internal split:
+  - apply: 213.16 ms
+  - enumerate: 204.34 ms
+  - runtime clone: 28.34 ms
+  - unaccounted: 33.32 ms
+- Apply hotspots:
+  - movement_input: 118.98 ms
+  - attack_input: 90.75 ms
+  - movement action: 59.01 ms / 344 calls
+  - resolve_battle: 88.95 ms / 24 calls
+- Enumeration hotspots:
+  - movement_input: 113.79 ms
+  - attack_input: 89.16 ms
+- Movement enumeration internals:
+  - movementRangePathSearch: 64.57 ms / 352 calls
+  - movementPathLeaveBaseExpansion: 23.93 ms / 219 calls
+  - movementPathBaseConnectivity: 9.28 ms / 262 calls
+  - movementPathPositionForTile: 6.68 ms / 1,762 calls
+  - movementPathGroundConnectivity: 4.03 ms / 628 calls
+  - movementVisibleState: 4.02 ms / 352 calls
+- Attack enumeration internals:
+  - attackTargetSearch: 66.36 ms / 288 calls
+  - attackRangeDistance: 24.21 ms / 264 calls
+  - attackAcrossBaseBlocking: 17.27 ms / 4,017 calls
+  - attackUnitCoordinateBaseSearch: 9.79 ms / 24 calls
+  - attackFinalLegalCheck: 4.18 ms / 4,488 calls
+- Next: inspect attackTargetSearch for repeated scans before selecting V6-Y.
+- 50k remains NOT RUN.
