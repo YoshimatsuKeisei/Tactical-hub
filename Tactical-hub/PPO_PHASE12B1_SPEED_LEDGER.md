@@ -1339,3 +1339,18 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - General submitTeamProduction remains clone-based; only the RL fast environment opts into the in-place path.
 - Decision: 1k gate passed materially; proceed to 4k paired exactness/performance gate.
 - 50k remains NOT RUN.
+
+
+## V7-A RL-only in-place production — 4k verified result
+- Branch: experiment/ppo-fast-batch-v7a-inplace-production
+- Implementation commit: 0a6c52e4fec9bcdb930f3bb2a962f3790383e8a6
+- Baseline: V6-Z a5ef3d225581dd6cf49018cbd1179dee07d65172
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- Kaggle Version 131: COMPLETE.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Game step: 1,658.28 -> 1,519.63 ms = 1.09124x speedup (~8.36% reduction).
+- Candidate observation encode: 1,189.08 ms; action encode: 915.02 ms; batchAct: 5,393.45 ms; replay restore/accumulate: 3,708.94 ms.
+- General submitTeamProduction remains clone-based and unchanged; the RL fast environment uses the exact in-place submit path.
+- Decision: V7-A is promoted as the current fastest exact-verified baseline.
+- Re-profile residual game-step costs before selecting the next optimization route.
+- 50k remains NOT RUN.
