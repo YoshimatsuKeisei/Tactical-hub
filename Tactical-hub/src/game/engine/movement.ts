@@ -193,16 +193,28 @@ function nextGroundPositionsFromBase(
   unit: Unit,
   baseId: string,
 ) {
-  const base = state.bases.find((candidate) => candidate.id === baseId);
+  const base = measureLegalSegment(
+    "movementPathLeaveBaseBaseLookup",
+    () => state.bases.find((candidate) => candidate.id === baseId),
+  );
   if (!base) return [];
-  const connectedRoadSectionIds = getBaseConnectedRoadSectionIds(state, baseId);
+  const connectedRoadSectionIds = measureLegalSegment(
+    "movementPathLeaveBaseConnectedSections",
+    () => getBaseConnectedRoadSectionIds(state, baseId),
+  );
   const positions = new Map<string, UnitPosition>();
   for (const coord of base.coords) {
     for (const { dx, dy } of directions) {
       const x = coord.x + dx;
       const y = coord.y + dy;
-      if (getBaseAtTile(state.bases, x, y)) continue;
-      const position = positionForTile(state, unit, x, y);
+      if (measureLegalSegment(
+        "movementPathLeaveBaseBaseCellCheck",
+        () => getBaseAtTile(state.bases, x, y),
+      )) continue;
+      const position = measureLegalSegment(
+        "movementPathLeaveBasePositionForTile",
+        () => positionForTile(state, unit, x, y),
+      );
 
       if (!position) {
         continue;
@@ -219,16 +231,32 @@ function nextGroundPositionsFromBase(
        * 水上忍者の既存挙動は変更しない。
        */
       if (position.kind === "tile") {
-        const roadSectionId = getRoadSectionIdForPosition(state, position);
-        if (!roadSectionId || !connectedRoadSectionIds.includes(roadSectionId)) {
+        const roadSectionId = measureLegalSegment(
+          "movementPathLeaveBaseRoadSectionLookup",
+          () => getRoadSectionIdForPosition(state, position),
+        );
+        const connected = measureLegalSegment(
+          "movementPathLeaveBaseSectionMembership",
+          () => Boolean(
+            roadSectionId &&
+            connectedRoadSectionIds.includes(roadSectionId)
+          ),
+        );
+        if (!connected) {
           continue;
         }
       }
 
-      positions.set(positionKey(position), position);
+      measureLegalSegment(
+        "movementPathLeaveBaseDeduplicate",
+        () => positions.set(positionKey(position), position),
+      );
     }
   }
-  return [...positions.values()];
+  return measureLegalSegment(
+    "movementPathLeaveBaseMaterialize",
+    () => [...positions.values()],
+  );
 }
 
 export function getMovementPaths(
