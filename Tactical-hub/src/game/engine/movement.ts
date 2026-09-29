@@ -240,9 +240,10 @@ function nextGroundPositionsFromBase(
   return [...positions.values()];
 }
 
-export function getMovementPaths(
+function getMovementPathsInternal(
   state: GameState,
   unitId: string,
+  recordSteps: boolean,
 ): MovementPath[] {
   const unit = state.units.find((candidate) => candidate.id === unitId);
   if (
@@ -276,15 +277,17 @@ export function getMovementPaths(
         const path: MovementPath = {
           destination,
           cost: nextCost,
-          steps: [
-            ...current.steps,
-            {
-              kind: "leave-base",
-              from: current.position,
-              to: destination,
-              baseId: current.position.baseId,
-            },
-          ],
+          steps: recordSteps
+            ? [
+                ...current.steps,
+                {
+                  kind: "leave-base",
+                  from: current.position,
+                  to: destination,
+                  baseId: current.position.baseId,
+                },
+              ]
+            : current.steps,
         };
 
         results.set(positionKey(destination), path);
@@ -348,15 +351,17 @@ export function getMovementPaths(
           const enterPath: MovementPath = {
             destination: basePosition,
             cost: nextCost,
-            steps: [
-              ...current.steps,
-              {
-                kind: "enter-base",
-                from: current.position,
-                to: basePosition,
-                baseId: base.id,
-              },
-            ],
+            steps: recordSteps
+              ? [
+                  ...current.steps,
+                  {
+                    kind: "enter-base",
+                    from: current.position,
+                    to: basePosition,
+                    baseId: base.id,
+                  },
+                ]
+              : current.steps,
           };
           results.set(positionKey(basePosition), enterPath);
           if (
@@ -399,10 +404,12 @@ export function getMovementPaths(
       const path: MovementPath = {
         destination,
         cost: nextCost,
-        steps: [
-          ...current.steps,
-          { kind: "ground", from: current.position, to: destination },
-        ],
+        steps: recordSteps
+          ? [
+              ...current.steps,
+              { kind: "ground", from: current.position, to: destination },
+            ]
+          : current.steps,
       };
       results.set(positionKey(destination), path);
       const visitedKey = `${key}:${nextCost}`;
@@ -420,6 +427,13 @@ export function getMovementPaths(
   return [...results.values()];
 }
 
+export function getMovementPaths(
+  state: GameState,
+  unitId: string,
+): MovementPath[] {
+  return getMovementPathsInternal(state, unitId, true);
+}
+
 export function getMovementCandidates(
   state: GameState,
   unitId: string,
@@ -431,8 +445,11 @@ export function getMovementCandidates(
   if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
   if (semantics === "current") {
     const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
-    return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(createTeamVisibleState(state, unit.ownerTeamId), unitId)
-      .map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
+    return measureLegalSegment("movementRangePathSearch", () => getMovementPathsInternal(
+      createTeamVisibleState(state, unit.ownerTeamId),
+      unitId,
+      false,
+    ).map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
   }
   const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
     const visibleState = createTeamVisibleState(state, unit.ownerTeamId);
