@@ -944,3 +944,31 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
   retreat behavior and RNG are unchanged.
 - Decision: proceed to 4k paired exactness/performance gate.
 - 50k remains NOT RUN.
+
+
+## V6-W hoist base road sections — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6w-hoist-base-sections-clean
+- Implementation commit: 6904e598fc7be45d910486211580ed33a7427be4
+- Baseline: V6-U 835924a
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Game step: 1,928.24 -> 1,849.77 ms = 1.04242x speedup (~4.07% reduction).
+- Observation encode: 1,147.94 -> 1,261.89 ms and Action encode: 881.43 -> 924.26 ms;
+  unchanged-path differences are treated as run variability.
+- batchAct: 5,703.27 -> 5,565.35 ms; replay: 4,072.61 -> 3,894.64 ms;
+  unchanged-path differences are treated as run variability.
+- External wall: 24.291 -> 19.360 sec, but full wall difference is not attributed solely to V6-W.
+- V6-W hoists the invariant base connected-road-section list once per leave-base expansion.
+- Per-tile roadSectionId membership, candidate values, insertion order, visibility, occupancy,
+  bridge/base/road rules, retreat behavior and RNG remain unchanged.
+- V6-W is promoted as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next steps after V6-W
+1. Keep V6-W as production baseline.
+2. Re-profile game-step/movement enumeration on V6-W before another optimization.
+3. Confirm the residual leave-base expansion cost after hoisting base connected sections.
+4. Compare remaining movement enumeration, attack enumeration and battle resolution costs.
+5. Do not infer the next target from pre-V6-W profiles alone.
+6. Keep 50k deferred until another material structural gap is removed or remaining costs are characterized.
