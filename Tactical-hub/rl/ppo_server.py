@@ -500,6 +500,7 @@ def main():
                     "rawSha256": raw_sha256,
                 })
             elif kind == "retainedBatchUpdateChunk":
+                profile_record = record
                 if profile:
                     retained_restore_start = time.perf_counter()
                 retention_ids = [
@@ -686,7 +687,7 @@ def main():
                 )
                 if profile:
                     sync_device()
-                    record(
+                    profile_record(
                         "retained_batch_restore_prepare",
                         time.perf_counter() - retained_restore_start,
                     )
@@ -702,7 +703,7 @@ def main():
                 )
                 if profile:
                     sync_device()
-                    record(
+                    profile_record(
                         "retained_batch_accumulate",
                         time.perf_counter() - retained_accumulate_start,
                     )
