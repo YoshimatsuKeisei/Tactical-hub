@@ -1475,3 +1475,27 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Compared with V7-C, prepare barrier improved from 3,149.16 ms to 982.22 ms (~3.21x), confirming transferable packed payloads removed most structured-clone overhead.
 - Interpretation: the intended transport bottleneck was materially reduced and exactness is preserved, but 1k rollout remains slower than V7-A; the overall wall improvement may include startup/update noise.
 - Decision: do not promote from 1k. Run a 4k paired exact gate before deciding whether V7-D is beneficial.
+
+
+## V7-D worker packed transfer 1k gate — EXACT / 4k REQUIRED
+- Branch: experiment/ppo-fast-batch-v7d-worker-packed-transfer
+- Candidate commit: 38018f87082e90cbd0cfdcfb1398b51ab89a00cc
+- Kaggle Version 146: COMPLETE.
+- Probe: ppo_v7d_worker_packed_transfer_1k_gate.
+- Workload: fixed update2, 8 environments x 125 decisions = 1,000 decisions.
+- allExact=true.
+- Exact checks passed for semantic summaries, update result, parameter/optimizer/RNG/gradient hashes, model/optimizer checkpoint state, CPU/CUDA RNG state, counters, Feature Spec, hyperparameters, seed and sample counts.
+- Baseline V7-A wall: 14.7238 sec.
+- Candidate V7-D wall: 12.9669 sec.
+- wallSpeedup: 1.13549x (~11.93% wall-time reduction).
+- Baseline rollout: 2,945.21 ms.
+- Candidate rollout: 3,094.39 ms.
+- rolloutSpeedup: 0.95179x (~5.07% slower rollout).
+- Baseline replay: 1,829.25 ms.
+- Candidate replay: 2,117.14 ms.
+- Candidate 4-worker prepare barrier: 1,059.83 ms.
+- Candidate apply barrier: 449.65 ms.
+- V7-C prepare barrier was 3,149.16 ms; worker-side packed transfer cut this by ~66.3%.
+- Worker CPU totals included observation 39.08 ms, legal actions 3.07 ms, observation encode 677.68 ms, action encode 540.60 ms, packing 1,003.86 ms and game-step 774.34 ms. These totals overlap across workers and are not wall time.
+- Interpretation: worker-side packing/transfer fixes the dominant V7-C structured-clone penalty, but the 1k rollout itself is still slightly slower than V7-A. The end-to-end wall improvement may include run-to-run variation outside rollout/replay.
+- Decision: do not promote from 1k alone. Run the same exact-preserving paired gate at 4k before deciding promotion or closure.
