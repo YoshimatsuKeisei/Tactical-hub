@@ -165,6 +165,88 @@ export class PythonPpoClient {
     return { ...response, actionKey: legalActions.actionKeys[response.actionIndex] };
   }
 
+  async actPackedBatch(
+    packed: PackedBcBatch,
+    actionKeys: string[][],
+    options: { retentionIds?: string[]; retentionBatchId?: string } = {},
+  ) {
+    if (!this.featureSpec) throw new Error("Python PPO Feature Spec is not initialized");
+    if (packed.batchSize <= 0 || packed.batchSize !== actionKeys.length) {
+      throw new Error("PPO packed action batch/action-key count mismatch");
+    }
+    const retentionIds = options.retentionIds;
+    const retentionBatchId = options.retentionBatchId;
+    if (retentionIds && retentionBatchId) {
+      throw new Error(
+        "PPO batched action cannot use retentionIds and retentionBatchId together",
+      );
+    }
+    if (retentionBatchId !== undefined && !retentionBatchId) {
+      throw new Error("PPO retentionBatchId must not be empty");
+    }
+    if (retentionIds) {
+      if (retentionIds.length !== packed.batchSize) {
+        throw new Error("PPO batched retention IDs must match sample count");
+      }
+      if (retentionIds.some((retentionId) => !retentionId)) {
+        throw new Error("PPO batched retention IDs must not be empty");
+      }
+      if (new Set(retentionIds).size !== retentionIds.length) {
+        throw new Error("PPO batched retention IDs must be unique");
+      }
+    }
+
+    const requestId = this.nextRequestId++;
+    const responsePromise = this.wait();
+    this.sendPreparedPacked(
+      {
+        type: "packedActBatch",
+        requestId,
+        ...(retentionIds ? { retentionIds } : {}),
+        ...(retentionBatchId ? { retentionBatchId } : {}),
+      },
+      packed,
+    );
+
+    const response = await responsePromise;
+    if (response.type === "error") throw new Error(response.message);
+    if (
+      response.type !== "actions"
+      || response.requestId !== requestId
+    ) {
+      throw new Error("Unexpected PPO packed batch-action response");
+    }
+    if (
+      response.actionIndices.length !== packed.batchSize
+      || response.logProbabilities.length !== packed.batchSize
+      || response.values.length !== packed.batchSize
+    ) {
+      throw new Error("PPO returned an action batch with the wrong length");
+    }
+
+    return actionKeys.map((keys, index) => {
+      const actionIndex = response.actionIndices[index];
+      const logProbability = response.logProbabilities[index];
+      const value = response.values[index];
+      if (
+        !Number.isInteger(actionIndex)
+        || actionIndex < 0
+        || actionIndex >= keys.length
+      ) {
+        throw new Error("PPO returned an illegal batched action index");
+      }
+      if (![logProbability, value].every(Number.isFinite)) {
+        throw new Error("PPO returned NaN or Inf in batched action output");
+      }
+      return {
+        actionIndex,
+        logProbability,
+        value,
+        actionKey: keys[actionIndex],
+      };
+    });
+  }
+
   async actBatch(
     samples: Array<{
       observation: EncodedObservation;
