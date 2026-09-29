@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import { parentPort } from "node:worker_threads";
 import { encodeRlLegalActionsSparseV2 } from "./rlActionEncoder";
 import { RlEnvironmentV2 } from "./rlEnvironment";
+import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
   encodeRlObservationCompactV2,
@@ -22,6 +23,8 @@ import type {
   PpoRolloutWorkerV7Timing,
 } from "./rlPpoRolloutWorkerV7Messages";
 import type { PpoHyperparameters } from "./pythonPpoClient";
+import { packPpoActBatchInput } from "./rlPpoPackedBatch";
+import { toTransferablePackedBcBatch } from "./rlPpoWorkerPackedV7";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -48,6 +51,7 @@ type WorkerSlot = {
 };
 
 let workerId = -1;
+let featureSpec: RlFeatureSpecV2 | undefined;
 let hyperparameters: PpoHyperparameters | undefined;
 let safetyMaxTurns = 0;
 let safetyMaxActions = 0;
@@ -59,6 +63,7 @@ function timing(): PpoRolloutWorkerV7Timing {
     legalActionsMs: 0,
     encodeObservationMs: 0,
     encodeActionsMs: 0,
+    packMs: 0,
     gameStepMs: 0,
   };
 }
@@ -203,6 +208,7 @@ async function handleInit(
     throw new Error("PPO V7 rollout worker was initialized twice");
   }
   workerId = message.workerId;
+  featureSpec = message.featureSpec;
   hyperparameters = message.hyperparameters;
   safetyMaxTurns = message.safetyMaxTurns;
   safetyMaxActions = message.safetyMaxActions;
@@ -230,7 +236,7 @@ async function handleInit(
 async function handlePrepare(
   message: Extract<PpoRolloutWorkerV7Request, { type: "prepare" }>,
 ) {
-  if (!hyperparameters || workerId < 0) {
+  if (!featureSpec || !hyperparameters || workerId < 0) {
     throw new Error("PPO V7 rollout worker is not initialized");
   }
   const stageTiming = timing();
@@ -321,19 +327,34 @@ async function handlePrepare(
     };
     slot.pending = pending;
 
+    const packed = measure(
+      stageTiming,
+      "packMs",
+      () => toTransferablePackedBcBatch(
+        packPpoActBatchInput(
+          [{
+            observation: encodedObservation,
+            sparseActions: encodedActions.sparseActions,
+          }],
+          featureSpec,
+          {
+            compactMaskedPrefixes: true,
+            sparseActions: true,
+          },
+        ),
+      ),
+    );
+
     samples.push({
       environmentIndex: slot.environmentIndex,
       decisionIndex: pending.decisionIndex,
-      turnNumber: pending.turnNumber,
-      phase: pending.phase,
-      teamId: pending.teamId,
       progressHash: pending.progressHash,
-      observation: encodedObservation,
-      legalActions: encodedActions,
+      actionKeys: encodedActions.actionKeys,
+      packed,
     });
   }
 
-  parentPort!.postMessage({
+  const response = {
     type: "prepared",
     requestId: message.requestId,
     workerId,
@@ -342,7 +363,13 @@ async function handlePrepare(
     finalized,
     mergeLegalActionCount,
     timing: stageTiming,
-  } satisfies PpoRolloutWorkerV7Response);
+  } satisfies PpoRolloutWorkerV7Response;
+  parentPort!.postMessage(
+    response,
+    samples.map(
+      (sample) => sample.packed.payload.buffer as ArrayBuffer,
+    ),
+  );
 }
 
 async function handleApply(
