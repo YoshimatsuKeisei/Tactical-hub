@@ -394,6 +394,10 @@ def main():
         item["count"] += 1
         item["totalMs"] += elapsed * 1000.0
 
+    # Preserve a stable reference because later replay loops historically use
+    # "record" as their loop variable.
+    profile_record = record
+
     def sync_device():
         if profile and trainer is not None and trainer.device.type == "cuda":
             torch.cuda.synchronize(trainer.device)
@@ -500,7 +504,6 @@ def main():
                     "rawSha256": raw_sha256,
                 })
             elif kind == "retainedBatchUpdateChunk":
-                profile_record = record
                 if profile:
                     retained_restore_start = time.perf_counter()
                 retention_ids = [
