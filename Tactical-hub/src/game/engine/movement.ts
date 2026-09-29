@@ -10,8 +10,10 @@ import {
 } from "../utils/position";
 import {
   canMoveBetweenGroundPositions,
+  getBaseConnectedRoadSectionIds,
   getBridgePositionAt,
   getPositionCoord,
+  getRoadSectionIdForPosition,
   isGroundPositionConnectedToBase,
 } from "../utils/roadTopology";
 import {
@@ -193,6 +195,7 @@ function nextGroundPositionsFromBase(
 ) {
   const base = state.bases.find((candidate) => candidate.id === baseId);
   if (!base) return [];
+  const connectedRoadSectionIds = getBaseConnectedRoadSectionIds(state, baseId);
   const positions = new Map<string, UnitPosition>();
   for (const coord of base.coords) {
     for (const { dx, dy } of directions) {
@@ -215,11 +218,11 @@ function nextGroundPositionsFromBase(
        *
        * 水上忍者の既存挙動は変更しない。
        */
-      if (
-        position.kind === "tile" &&
-        !isGroundPositionConnectedToBase(state, position, baseId)
-      ) {
-        continue;
+      if (position.kind === "tile") {
+        const roadSectionId = getRoadSectionIdForPosition(state, position);
+        if (!roadSectionId || !connectedRoadSectionIds.includes(roadSectionId)) {
+          continue;
+        }
       }
 
       positions.set(positionKey(position), position);
