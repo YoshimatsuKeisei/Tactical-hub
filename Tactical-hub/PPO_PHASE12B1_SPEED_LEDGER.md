@@ -813,3 +813,33 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - External wall and unchanged batchAct/replay differences are treated as run variability.
 - Decision: proceed to 4k paired exactness/performance gate.
 - 50k remains NOT RUN.
+
+
+## V6-U prevalidated RL movement — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6u-prevalidated-movement-clean
+- Implementation commit: 1469f256ff1e53199ff537e83992d47c1728bc9d
+- Baseline: V6-T e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Game step: 1,976.72 -> 1,837.08 ms = 1.0760x speedup (~7.1% reduction).
+- Observation encode: 1,095.89 -> 1,095.64 ms and Action encode: 850.06 -> 846.02 ms;
+  these paths are unchanged and effectively identical.
+- Replay: 3,616.70 -> 3,621.05 ms; unchanged path and effectively identical.
+- batchAct: 5,418.96 -> 4,963.28 ms and finishUpdate changed materially between runs;
+  these unchanged paths are treated as run variability, not V6-U attribution.
+- External wall: 23.116 -> 18.005 sec; full wall difference is not attributed solely to V6-U.
+- The optimization only skips duplicate path revalidation for a movement action selected from the
+  current RlEnvironment legal-action list, under an explicit RL-only flag.
+- General/UI movement validation, legacy replay semantics and externally supplied movement intents remain unchanged.
+- Hidden-water-ninja collision handling remains before the skipped validation.
+- V6-U is promoted as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next steps after V6-U
+1. Re-profile game-step/movement internals on V6-U before changing another game-rule path.
+2. Movement legal enumeration path search remains a likely Node-side target, but profile the
+   internal getMovementPaths stages first.
+3. Do not combine enumeration-path optimization with another apply-path change.
+4. Preserve legal movement set/order, exact destination values, visibility, retreat, bridge/base/road
+   semantics, state transitions, RNG and trajectory meaning.
