@@ -176,7 +176,9 @@ describe("immediate movement semantics", () => {
         baselineActions.map((action) => action.actionKey),
       );
 
-      const actionKey = baselineActions[0]?.actionKey;
+      const actionKey = baselineActions.find(
+        (action) => action.actionType === "movement" && !action.isPass,
+      )?.actionKey ?? baselineActions[0]?.actionKey;
       expect(actionKey).toBeTruthy();
       baseline.stepWithoutObservation(actionKey!);
       prevalidated.stepWithoutObservation(actionKey!);
