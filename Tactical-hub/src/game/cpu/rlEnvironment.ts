@@ -14,6 +14,7 @@ import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./type
 import { createTeamVisibleState } from "../visibility";
 import { createCpuRuntime } from "./types";
 import { getHeavyInfantryMergeCandidates } from "../engine/heavyInfantry";
+import { withLegalProfileSink } from "./legalEnumerationProfile";
 
 export type RlActionType = CpuDecision["kind"];
 export type RlLegalAction = {
@@ -81,6 +82,7 @@ export type RlRewardFunction = (state: GameState, result: Omit<RlResult, "reward
 export type RlEnvironmentInstrumentation = {
   cpuStep?: CpuStepInstrumentation;
   onEnumerate?: (milliseconds: number, phase: GameState["phase"], decisionCount: number) => void;
+  onLegalSegment?: (category: string, milliseconds: number) => void;
 };
 
 export type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision };
@@ -314,9 +316,12 @@ export class RlEnvironment {
     for (let guard = 0; guard < 100; guard += 1) {
       if (this.isTerminal()) { this.decisions = []; return; }
       const enumerateStarted = this.instrumentation?.onEnumerate ? performance.now() : 0;
-      this.decisions = this.schemaVersion === 1
+      const enumerate = () => this.schemaVersion === 1
         ? enumerateRlDecisions(this.state, this.runtime, () => true, this.movementSemantics)
         : enumerateRlDecisionsV2(this.state, this.runtime);
+      this.decisions = this.instrumentation?.onLegalSegment
+        ? withLegalProfileSink(this.instrumentation.onLegalSegment, enumerate)
+        : enumerate();
       this.instrumentation?.onEnumerate?.(
         performance.now() - enumerateStarted,
         this.state.phase,
