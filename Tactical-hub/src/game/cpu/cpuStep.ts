@@ -91,7 +91,15 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       writeLog(decision.teamId, decision.choice ? "production" : "production pass", decision.choice ? `${decision.choice.baseId}:${decision.choice.unitType}` : undefined);
       break;
     case "resolve_production": next = resolveProduction(state); writeLog(undefined, "confirm production"); break;
-    case "submit_team_production": next = submitTeamProduction(state, decision.teamId); writeLog(decision.teamId, "confirm production / skip"); break;
+    case "submit_team_production":
+      next = instrumentation?.onLegalSegment
+        ? withLegalProfileSink(
+            (category, milliseconds) => instrumentation.onLegalSegment?.("apply", category, milliseconds),
+            () => submitTeamProduction(state, decision.teamId),
+          )
+        : submitTeamProduction(state, decision.teamId);
+      writeLog(decision.teamId, "confirm production / skip");
+      break;
     case "movement": {
       const unit = state.units.find((entry) => entry.id === decision.unitId);
       if (decision.to && unit) {

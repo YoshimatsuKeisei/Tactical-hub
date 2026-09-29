@@ -1,4 +1,5 @@
 import { PRODUCIBLE_UNIT_TYPES, UNIT_STATS } from "../constants";
+import { measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import type { GameState, ProductionChoice, StrategistRole, Unit, UnitType } from "../types";
 import { beginMovementPhase } from "./movement";
 import { isTeamProductionPending } from "./productionSchedule";
@@ -115,15 +116,31 @@ function applyProductionChoices(next: GameState, choices: ProductionChoice[]) {
 
 export function submitTeamProduction(state: GameState, teamId: string): GameState {
   if (!isTeamProductionPending(state, teamId)) return state;
-  const next = structuredClone(state) as GameState;
-  const choices = next.turnState.actionIntents
-    .filter((intent) => intent.teamId === teamId)
-    .flatMap((intent) => intent.productionChoices);
-  applyProductionChoices(next, choices);
-  next.turnState.actionIntents = next.turnState.actionIntents.map((intent) =>
-    intent.teamId === teamId ? { ...intent, productionChoices: [] } : intent,
+  const next = measureLegalSegment(
+    "productionSubmitClone",
+    () => structuredClone(state) as GameState,
   );
-  next.productionCompletedTeamIdsThisTurn = [...new Set([...next.productionCompletedTeamIdsThisTurn, teamId])];
+  const choices = measureLegalSegment(
+    "productionSubmitChoices",
+    () => next.turnState.actionIntents
+      .filter((intent) => intent.teamId === teamId)
+      .flatMap((intent) => intent.productionChoices),
+  );
+  measureLegalSegment(
+    "productionSubmitApplyChoices",
+    () => applyProductionChoices(next, choices),
+  );
+  measureLegalSegment(
+    "productionSubmitCleanup",
+    () => {
+      next.turnState.actionIntents = next.turnState.actionIntents.map((intent) =>
+        intent.teamId === teamId ? { ...intent, productionChoices: [] } : intent,
+      );
+      next.productionCompletedTeamIdsThisTurn = [
+        ...new Set([...next.productionCompletedTeamIdsThisTurn, teamId]),
+      ];
+    },
+  );
   return next;
 }
 
