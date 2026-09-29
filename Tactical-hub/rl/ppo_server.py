@@ -316,7 +316,7 @@ def main():
             "selectedActionIndex": int(selected_action_index),
         })
 
-    def enqueue_retained_batch_record(
+    def enqueue_retained_batch_profile_record(
         retention_id,
         message,
         payload,
@@ -387,16 +387,12 @@ def main():
         retention_queue.join()
         check_retention_worker_error()
 
-    def record(stage, elapsed):
+    def profile_profile_record(stage, elapsed):
         if not profile:
             return
         item = timings.setdefault(stage, {"count": 0, "totalMs": 0.0})
         item["count"] += 1
         item["totalMs"] += elapsed * 1000.0
-
-    # Preserve a stable reference because later replay loops historically use
-    # "record" as their loop variable.
-    profile_record = record
 
     def sync_device():
         if profile and trainer is not None and trainer.device.type == "cuda":
@@ -690,7 +686,7 @@ def main():
                 )
                 if profile:
                     sync_device()
-                    profile_record(
+                    profile_profile_record(
                         "retained_batch_restore_prepare",
                         time.perf_counter() - retained_restore_start,
                     )
@@ -706,7 +702,7 @@ def main():
                 )
                 if profile:
                     sync_device()
-                    profile_record(
+                    profile_profile_record(
                         "retained_batch_accumulate",
                         time.perf_counter() - retained_accumulate_start,
                     )
@@ -934,7 +930,7 @@ def main():
                     prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
                 if profile:
                     sync_device()
-                    record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
+                    profile_record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
                 if kind == "packedAct":
                     check_retention_worker_error()
                     retention_id = message.get("retentionId")
@@ -947,7 +943,7 @@ def main():
                         inference_start = time.perf_counter()
                     action = trainer.act_prepared(
                         prepared, actions, action_mask,
-                        profile_stage=record if profile else None,
+                        profile_stage=profile_record if profile else None,
                         fast_guard_mode=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
                         manual_categorical_mode=packed_prepare_mode in (
                             "grouped_h2d_skip_empty_manual_categorical",
@@ -957,7 +953,7 @@ def main():
                     )
                     if profile:
                         sync_device()
-                        record("act_inference", time.perf_counter() - inference_start)
+                        profile_record("act_inference", time.perf_counter() - inference_start)
                     send({"type": "action", "requestId": message["requestId"], **action})
                     if retention_id is not None:
                         enqueue_retained_act(
@@ -998,7 +994,7 @@ def main():
                     )
                     if profile:
                         sync_device()
-                        record(
+                        profile_record(
                             "act_batch_inference",
                             time.perf_counter() - batch_inference_start,
                         )
@@ -1011,7 +1007,7 @@ def main():
                             actions_result["actionIndices"],
                         )
                     elif retention_batch_id:
-                        enqueue_retained_batch_record(
+                        enqueue_retained_batch_profile_record(
                             retention_batch_id,
                             message,
                             payload,
@@ -1033,7 +1029,7 @@ def main():
                     )
                     if profile:
                         sync_device()
-                        record("update_accumulate_chunk", time.perf_counter() - accumulate_start)
+                        profile_record("update_accumulate_chunk", time.perf_counter() - accumulate_start)
                     send({"type": "updateChunkAccepted", "requestId": message["requestId"], **result})
             elif kind == "act":
                 send({"type": "action", "requestId": message["requestId"], **trainer.act(message["observation"], message["actions"])})
@@ -1048,7 +1044,7 @@ def main():
                 update_result = trainer.finish_accumulated_update()
                 if profile:
                     sync_device()
-                    record("update_finish", time.perf_counter() - update_start)
+                    profile_record("update_finish", time.perf_counter() - update_start)
                 trainer.episode_count += int(message.get("completedEpisodes", 0))
                 send({"type": "updateResult", "requestId": message["requestId"], **update_result, "episodeCount": trainer.episode_count})
             elif kind == "update":
