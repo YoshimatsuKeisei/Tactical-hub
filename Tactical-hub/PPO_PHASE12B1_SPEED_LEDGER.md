@@ -924,3 +924,23 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
    and all current movement rules can be preserved.
 3. Avoid adding a cache unless measured reuse exists.
 4. Prefer a structural reduction in repeated geometry scans over another memoization variant.
+
+
+## V6-W hoist base road sections — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v6w-hoist-base-sections-clean
+- Implementation commit: 6904e598fc7be45d910486211580ed33a7427be4
+- Baseline: V6-U 835924a
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Game step: 455.12 -> 422.85 ms = 1.0763x speedup (~7.1% reduction).
+- Prior leave-base detail profile showed:
+  - movementPathLeaveBaseExpansion: 75.52 ms / 219 calls
+  - movementPathLeaveBaseConnectivity: 47.49 ms / 1,733 calls
+  - movementPathLeaveBasePositionForTile: 13.12 ms / 4,380 calls
+  - movementPathLeaveBaseBaseCellCheck: 4.14 ms / 7,008 calls
+- Optimization hoists getBaseConnectedRoadSectionIds(state, baseId) once per
+  nextGroundPositionsFromBase invocation and preserves the original per-tile roadSectionId membership test.
+- Destination values, insertion order, occupancy checks, bridge/base/road rules, visibility,
+  retreat behavior and RNG are unchanged.
+- Decision: proceed to 4k paired exactness/performance gate.
+- 50k remains NOT RUN.
