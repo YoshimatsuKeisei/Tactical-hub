@@ -586,7 +586,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       rolloutWorkerCount,
       parallelValidation,
       rolloutWorkerTiming: {
-        workerCount: rolloutPool?.workerCount ?? rolloutWorkerCount,
+        workerCount: rolloutWorkerCount,
         prepareBarrierMs,
         applyBarrierMs,
         cpuTotals: rolloutWorkerCpuTiming,
