@@ -1,14 +1,12 @@
-import type { GameState } from "../types";
-import type {
-  EncodedLegalActionsSparseV2,
-} from "./rlActionEncoder";
 import type { RlResult } from "./rlEnvironment";
 import type { RlFeatureSpecV2 } from "./rlFeatureSpec";
-import type { EncodedObservation } from "./rlObservationEncoder";
 import type { PpoHyperparameters } from "./pythonPpoClient";
 import type {
   PpoReplayRollout,
 } from "./rlPpoSelfPlay";
+import type {
+  TransferablePackedBcBatch,
+} from "./rlPpoWorkerPackedV7";
 import type {
   PpoTeamAdjudication,
   PpoTimeLimitReason,
@@ -35,12 +33,9 @@ export type PpoRolloutWorkerV7Finalized = {
 export type PpoRolloutWorkerV7PreparedSample = {
   environmentIndex: number;
   decisionIndex: number;
-  turnNumber: number;
-  phase: GameState["phase"];
-  teamId: string;
   progressHash: string;
-  observation: EncodedObservation;
-  legalActions: EncodedLegalActionsSparseV2;
+  actionKeys: string[];
+  packed: TransferablePackedBcBatch;
 };
 
 export type PpoRolloutWorkerV7Timing = {
@@ -48,6 +43,7 @@ export type PpoRolloutWorkerV7Timing = {
   legalActionsMs: number;
   encodeObservationMs: number;
   encodeActionsMs: number;
+  packMs: number;
   gameStepMs: number;
 };
 
