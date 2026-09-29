@@ -763,3 +763,34 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 3. Preserve legal movement set/order, exact destination values, retreat semantics, collision rules,
    bridges/bases/roads, RNG, state transitions and trajectory semantics.
 4. Do not combine movement enumeration and movement-apply optimizations in one candidate.
+
+
+## V6-T movement internal profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6t-movement-profile
+- Diagnostic commits:
+  - 4cdc9ce33853a6a0b3ac4c33d8e965f30b067cf8
+  - c0947018d04cc85b15d62aaad476ce9d2252e8e7
+- Baseline: V6-T e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Movement enumeration:
+  - movementVisibleState: 3.76 ms / 352 calls
+  - movementRangePathSearch: 91.60 ms / 352 calls
+- Movement application:
+  - movementApplyValidationPathSearch: 44.70 ms / 203 calls
+  - movement action apply total: 97.00 ms / 344 movement decisions
+- Therefore roughly 46% of measured movement-action application time is path revalidation.
+- The same movement destination was already produced by legal-action enumeration from the current
+  state immediately before the selected RL action is applied.
+- Existing baseline test note: four legacy saved-intent assertions in movement.test.ts fail on the
+  unchanged V6-T baseline e34aa09 as well. The movement-profile changes did not introduce those failures.
+  Immediate-movement, movement-rotation and profiler tests remain passing.
+
+## Next candidate: V6-U prevalidated RL movement apply
+- Do not remove general movement validation.
+- Keep UI/general game callers, legacy replay and externally supplied movement intents unchanged.
+- Only a movement action selected from the current RlEnvironment legal-action list may use an
+  explicit RL-only prevalidated fast path.
+- Preserve hidden-water-ninja collision handling, retreat effects, occupancy/state mutation,
+  moved-unit bookkeeping, logs, legal action ordering/content, state transitions and all RNG behavior.
+- 1k paired exactness gate first; 4k only if the 1k result is exact and materially faster.
