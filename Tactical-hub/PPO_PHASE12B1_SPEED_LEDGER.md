@@ -1252,3 +1252,29 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Unchanged batchAct/replay/external-wall differences are treated as run variability.
 - Decision: 1k gate passed materially. Proceed to 4k paired exactness/performance gate.
 - 50k remains NOT RUN.
+
+
+## V6-Z lazy attack-path-neighbor memoization — 4k verified result
+- Branch: experiment/ppo-fast-batch-v6z-attack-neighbor-cache
+- Implementation commit: 40bc790d9c83fda34ef455b3b16b7cacd2f125ec
+- Baseline: V6-X bc6de8002a7137d30eaf58451d1846825862ac21
+- Workload: 8 env x 500 decisions = 4,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- CUDA Graph behavior exact: 29 captures, 426 replays, 74 fallbacks.
+- Game step: 1,899.97 -> 1,762.10 ms = 1.07824x speedup (~7.26% reduction).
+- Observation encode: 1,240.85 -> 1,248.61 ms; Action encode: 926.03 -> 953.24 ms.
+- batchAct: 6,501.13 -> 5,678.41 ms; replay: 4,171.24 -> 3,851.72 ms.
+  These unchanged-path differences are treated as run variability and are not attributed to V6-Z.
+- External wall: 27.313 -> 19.570 sec; full wall difference is not attributed solely to V6-Z.
+- Optimization is lazy and context-local: only positions actually visited by attack-path searches are memoized.
+- No whole-graph distance precompute; V6-R remains closed.
+- Cached neighbor arrays preserve original insertion/order and exact UnitPosition values.
+- V6-Z is promoted as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next steps after V6-Z
+1. Keep V6-Z as production baseline.
+2. Re-profile game-step / neutral battle cost after the neighbor cache before choosing the next route.
+3. Re-measure neutral attackRangeDistance and normal attackTargetSearch because both should be affected by V6-Z.
+4. Prefer another measured structural duplicate over broad precomputation.
+5. Keep 50k deferred until the post-V6-Z residual bottlenecks are characterized.
