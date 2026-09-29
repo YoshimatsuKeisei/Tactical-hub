@@ -109,6 +109,7 @@ function createFastEnvironment() {
       cpuStep: {
         rlInPlacePhaseTransitions: true,
         rlPrevalidatedMovement: true,
+        rlInPlaceProduction: true,
       },
     },
   );
