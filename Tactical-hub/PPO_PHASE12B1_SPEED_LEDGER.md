@@ -902,3 +902,25 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Preserve destination values and insertion order exactly.
 - Do not change occupancy, visibility, bridge/base/road rules, retreat behavior or RNG.
 - Run local tests, then 1k paired exactness gate; 4k only if exact and materially faster.
+
+
+## V6-V CLOSED — per-search leave-base expansion cache
+- Branch: experiment/ppo-fast-batch-v6v-leave-base-cache
+- Candidate commit: 815567af070140f95b075308639205b5d6a5d22e
+- Baseline: V6-U 321103e
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Game step: 492.94 -> 529.39 ms = 0.9311x (about 7.4% slower).
+- Candidate cached nextGroundPositionsFromBase by baseId only within one getMovementPaths call.
+- Exactness confirms the cached values/order were semantically safe for this workload.
+- Performance result shows the reuse frequency is insufficient to amortize the per-search Map allocation/lookups.
+- Decision: CLOSED; do not run 4k and do not retry the same per-search baseId cache with minor parameter changes.
+- Keep V6-U as the current fastest exact-verified baseline.
+- 50k remains NOT RUN.
+
+## Next direction after V6-V
+1. Inspect nextGroundPositionsFromBase itself rather than caching its final result.
+2. Separate static base-boundary/topology work from dynamic occupancy/construction checks only if exact ordering
+   and all current movement rules can be preserved.
+3. Avoid adding a cache unless measured reuse exists.
+4. Prefer a structural reduction in repeated geometry scans over another memoization variant.
