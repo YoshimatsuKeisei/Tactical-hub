@@ -968,12 +968,21 @@ def main():
                             )
                     if retention_batch_id:
                         reserve_retention_id(retention_batch_id)
+                    if profile:
+                        sync_device()
+                        batch_inference_start = time.perf_counter()
                     actions_result = trainer.act_prepared_batch(
                         prepared,
                         actions,
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
                     )
+                    if profile:
+                        sync_device()
+                        record(
+                            "act_batch_inference",
+                            time.perf_counter() - batch_inference_start,
+                        )
                     if retention_ids:
                         reserve_retention_ids(retention_ids)
                         enqueue_retained_batch(
