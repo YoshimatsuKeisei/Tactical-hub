@@ -972,3 +972,48 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 4. Compare remaining movement enumeration, attack enumeration and battle resolution costs.
 5. Do not infer the next target from pre-V6-W profiles alone.
 6. Keep 50k deferred until another material structural gap is removed or remaining costs are characterized.
+
+
+## V6-W game-step + movement-path re-profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6w-game-step-profile
+- Diagnostic commit: 4121a898c1e9de4c3b1a79e9df7b873c59c23774
+- Baseline: V6-W 66f47f5a5ed6059ee085a90d5880d7cdb0e7d744
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Baseline game step without detailed instrumentation: 415.29 ms.
+- Instrumented candidate game step: 472.79 ms; this slowdown is profiler overhead and is not a performance regression.
+- Instrumented internal split:
+  - apply: 207.79 ms
+  - enumerate: 203.39 ms
+  - runtime clone: 26.76 ms
+  - unaccounted: 33.26 ms
+- Apply hotspots:
+  - movement_input: 120.28 ms
+  - attack_input: 83.88 ms
+  - movement action: 59.32 ms / 344 calls
+  - resolve_battle: 82.30 ms / 24 calls
+  - submit_team_production: 42.81 ms / 32 calls
+- Enumeration hotspots:
+  - movement_input: 122.77 ms
+  - attack_input: 79.07 ms
+- Movement enumeration internals:
+  - movementRangePathSearch: 73.79 ms / 352 calls
+  - movementPathLeaveBaseExpansion: 27.22 ms / 219 calls
+  - movementPathPositionForTile: 10.56 ms / 1,762 calls
+  - movementPathBaseConnectivity: 9.79 ms / 262 calls
+  - movementPathGroundConnectivity: 4.66 ms / 628 calls
+  - movementVisibleState: 3.82 ms / 352 calls
+- Attack enumeration internals:
+  - attackTargetSearch: 58.68 ms / 288 calls
+  - attackRangeDistance: 20.00 ms / 264 calls
+  - attackAcrossBaseBlocking: 16.59 ms / 4,017 calls
+  - attackUnitCoordinateBaseSearch: 8.86 ms / 24 calls
+- After V6-W, movement path search remains the largest measured enumeration substage.
+- Residual leave-base expansion remains 27.22 ms, so profile its post-V6-W internals before another optimization.
+- 50k remains NOT RUN.
+
+## Next diagnostic after V6-W
+1. Profile current V6-W nextGroundPositionsFromBase internals without reverting the V6-W road-section hoist.
+2. Measure base lookup, connected-road-section preparation, base-cell checks, positionForTile,
+   road-section lookup and section-membership checks separately.
+3. Do not optimize until the post-V6-W residual leave-base cost is localized.
