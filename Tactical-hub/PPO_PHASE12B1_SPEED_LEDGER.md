@@ -1017,3 +1017,32 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 2. Measure base lookup, connected-road-section preparation, base-cell checks, positionForTile,
    road-section lookup and section-membership checks separately.
 3. Do not optimize until the post-V6-W residual leave-base cost is localized.
+
+
+## V6-W leave-base detail profile
+- Diagnostic branch: experiment/ppo-fast-batch-v6w-leave-base-detail-profile
+- Diagnostic commit: 6947024e27eecc43a2ed12a10708f486f1273912
+- Baseline: V6-W 2d1078d5798fa3f259426db6645abc5855d99593
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Detailed instrumentation adds material profiler overhead, so baseline/candidate game-step wall is not used as a speed comparison.
+- Residual leave-base expansion breakdown:
+  - movementPathLeaveBasePositionForTile: 16.57 ms / 4,380 calls
+  - movementPathLeaveBaseConnectedSections: 8.84 ms / 219 calls
+  - movementPathLeaveBaseBaseCellCheck: 4.72 ms / 7,008 calls
+  - movementPathLeaveBaseRoadSectionLookup: 2.57 ms / 1,733 calls
+  - movementPathLeaveBaseDeduplicate: 1.44 ms / 1,733 calls
+  - movementPathLeaveBaseSectionMembership: 0.73 ms / 1,733 calls
+  - movementPathLeaveBaseBaseLookup: 0.26 ms / 219 calls
+  - movementPathLeaveBaseMaterialize: 0.21 ms / 219 calls
+- Code audit found positionForTile first calls getTile(state.map.tiles, x, y), then for tile/water
+  calls isLegalDestination, which calls getTile again for the same coordinate.
+- This duplicate tile lookup changes no information and is a candidate for exact structural removal.
+
+## Next candidate: V6-X known-tile reuse in positionForTile
+- Reuse the already fetched Tile only inside positionForTile -> isLegalDestination.
+- Keep the exported isLegalDestination behavior unchanged for all existing callers.
+- Bridge handling, occupancy, obstacle, water/ninja and terrain checks must remain identical.
+- Do not cache across calls or states.
+- Run local tests, then 1k paired exactness gate; 4k only if exact and materially faster.
+- 50k remains NOT RUN.
