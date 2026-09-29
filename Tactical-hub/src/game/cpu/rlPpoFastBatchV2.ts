@@ -140,6 +140,12 @@ function createFastEnvironment(profiler?: PpoTimingProfiler) {
             milliseconds,
           );
         },
+        onLegalSegment(category: string, milliseconds: number) {
+          profiler.record(
+            `fast_rollout_game_legal.enumerate.${category}`,
+            milliseconds,
+          );
+        },
       }
     : { cpuStep: { rlInPlacePhaseTransitions: true } };
 
