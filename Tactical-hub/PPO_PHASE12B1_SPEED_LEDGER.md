@@ -1046,3 +1046,22 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Do not cache across calls or states.
 - Run local tests, then 1k paired exactness gate; 4k only if exact and materially faster.
 - 50k remains NOT RUN.
+
+
+## V6-X known-tile reuse — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v6x-known-tile-reuse
+- Implementation commit: bc162d6242118242f5ec600c35fe77b10e752a5e
+- Baseline: V6-W 9e7357f841f92bd515ef0fbba12074f78cfdceba
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Local TypeScript static check: PASS.
+- Relevant profiler/movement tests: 22/22 PASS.
+- Change: positionForTile reuses the Tile object it already fetched when running the same
+  tile/water legality check, avoiding a duplicate linear getTile scan for that coordinate.
+- Exported isLegalDestination behavior and signature are unchanged.
+- Bridge, occupancy, obstacle, water/ninja and terrain rules are unchanged.
+- Game step: 417.02 -> 407.27 ms = 1.02394x speedup (~2.34% reduction).
+- Unchanged batchAct/replay/wall differences are treated as run variability.
+- Decision: proceed to a 4k paired exactness/performance gate because the 1k gain is small but
+  materially above the previously closed ~1% noise-floor route.
+- 50k remains NOT RUN.
