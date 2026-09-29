@@ -113,6 +113,7 @@ function positionRoadSections(state: GameState, position: UnitPosition) {
 export type RoadAttackTopologyContext = {
   readonly sectionsByPositionKey: Map<string, readonly string[]>;
   readonly sectionAdjacency: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly sectionComponentById: ReadonlyMap<string, number>;
   readonly roadOrBridgeByCoord: Map<string, UnitPosition | null>;
   readonly baseByCoord: ReadonlyMap<string, ReturnType<typeof getBaseAtTile>>;
 };
@@ -129,10 +130,39 @@ function buildSectionAdjacency(state: GameState) {
   return adjacency;
 }
 
+function buildSectionComponentIds(
+  adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+) {
+  const componentById = new Map<string, number>();
+  let componentId = 0;
+  for (const sectionId of adjacency.keys()) {
+    if (componentById.has(sectionId)) continue;
+    const queue = [sectionId];
+    componentById.set(sectionId, componentId);
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      for (const next of adjacency.get(current) ?? []) {
+        if (componentById.has(next)) continue;
+        componentById.set(next, componentId);
+        queue.push(next);
+      }
+    }
+    componentId += 1;
+  }
+  return componentById;
+}
+
 export function createRoadAttackTopologyContext(state: GameState): RoadAttackTopologyContext {
   const baseByCoord = new Map<string, ReturnType<typeof getBaseAtTile>>();
   for (const base of state.bases) for (const coord of base.coords) baseByCoord.set(`${coord.x},${coord.y}`, base);
-  return { sectionsByPositionKey: new Map(), sectionAdjacency: buildSectionAdjacency(state), roadOrBridgeByCoord: new Map(), baseByCoord };
+  const sectionAdjacency = buildSectionAdjacency(state);
+  return {
+    sectionsByPositionKey: new Map(),
+    sectionAdjacency,
+    sectionComponentById: buildSectionComponentIds(sectionAdjacency),
+    roadOrBridgeByCoord: new Map(),
+    baseByCoord,
+  };
 }
 
 function contextRoadOrBridgePositionAt(state: GameState, x: number, y: number, context?: RoadAttackTopologyContext) {
@@ -157,15 +187,8 @@ function contextPositionRoadSections(state: GameState, position: UnitPosition, c
 function sectionsAreConnected(state: GameState, left: string, right: string, context?: RoadAttackTopologyContext) {
   if (!context) return areRoadSectionsDynamicallyConnected(state, left, right);
   if (left === right) return true;
-  const queue = [left], seen = new Set(queue);
-  while (queue.length) {
-    const current = queue.shift()!;
-    for (const next of context.sectionAdjacency.get(current) ?? []) {
-      if (next === right) return true;
-      if (!seen.has(next)) { seen.add(next); queue.push(next); }
-    }
-  }
-  return false;
+  const leftComponent = context.sectionComponentById.get(left);
+  return leftComponent !== undefined && leftComponent === context.sectionComponentById.get(right);
 }
 
 function attackPathKey(position: UnitPosition) {
