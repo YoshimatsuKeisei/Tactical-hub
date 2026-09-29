@@ -107,6 +107,7 @@ function createFastEnvironment(profiler?: PpoTimingProfiler) {
         cpuStep: {
           rlInPlacePhaseTransitions: true,
           rlPrevalidatedMovement: true,
+          rlInPlaceProduction: true,
           onRuntimeClone(milliseconds: number) {
             profiler.record("fast_rollout_game_runtime_clone", milliseconds);
           },
@@ -158,6 +159,7 @@ function createFastEnvironment(profiler?: PpoTimingProfiler) {
         cpuStep: {
           rlInPlacePhaseTransitions: true,
           rlPrevalidatedMovement: true,
+          rlInPlaceProduction: true,
         },
       };
 

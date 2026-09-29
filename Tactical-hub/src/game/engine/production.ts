@@ -127,6 +127,29 @@ export function submitTeamProduction(state: GameState, teamId: string): GameStat
   return next;
 }
 
+/**
+ * RL-only hot path. The RL environment exclusively owns its GameState, so the
+ * production submit can mutate that owned state instead of cloning the entire
+ * state before applying the exact same production operations.
+ */
+export function submitTeamProductionInPlaceForRl(
+  state: GameState,
+  teamId: string,
+): GameState {
+  if (!isTeamProductionPending(state, teamId)) return state;
+  const choices = state.turnState.actionIntents
+    .filter((intent) => intent.teamId === teamId)
+    .flatMap((intent) => intent.productionChoices);
+  applyProductionChoices(state, choices);
+  state.turnState.actionIntents = state.turnState.actionIntents.map((intent) =>
+    intent.teamId === teamId ? { ...intent, productionChoices: [] } : intent,
+  );
+  state.productionCompletedTeamIdsThisTurn = [
+    ...new Set([...state.productionCompletedTeamIdsThisTurn, teamId]),
+  ];
+  return state;
+}
+
 export function resolveProduction(state: GameState): GameState {
   const next = structuredClone(state) as GameState;
   const choices = next.turnState.actionIntents.flatMap((intent) => intent.productionChoices);

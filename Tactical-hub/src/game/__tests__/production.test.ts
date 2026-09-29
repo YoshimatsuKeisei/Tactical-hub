@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAvailableProductionTypes, getProductionCandidates, resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
+import { getAvailableProductionTypes, getProductionCandidates, resolveProduction, saveProductionChoice, submitTeamProduction, submitTeamProductionInPlaceForRl } from "../engine/production";
 import { getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
 import { isProductionTurn } from "../engine/productionSchedule";
 import { createInitialGameState } from "../initialState";
@@ -58,6 +58,21 @@ describe("production", () => {
     const submitted = submitTeamProduction(state, "team-1");
     expect(submitted.units).toHaveLength(before + 1);
     expect(submitted.productionCompletedTeamIdsThisTurn).toContain("team-1");
+  });
+
+  it("keeps RL in-place production state-identical to cloned production submit", () => {
+    const source = saveProductionChoice(
+      createInitialGameState(),
+      { teamId: "team-1", baseId: "home-1", unitType: "infantry" },
+    );
+    const clonedInput = structuredClone(source);
+    const inPlaceInput = structuredClone(source);
+
+    const expected = submitTeamProduction(clonedInput, "team-1");
+    const actual = submitTeamProductionInPlaceForRl(inPlaceInput, "team-1");
+
+    expect(actual).toBe(inPlaceInput);
+    expect(actual).toEqual(expected);
   });
   it.each([
     [1, true], [2, false], [5, false], [6, true], [10, false], [11, true],

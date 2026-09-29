@@ -1,7 +1,7 @@
 import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent } from "../engine/battle";
 import { resolveStrategistActions, resolveStrategistActionsInPlaceForRl, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
 import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, submitMovementInPlaceForRl, type MovementSemantics } from "../engine/movement";
-import { resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
+import { resolveProduction, saveProductionChoice, submitTeamProduction, submitTeamProductionInPlaceForRl } from "../engine/production";
 import { placeRewardUnit } from "../engine/reward";
 import { saveTeleportIntent } from "../engine/teleport";
 import { mergeHeavyInfantry } from "../engine/heavyInfantry";
@@ -25,6 +25,7 @@ export type CpuStepInstrumentation = {
   movementSemantics?: MovementSemantics;
   rlInPlaceMovement?: boolean;
   rlPrevalidatedMovement?: boolean;
+  rlInPlaceProduction?: boolean;
   rlInPlacePhaseTransitions?: boolean;
   logMode?: "full" | "ring" | "none";
   logLimit?: number;
@@ -91,7 +92,12 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       writeLog(decision.teamId, decision.choice ? "production" : "production pass", decision.choice ? `${decision.choice.baseId}:${decision.choice.unitType}` : undefined);
       break;
     case "resolve_production": next = resolveProduction(state); writeLog(undefined, "confirm production"); break;
-    case "submit_team_production": next = submitTeamProduction(state, decision.teamId); writeLog(decision.teamId, "confirm production / skip"); break;
+    case "submit_team_production":
+      next = instrumentation?.rlInPlaceProduction
+        ? submitTeamProductionInPlaceForRl(state, decision.teamId)
+        : submitTeamProduction(state, decision.teamId);
+      writeLog(decision.teamId, "confirm production / skip");
+      break;
     case "movement": {
       const unit = state.units.find((entry) => entry.id === decision.unitId);
       if (decision.to && unit) {
