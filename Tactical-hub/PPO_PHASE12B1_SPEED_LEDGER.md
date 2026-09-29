@@ -794,3 +794,22 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Preserve hidden-water-ninja collision handling, retreat effects, occupancy/state mutation,
   moved-unit bookkeeping, logs, legal action ordering/content, state transitions and all RNG behavior.
 - 1k paired exactness gate first; 4k only if the 1k result is exact and materially faster.
+
+
+## V6-U prevalidated RL movement — 1k gate PASS
+- Branch: experiment/ppo-fast-batch-v6u-prevalidated-movement-clean
+- Implementation commit: 1469f256ff1e53199ff537e83992d47c1728bc9d
+- Baseline: V6-T e34aa09e20989d7f5ef8022ebc6a885f773bc8d2
+- Workload: 8 env x 125 decisions = 1,000 decisions.
+- allExact=true; semantic/model/optimizer/CPU RNG/CUDA RNG/counters/retention all exact.
+- Game step: 477.05 -> 423.79 ms = 1.1257x speedup (~11.2% reduction).
+- The optimization is gated by an explicit rlPrevalidatedMovement flag.
+- General game/UI movement validation remains unchanged.
+- Legacy batched movement remains unchanged.
+- Hidden-water-ninja collision handling still executes before the skipped path revalidation.
+- A new 300-action deterministic state-identical test for the prevalidated RL path passes.
+- Existing ninjaWaterMovement 3 failures and legacy saved-intent movement.test 4 failures were reproduced
+  on the unchanged V6-T baseline and are not regressions introduced by V6-U.
+- External wall and unchanged batchAct/replay differences are treated as run variability.
+- Decision: proceed to 4k paired exactness/performance gate.
+- 50k remains NOT RUN.
