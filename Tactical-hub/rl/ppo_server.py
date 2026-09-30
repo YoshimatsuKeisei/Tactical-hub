@@ -37,6 +37,7 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    act_path_profile = os.environ.get("PPO_ACT_PATH_PROFILE") == "1"
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -64,6 +65,7 @@ def main():
     packed_h2d_workspace = None
     replay_h2d_workspace = None
     timings = {}
+    act_path_timings = {}
     legal_action_counts = []
     retained_chunks = {}
     consumed_retention_ids = set()
@@ -396,6 +398,23 @@ def main():
 
     def sync_device():
         if profile and trainer is not None and trainer.device.type == "cuda":
+            torch.cuda.synchronize(trainer.device)
+
+    def record_act_path(stage, elapsed):
+        if not act_path_profile:
+            return
+        item = act_path_timings.setdefault(
+            stage, {"count": 0, "totalMs": 0.0}
+        )
+        item["count"] += 1
+        item["totalMs"] += elapsed * 1000.0
+
+    def sync_act_path_device():
+        if (
+            act_path_profile
+            and trainer is not None
+            and trainer.device.type == "cuda"
+        ):
             torch.cuda.synchronize(trainer.device)
 
     def read_binary(byte_length):
@@ -867,13 +886,16 @@ def main():
             elif kind in ("packedAct", "packedActBatch", "packedUpdateChunk"):
                 if profile:
                     prepare_start = time.perf_counter()
+                if act_path_profile and kind == "packedActBatch":
                     read_start = time.perf_counter()
                 payload = read_binary(int(message["byteLength"]))
-                if profile and kind == "packedActBatch":
-                    record(
+                if act_path_profile and kind == "packedActBatch":
+                    record_act_path(
                         "act_pipe_read_binary",
                         time.perf_counter() - read_start,
                     )
+                    sync_act_path_device()
+                    act_prepare_start = time.perf_counter()
                 views = None
                 state_branch_fingerprints = (
                     packed_state_branch_fingerprints(message, payload)
@@ -916,14 +938,20 @@ def main():
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
                         profile_stage=(
-                            record
-                            if profile and kind == "packedActBatch"
+                            record_act_path
+                            if act_path_profile and kind == "packedActBatch"
                             else None
                         ),
                     )
                 else:
                     views = decode_packed_views(message, payload)
                     prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                if act_path_profile and kind == "packedActBatch":
+                    sync_act_path_device()
+                    record_act_path(
+                        "act_prepare_total",
+                        time.perf_counter() - act_prepare_start,
+                    )
                 if profile:
                     sync_device()
                     record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
@@ -984,7 +1012,9 @@ def main():
                         actions,
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
-                        profile_stage=record if profile else None,
+                        profile_stage=(
+                            record_act_path if act_path_profile else None
+                        ),
                     )
                     if retention_ids:
                         reserve_retention_ids(retention_ids)
@@ -1058,6 +1088,26 @@ def main():
                     sys.stderr.write("[PPO profile python] " + json.dumps(
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
+                    sys.stderr.flush()
+                if act_path_profile:
+                    act_path_summary = {
+                        name: {
+                            "count": item["count"],
+                            "totalMs": round(item["totalMs"], 3),
+                            "avgMs": round(
+                                item["totalMs"] / item["count"], 6
+                            ),
+                        }
+                        for name, item in act_path_timings.items()
+                    }
+                    sys.stderr.write(
+                        "[PPO act path python] "
+                        + json.dumps(
+                            {"stages": act_path_summary},
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
                     sys.stderr.flush()
                 graph_stats = trainer.act_cuda_graph_stats()
                 if graph_stats.get("enabled"):
