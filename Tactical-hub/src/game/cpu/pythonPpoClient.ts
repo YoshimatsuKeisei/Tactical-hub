@@ -268,6 +268,12 @@ export class PythonPpoClient {
         compactMaskedPrefixes:
           this.options.compactPaddedRows ?? false,
         sparseActions: sparseActionTransport,
+        ...(this.actPathProfileEnabled()
+          ? {
+            profileStage: (stage: string, elapsedMs: number) =>
+              this.recordActPath(stage, elapsedMs),
+          }
+          : {}),
       },
     );
     this.recordActPath("node_pack", performance.now() - packStarted);
