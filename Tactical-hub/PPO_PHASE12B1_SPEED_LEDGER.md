@@ -1522,3 +1522,26 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Worker CPU totals include observation 32.53 ms, legal actions 5.27 ms, encode observation 658.09 ms, encode actions 440.69 ms, worker-side pack 904.52 ms, game step 773.92 ms.
 - Interpretation: worker-side packed transferable payloads remove most of the V7-C structured-clone penalty while preserving exact PPO semantics.
 - Decision: 1k gate PASS; do not promote yet. Proceed to 4k paired exact timing gate before any 50k validation.
+
+
+## V7-D worker packed-transfer 1k exact gate — EXACT / 4k REQUIRED
+- Branch: experiment/ppo-fast-batch-v7d-worker-packed-transfer
+- Candidate commit: 38018f87082e90cbd0cfdcfb1398b51ab89a00cc
+- Kaggle Version 157: COMPLETE.
+- Probe: ppo_v7d_worker_packed_transfer_1k_gate.
+- Workload: fixed update2, 8 environments x 125 decisions = 1,000 decisions.
+- allExact=true.
+- Exact checks passed for semantic summaries, update result, parameter/optimizer/RNG/gradient hashes, model/optimizer checkpoint state, CPU/CUDA RNG state, counters, Feature Spec, hyperparameters, seed and sample counts.
+- Baseline V7-A wall: 14.9827 sec.
+- Candidate V7-D wall: 13.5384 sec.
+- wallSpeedup: 1.10668x (~9.64% lower wall time).
+- Baseline rollout: 3,111.43 ms.
+- Candidate rollout: 3,332.75 ms.
+- rolloutSpeedup: 0.93359x (~7.11% slower rollout).
+- Baseline replay: 1,966.25 ms.
+- Candidate replay: 2,132.86 ms (slower/noisy at 1k).
+- V7-D prepare barrier: 1,076.33 ms; apply barrier: 501.57 ms.
+- V7-C 1k prepare barrier was 3,149.16 ms, so packed-transfer reduced prepare barrier by ~65.8%.
+- Worker CPU totals include packMs=1,005.77 ms; the packed-transfer direction clearly removes most structured-clone overhead but introduces worker-side packing cost.
+- Interpretation: transport architecture is materially improved and exactness is preserved, but 1k rollout is still slower than V7-A. Overall wall improves, which may include startup/noise effects. Do not promote from 1k.
+- Decision: run the same candidate unchanged at 4k paired exact gate. Promote only if the longer steady-state workload confirms a meaningful end-to-end or rollout benefit without exactness loss.
