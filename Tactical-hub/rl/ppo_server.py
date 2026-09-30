@@ -58,6 +58,19 @@ def main():
         raise ValueError(
             f"Unsupported PPO_RETENTION_STORAGE_MODE: {retention_storage_mode}"
         )
+    forward_breakdown_profile = (
+        os.environ.get("PPO_FORWARD_BREAKDOWN_PROFILE") == "1"
+    )
+    forward_breakdown_timings: dict[str, dict[str, float | int]] = {}
+
+    def record_forward_breakdown(stage: str, elapsed_seconds: float) -> None:
+        item = forward_breakdown_timings.setdefault(
+            stage,
+            {"count": 0, "totalMs": 0.0},
+        )
+        item["count"] = int(item["count"]) + 1
+        item["totalMs"] = float(item["totalMs"]) + elapsed_seconds * 1000.0
+
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
@@ -973,6 +986,11 @@ def main():
                         actions,
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
+                        profile_stage=(
+                            record_forward_breakdown
+                            if forward_breakdown_profile
+                            else None
+                        ),
                     )
                     if retention_ids:
                         reserve_retention_ids(retention_ids)
@@ -1046,6 +1064,24 @@ def main():
                     sys.stderr.write("[PPO profile python] " + json.dumps(
                         {"stages": summary, "legalActions": legal_summary}, separators=(",", ":")
                     ) + "\n")
+                    sys.stderr.flush()
+                if forward_breakdown_profile:
+                    summary = {
+                        name: {
+                            "count": int(item["count"]),
+                            "totalMs": round(float(item["totalMs"]), 3),
+                            "avgMs": round(
+                                float(item["totalMs"]) / int(item["count"]),
+                                6,
+                            ),
+                        }
+                        for name, item in forward_breakdown_timings.items()
+                    }
+                    sys.stderr.write(
+                        "[PPO forward breakdown] "
+                        + json.dumps({"stages": summary}, separators=(",", ":"))
+                        + "\n"
+                    )
                     sys.stderr.flush()
                 graph_stats = trainer.act_cuda_graph_stats()
                 if graph_stats.get("enabled"):
