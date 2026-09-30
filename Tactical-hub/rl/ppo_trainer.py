@@ -498,8 +498,14 @@ class PpoTrainer:
         batch_size = int(prepared_actions.shape[0])
         if batch_size <= 0 or action_mask.shape[0] != batch_size:
             raise ValueError("Packed PPO batch act requires a non-empty aligned batch")
-        if not bool(action_mask.any(dim=1).all()):
-            raise ValueError("Packed PPO batch act requires legal actions for every sample")
+        cpu_action_mask_validated = bool(
+            prepared_observations.get("_actionMaskCpuValidated", False)
+        )
+        if not cpu_action_mask_validated:
+            if not bool(action_mask.any(dim=1).all()):
+                raise ValueError(
+                    "Packed PPO batch act requires legal actions for every sample"
+                )
 
         self.model.eval()
         with torch.no_grad():
