@@ -1545,3 +1545,27 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Worker CPU totals include packMs=1,005.77 ms; the packed-transfer direction clearly removes most structured-clone overhead but introduces worker-side packing cost.
 - Interpretation: transport architecture is materially improved and exactness is preserved, but 1k rollout is still slower than V7-A. Overall wall improves, which may include startup/noise effects. Do not promote from 1k.
 - Decision: run the same candidate unchanged at 4k paired exact gate. Promote only if the longer steady-state workload confirms a meaningful end-to-end or rollout benefit without exactness loss.
+
+
+## V7-D worker packed transfer 1k exact gate — EXACT / PROMISING
+- Branch: experiment/ppo-fast-batch-v7d-worker-packed-transfer
+- Candidate commit: 22afdce52057ea9b48785d08cbb0ed0778e8ec87
+- Kaggle Version 159: COMPLETE.
+- Probe: ppo_v7d_worker_packed_transfer_1k_gate.
+- Workload: fixed update2, 8 environments x 125 decisions = 1,000 decisions.
+- allExact=true.
+- Exact checks passed for semantic summaries, update result, parameter/optimizer/RNG/gradient hashes, model/optimizer checkpoint state, CPU/CUDA RNG state, counters, Feature Spec, hyperparameters, seed and sample counts.
+- Baseline V7-A wall: 14.6329 sec.
+- Candidate V7-D wall: 12.6071 sec.
+- wallSpeedup: 1.16069x (~13.85% wall reduction).
+- Baseline rollout: 3,048.35 ms.
+- Candidate rollout: 3,198.54 ms.
+- rolloutSpeedup: 0.95304x (~4.93% slower rollout at 1k).
+- Baseline replay: 1,841.70 ms.
+- Candidate replay: 1,996.14 ms (roughly neutral/noisy at this scale).
+- Candidate 4-worker prepare barrier: 1,003.46 ms.
+- Candidate apply barrier: 495.78 ms.
+- Worker CPU totals: observation 33.02 ms; legal actions 3.08 ms; observation encode 655.62 ms; action encode 505.05 ms; worker-side pack 962.32 ms; game-step 785.35 ms.
+- V7-C prepare barrier was 3,149.16 ms; V7-D reduced it to 1,003.46 ms (~3.14x lower), confirming that JS structured-clone transport was a major V7-C bottleneck.
+- Interpretation: packed transferable transport fixes the V7-C transport regression, but the 1k core rollout timer is still slightly slower than V7-A. Overall wall is faster, but startup/update/checkpoint noise is large at 1k, so do not promote from this gate alone.
+- Decision: V7-D remains candidate. Run the required 4k paired exact/timing gate before promotion or closure.
