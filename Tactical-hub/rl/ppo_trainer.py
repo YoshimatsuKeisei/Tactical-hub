@@ -494,6 +494,7 @@ class PpoTrainer:
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
         manual_categorical_mode: bool = False,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> dict[str, list[float] | list[int]]:
         batch_size = int(prepared_actions.shape[0])
         if batch_size <= 0 or action_mask.shape[0] != batch_size:
@@ -510,6 +511,15 @@ class PpoTrainer:
                     action_mask,
                 )
             )
+            if profile_stage is not None:
+                # Diagnostic-only duplicate eager forward. The production CUDA-graph
+                # outputs above remain authoritative for validation and sampling.
+                self.model.forward_prepared_batch(
+                    prepared_observations,
+                    prepared_actions,
+                    action_mask,
+                    profile_stage=profile_stage,
+                )
             finite_flag = _ppo_batch_outputs_finite(
                 logits,
                 values,
