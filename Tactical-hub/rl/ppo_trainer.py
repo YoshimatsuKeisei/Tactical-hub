@@ -15,6 +15,17 @@ from rl.policy_model import TacticalPolicyValueNetwork
 PPO_CHECKPOINT_SCHEMA_VERSION = 1
 
 
+def _ppo_batch_outputs_finite(
+    logits: torch.Tensor,
+    values: torch.Tensor,
+    returned_mask: torch.Tensor,
+) -> torch.Tensor:
+    return torch.logical_and(
+        torch.isfinite(logits[returned_mask]).all(),
+        torch.isfinite(values).all(),
+    )
+
+
 class PpoTrainer:
     def __init__(self, feature_spec: dict[str, Any], hyperparameters: dict[str, Any], seed: int, device: torch.device | str):
         if feature_spec.get("schemaVersion") != 2:
@@ -499,9 +510,10 @@ class PpoTrainer:
                     action_mask,
                 )
             )
-            finite_flag = torch.logical_and(
-                torch.isfinite(logits[returned_mask]).all(),
-                torch.isfinite(values).all(),
+            finite_flag = _ppo_batch_outputs_finite(
+                logits,
+                values,
+                returned_mask,
             )
             if not bool(finite_flag):
                 raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
