@@ -130,6 +130,8 @@ type StaticBaseTemplate = {
 export type RlObservationEncoderCache = {
   staticMap?: StaticMapCell[][];
   staticMapTeamWidth?: number;
+  reusableMapRows?: number[][][];
+  reusableMapRowsTeamWidth?: number;
   baseGeometry?: Map<string, StaticBaseGeometry>;
   baseTemplates?: Map<string, StaticBaseTemplate>;
   baseTemplateTeamWidth?: number;
@@ -301,7 +303,10 @@ function buildStaticMap(context: Context): StaticMapCell[][] {
   );
 }
 
-function encodeMap(context: Context) {
+function encodeMap(
+  context: Context,
+  reuseRows = false,
+) {
   const width = context.observation.map.width;
   const teamWidth = context.teams.length + 1;
   const cachedStaticMap = context.encoderCache?.staticMap;
@@ -315,8 +320,36 @@ function encodeMap(context: Context) {
   if (context.encoderCache && !canReuseStaticMap) {
     context.encoderCache.staticMap = staticMap;
     context.encoderCache.staticMapTeamWidth = teamWidth;
+    context.encoderCache.reusableMapRows = undefined;
+    context.encoderCache.reusableMapRowsTeamWidth = undefined;
   }
-  const constructionAt = new Map<number, { bridge?: Construction; obstacle?: Construction }>();
+
+  let reusableRows: number[][][] | undefined;
+  if (reuseRows && context.encoderCache) {
+    const cachedRows = context.encoderCache.reusableMapRows;
+    const canReuseRows = Boolean(
+      cachedRows
+      && context.encoderCache.reusableMapRowsTeamWidth === teamWidth
+      && cachedRows.length === staticMap.length
+      && cachedRows.every(
+        (row, y) => row.length === staticMap[y].length,
+      )
+    );
+    reusableRows = canReuseRows
+      ? cachedRows!
+      : staticMap.map((row) =>
+        row.map((cell) => cell.template.slice())
+      );
+    if (!canReuseRows) {
+      context.encoderCache.reusableMapRows = reusableRows;
+      context.encoderCache.reusableMapRowsTeamWidth = teamWidth;
+    }
+  }
+
+  const constructionAt = new Map<
+    number,
+    { bridge?: Construction; obstacle?: Construction }
+  >();
   for (const construction of context.observation.constructions) {
     if (!construction.active) continue;
     for (const tile of construction.tiles) {
@@ -326,22 +359,56 @@ function encodeMap(context: Context) {
         entry = {};
         constructionAt.set(key, entry);
       }
-      if (construction.kind === "bridge" && !entry.bridge) entry.bridge = construction;
-      else if (construction.kind === "obstacle" && !entry.obstacle) entry.obstacle = construction;
+      if (construction.kind === "bridge" && !entry.bridge) {
+        entry.bridge = construction;
+      } else if (construction.kind === "obstacle" && !entry.obstacle) {
+        entry.obstacle = construction;
+      }
     }
   }
+
   return staticMap.map((row, y) => row.map((cell, x) => {
     const dynamic = constructionAt.get(y * width + x);
-    const base = cell.baseId ? context.baseById.get(cell.baseId) : undefined;
-    const result = cell.template.slice();
+    const base = cell.baseId
+      ? context.baseById.get(cell.baseId)
+      : undefined;
+    const result = reusableRows
+      ? reusableRows[y][x]
+      : cell.template.slice();
+
+    if (reusableRows) {
+      for (
+        let index = cell.dynamicOffset;
+        index < result.length;
+        index += 1
+      ) {
+        result[index] = 0;
+      }
+    }
+
     let offset = cell.dynamicOffset;
     result[offset++] = Number(Boolean(dynamic?.bridge));
     result[offset++] = Number(Boolean(dynamic?.obstacle));
-    writeTeamVector(context, result, offset, base?.ownerTeamId);
+    writeTeamVector(
+      context,
+      result,
+      offset,
+      base?.ownerTeamId,
+    );
     offset += teamWidth;
-    writeTeamVector(context, result, offset, dynamic?.bridge?.ownerTeamId);
+    writeTeamVector(
+      context,
+      result,
+      offset,
+      dynamic?.bridge?.ownerTeamId,
+    );
     offset += teamWidth;
-    writeTeamVector(context, result, offset, dynamic?.obstacle?.ownerTeamId);
+    writeTeamVector(
+      context,
+      result,
+      offset,
+      dynamic?.obstacle?.ownerTeamId,
+    );
     return result;
   }));
 }
@@ -621,6 +688,7 @@ function encodeRlObservationForVersion(
   schemaVersion: 1 | 2,
   encoderCache?: RlObservationEncoderCache,
   compactPaddedRows = false,
+  reuseMapRows = false,
 ): EncodedObservation {
   const teams = orderedTeams(observation);
   const bases = [...observation.bases].sort((left, right) => {
@@ -732,7 +800,7 @@ function encodeRlObservationForVersion(
     teamMask: teams.map(() => 1),
     units: outputUnits,
     unitMask: outputUnitMask,
-    map: encodeMap(context),
+    map: encodeMap(context, reuseMapRows),
     bases: outputBases,
     baseMask: outputBaseMask,
     constructions: outputConstructions,
@@ -766,6 +834,24 @@ export function encodeRlObservationCompactV2(
     observation,
     2,
     encoderCache,
+    true,
+  );
+}
+
+/**
+ * PPO rollout-only compact path. The returned map rows are mutable and reused
+ * by the supplied episode-scoped cache. Callers must pack/consume the encoded
+ * observation before encoding the next state with the same cache.
+ */
+export function encodeRlObservationCompactReusableMapV2(
+  observation: RlObservation,
+  encoderCache: RlObservationEncoderCache,
+) {
+  return encodeRlObservationForVersion(
+    observation,
+    2,
+    encoderCache,
+    true,
     true,
   );
 }
