@@ -499,7 +499,11 @@ class PpoTrainer:
                     action_mask,
                 )
             )
-            if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
+            finite_flag = torch.logical_and(
+                torch.isfinite(logits[returned_mask]).all(),
+                torch.isfinite(values).all(),
+            )
+            if not bool(finite_flag):
                 raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
             if manual_categorical_mode:
                 normalized_logits = logits - logits.logsumexp(
