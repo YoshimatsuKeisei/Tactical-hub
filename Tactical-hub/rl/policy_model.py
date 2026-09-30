@@ -187,7 +187,11 @@ class TacticalPolicyValueNetwork(nn.Module):
             )
         return prepared
 
-    def encode_prepared_state_batch(self, prepared: dict[str, Any]) -> torch.Tensor:
+    def encode_prepared_state_batch(
+        self,
+        prepared: dict[str, Any],
+        profile_stage: Callable[[str, float], None] | None = None,
+    ) -> torch.Tensor:
         team_table, team_mask = prepared["masked"]["teams"]
         unit_table, unit_mask = prepared["masked"]["units"]
         base_table, base_mask = prepared["masked"]["bases"]
@@ -195,6 +199,19 @@ class TacticalPolicyValueNetwork(nn.Module):
         map_table, map_mask = prepared["map"]
         nonempty = prepared.get("_nonempty")
         valid_prefix_counts = prepared.get("_validPrefixCount")
+
+        def timed(stage: str, operation: Callable[[], torch.Tensor]) -> torch.Tensor:
+            if profile_stage is None:
+                return operation()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
 
         def pooled(key: str, encoder: nn.Module, table: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
             if nonempty is not None and nonempty.get(key) is False:
@@ -226,23 +243,59 @@ class TacticalPolicyValueNetwork(nn.Module):
             return batched_masked_mean_pool(encoder(table), mask)
 
         embeddings = [
-            self.global_encoder(prepared["global"]),
-            pooled("teams", self.team_encoder, team_table, team_mask),
-            pooled("units", self.unit_encoder, unit_table, unit_mask),
-            pooled("map", self.map_encoder, map_table, map_mask),
-            pooled("bases", self.base_encoder, base_table, base_mask),
-            pooled("constructions", self.construction_encoder, construction_table, construction_mask),
-            self.strategic_global_encoder(prepared["strategicGlobal"]),
+            timed(
+                "state_global",
+                lambda: self.global_encoder(prepared["global"]),
+            ),
+            timed(
+                "state_teams",
+                lambda: pooled("teams", self.team_encoder, team_table, team_mask),
+            ),
+            timed(
+                "state_units",
+                lambda: pooled("units", self.unit_encoder, unit_table, unit_mask),
+            ),
+            timed(
+                "state_map",
+                lambda: pooled("map", self.map_encoder, map_table, map_mask),
+            ),
+            timed(
+                "state_bases",
+                lambda: pooled("bases", self.base_encoder, base_table, base_mask),
+            ),
+            timed(
+                "state_constructions",
+                lambda: pooled(
+                    "constructions",
+                    self.construction_encoder,
+                    construction_table,
+                    construction_mask,
+                ),
+            ),
+            timed(
+                "state_strategic_global",
+                lambda: self.strategic_global_encoder(
+                    prepared["strategicGlobal"]
+                ),
+            ),
         ]
         for name in STRATEGIC_TABLES:
             table, mask = prepared["strategic"][name]
-            embeddings.append(pooled(
-                f"strategic.{name}",
-                self.strategic_encoders[name],
-                table,
-                mask,
-            ))
-        return self.state_encoder(torch.cat(embeddings, dim=1))
+            embeddings.append(
+                timed(
+                    f"state_strategic.{name}",
+                    lambda name=name, table=table, mask=mask: pooled(
+                        f"strategic.{name}",
+                        self.strategic_encoders[name],
+                        table,
+                        mask,
+                    ),
+                )
+            )
+        return timed(
+            "state_final_mlp",
+            lambda: self.state_encoder(torch.cat(embeddings, dim=1)),
+        )
 
     def encode_actions_batch(
         self,
@@ -418,7 +471,13 @@ class TacticalPolicyValueNetwork(nn.Module):
                     torch.cuda.synchronize(self.device)
                 profile_stage(stage, time.perf_counter() - started)
 
-        state_embeddings = timed("forward_state_encoder", lambda: self.encode_prepared_state_batch(prepared_observations))
+        state_embeddings = timed(
+            "forward_state_encoder",
+            lambda: self.encode_prepared_state_batch(
+                prepared_observations,
+                profile_stage=profile_stage,
+            ),
+        )
         action_embeddings = timed("forward_action_encoder", lambda: self.action_encoder(prepared_action_rows))
         repeated_states = state_embeddings.unsqueeze(1).expand(-1, action_embeddings.shape[1], -1)
         logits = timed("forward_score_head", lambda: self.score_head(
