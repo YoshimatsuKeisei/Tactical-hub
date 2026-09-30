@@ -488,10 +488,28 @@ class PackedH2dWorkspace:
         target.zero_()
         return target
 
+    def zero_named_bool(
+        self,
+        name: str,
+        shape: tuple[int, ...],
+    ) -> torch.Tensor:
+        required = int(np.prod(shape, dtype=np.int64))
+        key = (name, torch.bool)
+        buffer = self._ensure(
+            self._named_buffers.get(key),
+            required,
+            torch.bool,
+        )
+        self._named_buffers[key] = buffer
+        target = buffer.narrow(0, 0, required).view(shape)
+        target.zero_()
+        return target
+
 
 def _apply_logical_row_counts(
     prepared: dict[str, Any],
     logical_row_counts: dict[str, Any] | None,
+    workspace: PackedH2dWorkspace | None = None,
 ) -> None:
     if not logical_row_counts:
         return
@@ -515,26 +533,52 @@ def _apply_logical_row_counts(
             continue
 
         trailing_rows = logical_rows - transferred_rows
-        table_padding = torch.zeros(
-            (
-                table.shape[0],
-                trailing_rows,
-                table.shape[2],
-            ),
-            dtype=table.dtype,
-            device=table.device,
+        if workspace is None:
+            table_padding = torch.zeros(
+                (
+                    table.shape[0],
+                    trailing_rows,
+                    table.shape[2],
+                ),
+                dtype=table.dtype,
+                device=table.device,
+            )
+            mask_padding = torch.zeros(
+                (
+                    mask.shape[0],
+                    trailing_rows,
+                ),
+                dtype=mask.dtype,
+                device=mask.device,
+            )
+            prepared["masked"][key] = (
+                torch.cat((table, table_padding), dim=1),
+                torch.cat((mask, mask_padding), dim=1),
+            )
+            continue
+
+        table_shape = (
+            int(table.shape[0]),
+            logical_rows,
+            int(table.shape[2]),
         )
-        mask_padding = torch.zeros(
-            (
-                mask.shape[0],
-                trailing_rows,
-            ),
-            dtype=mask.dtype,
-            device=mask.device,
+        mask_shape = (
+            int(mask.shape[0]),
+            logical_rows,
         )
+        restored_table = workspace.zero_named_float32(
+            f"logicalRowRestore.{key}.table",
+            table_shape,
+        )
+        restored_mask = workspace.zero_named_bool(
+            f"logicalRowRestore.{key}.mask",
+            mask_shape,
+        )
+        restored_table[:, :transferred_rows, :].copy_(table)
+        restored_mask[:, :transferred_rows].copy_(mask)
         prepared["masked"][key] = (
-            torch.cat((table, table_padding), dim=1),
-            torch.cat((mask, mask_padding), dim=1),
+            restored_table,
+            restored_mask,
         )
 
 
@@ -683,6 +727,7 @@ def prepare_packed_tensors_grouped_h2d(
     _apply_logical_row_counts(
         prepared,
         header.get("rowCompaction"),
+        workspace,
     )
     if include_nonempty_metadata or include_valid_prefix_metadata:
         def mask_values(name: str) -> np.ndarray:
