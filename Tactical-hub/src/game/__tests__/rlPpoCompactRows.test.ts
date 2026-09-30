@@ -4,6 +4,7 @@ import { RlEnvironmentV2 } from "../cpu/rlEnvironment";
 import { createRlFeatureSpecV2 } from "../cpu/rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
+  encodeRlObservationCompactReusableMapV2,
   encodeRlObservationCompactV2,
   encodeRlObservationV2,
 } from "../cpu/rlObservationEncoder";
@@ -199,6 +200,64 @@ describe("PPO compact masked-prefix rows", () => {
       expect(
         sample.compactObservation.constructionMask.every(Boolean),
       ).toBe(true);
+    }
+  });
+
+
+  it("reuses compact map rows without changing packed bytes across states", () => {
+    const environment = new RlEnvironmentV2(
+      undefined,
+      true,
+      {
+        cpuStep: {
+          rlInPlacePhaseTransitions: true,
+        },
+      },
+    );
+    const initial = environment.reset(29, 4);
+    const featureSpec = createRlFeatureSpecV2(initial);
+    const reusableCache = createRlObservationEncoderCache();
+
+    for (let step = 0; step < 3; step += 1) {
+      const actor = environment.getCurrentActorTeamId();
+      if (!actor) {
+        throw new Error("Missing reusable-map actor");
+      }
+      const observation = environment.getObservationForEncoding(actor);
+      const legal = environment.getLegalActionsForEncoding(actor);
+      if (!legal.length) {
+        throw new Error("Missing reusable-map legal action");
+      }
+      const actions = encodeRlLegalActionsV2(
+        observation,
+        legal,
+      ).actions;
+
+      const baselineObservation = encodeRlObservationCompactV2(
+        observation,
+        createRlObservationEncoderCache(),
+      );
+      const reusableObservation =
+        encodeRlObservationCompactReusableMapV2(
+          observation,
+          reusableCache,
+        );
+
+      const baseline = packPpoActBatchInput(
+        [{ observation: baselineObservation, actions }],
+        featureSpec,
+        { compactMaskedPrefixes: true },
+      );
+      const reusable = packPpoActBatchInput(
+        [{ observation: reusableObservation, actions }],
+        featureSpec,
+        { compactMaskedPrefixes: true },
+      );
+
+      expect(reusable.tensors).toEqual(baseline.tensors);
+      expect(Buffer.compare(reusable.payload, baseline.payload)).toBe(0);
+
+      environment.stepWithoutObservation(legal[0].actionKey);
     }
   });
 });
