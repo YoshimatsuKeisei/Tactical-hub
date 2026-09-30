@@ -71,6 +71,7 @@ const result = await runPpoFastBatchV2Smoke({
   directSparseActions: true,
   directCompactObservation: true,
   reuseCompactMapRows: true,
+  directPackedMap: true,
 
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4),

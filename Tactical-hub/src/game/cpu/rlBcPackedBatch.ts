@@ -39,7 +39,26 @@ function paddedMapRows(
   name: string,
   values: number[][][][],
   width: number,
+  directValues?: Array<{
+    values: Float32Array;
+    rowCount: number;
+    width: number;
+  } | undefined>,
 ): [PendingTensor, Uint8Array] {
+  const packedValues = directValues?.filter(
+    (entry): entry is {
+      values: Float32Array;
+      rowCount: number;
+      width: number;
+    } => entry !== undefined,
+  ) ?? [];
+  if (packedValues.length) {
+    if (packedValues.length !== values.length) {
+      throw new Error("packed map transport requires every sample");
+    }
+    return paddedPackedMapRows(name, packedValues, width);
+  }
+
   const rowCounts = values.map((map) =>
     map.reduce((count, row) => count + row.length, 0)
   );
@@ -61,6 +80,36 @@ function paddedMapRows(
     }
   });
 
+  return [{
+    name,
+    dtype: "float32",
+    shape: [values.length, maxRows, width],
+    bytes: Buffer.from(packed.buffer),
+  }, presence];
+}
+
+function paddedPackedMapRows(
+  name: string,
+  values: Array<{
+    values: Float32Array;
+    rowCount: number;
+    width: number;
+  }>,
+  width: number,
+): [PendingTensor, Uint8Array] {
+  const maxRows = Math.max(0, ...values.map((entry) => entry.rowCount));
+  const packed = new Float32Array(values.length * maxRows * width);
+  const presence = new Uint8Array(values.length * maxRows);
+  values.forEach((entry, batch) => {
+    if (entry.width !== width) {
+      throw new Error("packed map feature width does not match Feature Spec");
+    }
+    if (entry.values.length !== entry.rowCount * entry.width) {
+      throw new Error("packed map values do not match declared shape");
+    }
+    packed.set(entry.values, batch * maxRows * width);
+    presence.fill(1, batch * maxRows, batch * maxRows + entry.rowCount);
+  });
   return [{
     name,
     dtype: "float32",
@@ -249,6 +298,7 @@ export function packBcEncodedSamples(
     "map",
     observations.map((value) => value.map),
     featureSpec.mapTileWidth,
+    observations.map((value) => value.packedMap),
   );
   floats.push(map);
   masks.push({ name: "mapMask", dtype: "uint8", shape: [samples.length, map.shape[1]], bytes: Buffer.from(mapPresence.buffer) });

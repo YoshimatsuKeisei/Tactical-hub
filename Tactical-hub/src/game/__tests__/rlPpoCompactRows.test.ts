@@ -4,6 +4,7 @@ import { RlEnvironmentV2 } from "../cpu/rlEnvironment";
 import { createRlFeatureSpecV2 } from "../cpu/rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
+  encodeRlObservationCompactPackedMapV2,
   encodeRlObservationCompactReusableMapV2,
   encodeRlObservationCompactV2,
   encodeRlObservationV2,
@@ -258,6 +259,88 @@ describe("PPO compact masked-prefix rows", () => {
       expect(Buffer.compare(reusable.payload, baseline.payload)).toBe(0);
 
       environment.stepWithoutObservation(legal[0].actionKey);
+    }
+  });
+
+  it("packs reusable Float32 map buffers byte-for-byte across batched states", () => {
+    const environments = Array.from(
+      { length: 8 },
+      (_, index) => {
+        const environment = new RlEnvironmentV2(
+          undefined,
+          true,
+          {
+            cpuStep: {
+              rlInPlacePhaseTransitions: true,
+            },
+          },
+        );
+        const initial = environment.reset(41 + index, 4);
+        return {
+          environment,
+          initial,
+          cache: createRlObservationEncoderCache(),
+        };
+      },
+    );
+    const featureSpec = createRlFeatureSpecV2(environments[0].initial);
+
+    for (let step = 0; step < 3; step += 1) {
+      const round = environments.map(({ environment, cache }) => {
+        const actor = environment.getCurrentActorTeamId();
+        if (!actor) {
+          throw new Error("Missing direct-packed-map actor");
+        }
+        const observation = environment.getObservationForEncoding(actor);
+        const legal = environment.getLegalActionsForEncoding(actor);
+        if (!legal.length) {
+          throw new Error("Missing direct-packed-map legal action");
+        }
+        const actions = encodeRlLegalActionsV2(
+          observation,
+          legal,
+        ).actions;
+        return {
+          environment,
+          legal,
+          actions,
+          baselineObservation: encodeRlObservationCompactV2(
+            observation,
+            createRlObservationEncoderCache(),
+          ),
+          packedObservation: encodeRlObservationCompactPackedMapV2(
+            observation,
+            cache,
+          ),
+        };
+      });
+
+      const baseline = packPpoActBatchInput(
+        round.map(({ baselineObservation, actions }) => ({
+          observation: baselineObservation,
+          actions,
+        })),
+        featureSpec,
+        { compactMaskedPrefixes: true },
+      );
+      const packed = packPpoActBatchInput(
+        round.map(({ packedObservation, actions }) => ({
+          observation: packedObservation,
+          actions,
+        })),
+        featureSpec,
+        { compactMaskedPrefixes: true },
+      );
+
+      expect(packed.tensors).toEqual(baseline.tensors);
+      expect(Buffer.compare(packed.payload, baseline.payload)).toBe(0);
+      for (const sample of round) {
+        expect(sample.packedObservation.map).toEqual([]);
+        expect(sample.packedObservation.packedMap).toBeDefined();
+        sample.environment.stepWithoutObservation(
+          sample.legal[0].actionKey,
+        );
+      }
     }
   });
 });

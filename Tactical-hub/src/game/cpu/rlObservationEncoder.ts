@@ -66,6 +66,12 @@ export type EncodedObservationRowCompaction = Partial<
   Record<"units" | "bases" | "constructions", number>
 >;
 
+export type EncodedPackedMap = {
+  values: Float32Array;
+  rowCount: number;
+  width: number;
+};
+
 export type EncodedObservation = {
   schemaVersion: number;
   global: number[];
@@ -74,6 +80,7 @@ export type EncodedObservation = {
   units: number[][];
   unitMask: number[];
   map: number[][][];
+  packedMap?: EncodedPackedMap;
   bases: number[][];
   baseMask: number[];
   constructions: number[][];
@@ -132,6 +139,10 @@ export type RlObservationEncoderCache = {
   staticMapTeamWidth?: number;
   reusableMapRows?: number[][][];
   reusableMapRowsTeamWidth?: number;
+  reusablePackedMap?: Float32Array;
+  reusablePackedMapTeamWidth?: number;
+  reusablePackedMapRowCount?: number;
+  reusablePackedMapWidth?: number;
   baseGeometry?: Map<string, StaticBaseGeometry>;
   baseTemplates?: Map<string, StaticBaseTemplate>;
   baseTemplateTeamWidth?: number;
@@ -176,7 +187,12 @@ function teamVector(context: Context, teamId: string | undefined) {
   return vector;
 }
 
-function writeTeamVector(context: Context, target: number[], offset: number, teamId: string | undefined) {
+function writeTeamVector(
+  context: Context,
+  target: number[] | Float32Array,
+  offset: number,
+  teamId: string | undefined,
+) {
   const index = teamId === undefined ? undefined : context.teamIndex.get(teamId);
   target[offset + (index === undefined ? context.teams.length : index)] = 1;
 }
@@ -322,6 +338,10 @@ function encodeMap(
     context.encoderCache.staticMapTeamWidth = teamWidth;
     context.encoderCache.reusableMapRows = undefined;
     context.encoderCache.reusableMapRowsTeamWidth = undefined;
+    context.encoderCache.reusablePackedMap = undefined;
+    context.encoderCache.reusablePackedMapTeamWidth = undefined;
+    context.encoderCache.reusablePackedMapRowCount = undefined;
+    context.encoderCache.reusablePackedMapWidth = undefined;
   }
 
   let reusableRows: number[][][] | undefined;
@@ -411,6 +431,119 @@ function encodeMap(
     );
     return result;
   }));
+}
+
+function encodePackedMap(context: Context): EncodedPackedMap {
+  const width = context.observation.map.width;
+  const height = context.observation.map.height;
+  const teamWidth = context.teams.length + 1;
+  const cachedStaticMap = context.encoderCache?.staticMap;
+  const canReuseStaticMap = Boolean(
+    cachedStaticMap
+    && context.encoderCache?.staticMapTeamWidth === teamWidth,
+  );
+  const staticMap = canReuseStaticMap
+    ? cachedStaticMap!
+    : buildStaticMap(context);
+  if (context.encoderCache && !canReuseStaticMap) {
+    context.encoderCache.staticMap = staticMap;
+    context.encoderCache.staticMapTeamWidth = teamWidth;
+  }
+
+  const rowCount = height * width;
+  const rowWidth = staticMap[0]?.[0]?.template.length ?? 0;
+  const cache = context.encoderCache;
+  const cachedValues = cache?.reusablePackedMap;
+  const canReusePacked = Boolean(
+    cachedValues
+    && cache?.reusablePackedMapTeamWidth === teamWidth
+    && cache?.reusablePackedMapRowCount === rowCount
+    && cache?.reusablePackedMapWidth === rowWidth
+    && cachedValues.length === rowCount * rowWidth,
+  );
+  const values = canReusePacked
+    ? cachedValues!
+    : new Float32Array(rowCount * rowWidth);
+
+  if (!canReusePacked) {
+    let rowIndex = 0;
+    for (const row of staticMap) {
+      for (const cell of row) {
+        values.set(cell.template, rowIndex * rowWidth);
+        rowIndex += 1;
+      }
+    }
+    if (cache) {
+      cache.reusablePackedMap = values;
+      cache.reusablePackedMapTeamWidth = teamWidth;
+      cache.reusablePackedMapRowCount = rowCount;
+      cache.reusablePackedMapWidth = rowWidth;
+    }
+  }
+
+  const constructionAt = new Map<
+    number,
+    { bridge?: Construction; obstacle?: Construction }
+  >();
+  for (const construction of context.observation.constructions) {
+    if (!construction.active) continue;
+    for (const tile of construction.tiles) {
+      const key = tile.y * width + tile.x;
+      let entry = constructionAt.get(key);
+      if (!entry) {
+        entry = {};
+        constructionAt.set(key, entry);
+      }
+      if (construction.kind === "bridge" && !entry.bridge) {
+        entry.bridge = construction;
+      } else if (construction.kind === "obstacle" && !entry.obstacle) {
+        entry.obstacle = construction;
+      }
+    }
+  }
+
+  let rowIndex = 0;
+  for (let y = 0; y < staticMap.length; y += 1) {
+    for (let x = 0; x < staticMap[y].length; x += 1) {
+      const cell = staticMap[y][x];
+      const rowOffset = rowIndex * rowWidth;
+      values.fill(
+        0,
+        rowOffset + cell.dynamicOffset,
+        rowOffset + rowWidth,
+      );
+
+      const dynamic = constructionAt.get(y * width + x);
+      const base = cell.baseId
+        ? context.baseById.get(cell.baseId)
+        : undefined;
+      let offset = rowOffset + cell.dynamicOffset;
+      values[offset++] = Number(Boolean(dynamic?.bridge));
+      values[offset++] = Number(Boolean(dynamic?.obstacle));
+      writeTeamVector(context, values, offset, base?.ownerTeamId);
+      offset += teamWidth;
+      writeTeamVector(
+        context,
+        values,
+        offset,
+        dynamic?.bridge?.ownerTeamId,
+      );
+      offset += teamWidth;
+      writeTeamVector(
+        context,
+        values,
+        offset,
+        dynamic?.obstacle?.ownerTeamId,
+      );
+      rowIndex += 1;
+    }
+  }
+
+  return {
+    values,
+    rowCount,
+    width: rowWidth,
+  };
 }
 
 function getBaseGeometry(context: Context, base: RlObservation["bases"][number]): StaticBaseGeometry {
@@ -689,6 +822,7 @@ function encodeRlObservationForVersion(
   encoderCache?: RlObservationEncoderCache,
   compactPaddedRows = false,
   reuseMapRows = false,
+  directPackedMap = false,
 ): EncodedObservation {
   const teams = orderedTeams(observation);
   const bases = [...observation.bases].sort((left, right) => {
@@ -800,7 +934,12 @@ function encodeRlObservationForVersion(
     teamMask: teams.map(() => 1),
     units: outputUnits,
     unitMask: outputUnitMask,
-    map: encodeMap(context, reuseMapRows),
+    map: directPackedMap
+      ? []
+      : encodeMap(context, reuseMapRows),
+    ...(directPackedMap
+      ? { packedMap: encodePackedMap(context) }
+      : {}),
     bases: outputBases,
     baseMask: outputBaseMask,
     constructions: outputConstructions,
@@ -852,6 +991,24 @@ export function encodeRlObservationCompactReusableMapV2(
     2,
     encoderCache,
     true,
+    true,
+  );
+}
+
+/**
+ * PPO rollout-only compact path that writes map features directly into one
+ * reusable Float32Array. The batch packer consumes packedMap immediately.
+ */
+export function encodeRlObservationCompactPackedMapV2(
+  observation: RlObservation,
+  encoderCache: RlObservationEncoderCache,
+) {
+  return encodeRlObservationForVersion(
+    observation,
+    2,
+    encoderCache,
+    true,
+    false,
     true,
   );
 }

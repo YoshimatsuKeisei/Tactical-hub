@@ -15,6 +15,7 @@ import {
 import { createRlFeatureSpecV2 } from "./rlFeatureSpec";
 import {
   createRlObservationEncoderCache,
+  encodeRlObservationCompactPackedMapV2,
   encodeRlObservationCompactReusableMapV2,
   encodeRlObservationCompactV2,
   encodeRlObservationV2,
@@ -85,6 +86,7 @@ export type PpoFastBatchInput = {
   directSparseActions?: boolean;
   directCompactObservation?: boolean;
   reuseCompactMapRows?: boolean;
+  directPackedMap?: boolean;
   modeLabel?:
     | "fast_batch_v2"
     | "fast_batch_v5_compact_rows"
@@ -369,15 +371,20 @@ export async function runPpoFastBatchV2Smoke(input: PpoFastBatchInput) {
           "fast_rollout_encode_observation",
           () => input.directCompactObservation
             ? (
-              input.reuseCompactMapRows
-                ? encodeRlObservationCompactReusableMapV2(
+              input.directPackedMap
+                ? encodeRlObservationCompactPackedMapV2(
                   observation,
                   slot.encoderCache,
                 )
-                : encodeRlObservationCompactV2(
-                  observation,
-                  slot.encoderCache,
-                )
+                : input.reuseCompactMapRows
+                  ? encodeRlObservationCompactReusableMapV2(
+                    observation,
+                    slot.encoderCache,
+                  )
+                  : encodeRlObservationCompactV2(
+                    observation,
+                    slot.encoderCache,
+                  )
             )
             : encodeRlObservationV2(
               observation,
