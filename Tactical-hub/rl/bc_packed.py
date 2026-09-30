@@ -4,6 +4,7 @@ from typing import Any
 import hashlib
 import json
 
+import time
 import numpy as np
 import torch
 
@@ -548,6 +549,7 @@ def prepare_packed_tensors_grouped_h2d(
     include_nonempty_metadata: bool = False,
     include_valid_prefix_metadata: bool = False,
     validate_action_mask_cpu: bool = False,
+    profile_stage=None,
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor | None]:
     descriptors = header["tensors"]
     by_name = {descriptor["name"]: descriptor for descriptor in descriptors}
@@ -561,8 +563,14 @@ def prepare_packed_tensors_grouped_h2d(
             raise ValueError("Invalid sparse Action shape")
 
     def grouped(dtype_name: str, torch_dtype: torch.dtype) -> tuple[torch.Tensor, int, int]:
+        cpu_started = time.perf_counter()
         selected = [descriptor for descriptor in descriptors if descriptor["dtype"] == dtype_name]
         if not selected:
+            if profile_stage is not None:
+                profile_stage(
+                    f"act_prepare_cpu_{dtype_name}",
+                    time.perf_counter() - cpu_started,
+                )
             return torch.empty(0, dtype=torch_dtype, device=device), 0, 1
         itemsize = _DTYPES[dtype_name].itemsize
         start = int(selected[0]["byteOffset"])
@@ -579,6 +587,14 @@ def prepare_packed_tensors_grouped_h2d(
             offset=start,
         )
         cpu_tensor = torch.from_numpy(cpu)
+        if profile_stage is not None:
+            profile_stage(
+                f"act_prepare_cpu_{dtype_name}",
+                time.perf_counter() - cpu_started,
+            )
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+        h2d_started = time.perf_counter()
         if workspace is None:
             device_tensor = cpu_tensor.to(device=device, dtype=torch_dtype)
         elif dtype_name == "float32":
@@ -589,6 +605,13 @@ def prepare_packed_tensors_grouped_h2d(
             device_tensor = workspace.copy_int64(cpu_tensor)
         else:
             raise ValueError(f"Unsupported grouped dtype: {dtype_name}")
+        if profile_stage is not None:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            profile_stage(
+                f"act_prepare_h2d_{dtype_name}",
+                time.perf_counter() - h2d_started,
+            )
         return device_tensor, start, itemsize
 
     floats, float_start, float_itemsize = grouped("float32", torch.float32)
@@ -617,6 +640,9 @@ def prepare_packed_tensors_grouped_h2d(
     def action_tensor() -> torch.Tensor:
         if action_sparse_shape is None:
             return floating("actions")
+        if profile_stage is not None and device.type == "cuda":
+            torch.cuda.synchronize(device)
+        action_started = time.perf_counter()
         values = floating("actionSparseValues").reshape(-1)
         descriptor = by_name.get("actionSparseIndices")
         if descriptor is None:
@@ -654,6 +680,13 @@ def prepare_packed_tensors_grouped_h2d(
                 else workspace.copy_action_indices(indices_source)
             )
             actions.view(-1).index_copy_(0, indices, values)
+        if profile_stage is not None:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            profile_stage(
+                "act_prepare_sparse_action_restore",
+                time.perf_counter() - action_started,
+            )
         return actions
 
     strategic_names = (

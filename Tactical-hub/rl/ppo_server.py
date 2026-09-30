@@ -867,7 +867,13 @@ def main():
             elif kind in ("packedAct", "packedActBatch", "packedUpdateChunk"):
                 if profile:
                     prepare_start = time.perf_counter()
+                    read_start = time.perf_counter()
                 payload = read_binary(int(message["byteLength"]))
+                if profile and kind == "packedActBatch":
+                    record(
+                        "act_pipe_read_binary",
+                        time.perf_counter() - read_start,
+                    )
                 views = None
                 state_branch_fingerprints = (
                     packed_state_branch_fingerprints(message, payload)
@@ -909,6 +915,11 @@ def main():
                         include_nonempty_metadata=packed_prepare_mode in ("grouped_h2d_skip_empty", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"),
                         include_valid_prefix_metadata=packed_prepare_mode == "grouped_h2d_valid_prefix",
                         validate_action_mask_cpu=packed_prepare_mode == "grouped_h2d_skip_empty_fast_guards",
+                        profile_stage=(
+                            record
+                            if profile and kind == "packedActBatch"
+                            else None
+                        ),
                     )
                 else:
                     views = decode_packed_views(message, payload)
@@ -973,6 +984,7 @@ def main():
                         actions,
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
+                        profile_stage=record if profile else None,
                     )
                     if retention_ids:
                         reserve_retention_ids(retention_ids)

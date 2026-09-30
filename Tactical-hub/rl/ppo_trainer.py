@@ -483,6 +483,7 @@ class PpoTrainer:
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
         manual_categorical_mode: bool = False,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> dict[str, list[float] | list[int]]:
         batch_size = int(prepared_actions.shape[0])
         if batch_size <= 0 or action_mask.shape[0] != batch_size:
@@ -490,42 +491,89 @@ class PpoTrainer:
         if not bool(action_mask.any(dim=1).all()):
             raise ValueError("Packed PPO batch act requires legal actions for every sample")
 
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if profile_stage is None:
+                return operation()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
+
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = (
-                self._act_forward_hot_cuda_graph(
+            logits, values, _, _, returned_mask = timed(
+                "act_batch_forward",
+                lambda: self._act_forward_hot_cuda_graph(
                     prepared_observations,
                     prepared_actions,
                     action_mask,
-                )
+                ),
             )
-            if not torch.isfinite(logits[returned_mask]).all() or not torch.isfinite(values).all():
-                raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
-            if manual_categorical_mode:
-                normalized_logits = logits - logits.logsumexp(
-                    dim=-1,
-                    keepdim=True,
-                )
-                probabilities = normalized_logits.softmax(dim=-1)
-                selected = torch.multinomial(
-                    probabilities,
-                    1,
-                    replacement=True,
-                ).squeeze(-1)
-                log_probabilities = normalized_logits.gather(
-                    -1,
-                    selected.unsqueeze(-1),
-                ).squeeze(-1)
-            else:
-                distribution = torch.distributions.Categorical(logits=logits)
-                selected = distribution.sample()
-                log_probabilities = distribution.log_prob(selected)
 
-        return {
-            "actionIndices": [int(value) for value in selected.tolist()],
-            "logProbabilities": [float(value) for value in log_probabilities.tolist()],
-            "values": [float(value) for value in values.tolist()],
-        }
+            def validate_outputs() -> None:
+                if (
+                    not torch.isfinite(logits[returned_mask]).all()
+                    or not torch.isfinite(values).all()
+                ):
+                    raise FloatingPointError(
+                        "Packed PPO batch action calculation contains NaN or Inf"
+                    )
+
+            timed("act_batch_finite_checks", validate_outputs)
+
+            if manual_categorical_mode:
+                normalized_logits = timed(
+                    "act_batch_distribution_normalize",
+                    lambda: logits - logits.logsumexp(
+                        dim=-1,
+                        keepdim=True,
+                    ),
+                )
+                probabilities = timed(
+                    "act_batch_distribution_softmax",
+                    normalized_logits.softmax,
+                )
+                selected = timed(
+                    "act_batch_sampling",
+                    lambda: torch.multinomial(
+                        probabilities,
+                        1,
+                        replacement=True,
+                    ).squeeze(-1),
+                )
+                log_probabilities = timed(
+                    "act_batch_log_probability",
+                    lambda: normalized_logits.gather(
+                        -1,
+                        selected.unsqueeze(-1),
+                    ).squeeze(-1),
+                )
+            else:
+                distribution = timed(
+                    "act_batch_distribution_init",
+                    lambda: torch.distributions.Categorical(logits=logits),
+                )
+                selected = timed("act_batch_sampling", distribution.sample)
+                log_probabilities = timed(
+                    "act_batch_log_probability",
+                    lambda: distribution.log_prob(selected),
+                )
+
+        def host_extract() -> dict[str, list[float] | list[int]]:
+            return {
+                "actionIndices": [int(value) for value in selected.tolist()],
+                "logProbabilities": [
+                    float(value) for value in log_probabilities.tolist()
+                ],
+                "values": [float(value) for value in values.tolist()],
+            }
+
+        return timed("act_batch_host_extract", host_extract)
 
     def act_prepared_stream_batch(
         self,

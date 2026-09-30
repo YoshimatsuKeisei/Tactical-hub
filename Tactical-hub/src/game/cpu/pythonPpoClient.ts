@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
@@ -75,6 +76,39 @@ export class PythonPpoClient {
   private readonly waiting: Array<{ resolve: (response: Response) => void; reject: (error: Error) => void }> = [];
   private stderr = "";
   private featureSpec?: RlFeatureSpecV2;
+  private readonly actPathTimings = new Map<string, { count: number; totalMs: number }>();
+
+  private actPathProfileEnabled() {
+    return (
+      this.options.env?.PPO_ACT_PATH_PROFILE === "1"
+      || process.env.PPO_ACT_PATH_PROFILE === "1"
+    );
+  }
+
+  private recordActPath(stage: string, elapsedMs: number) {
+    if (!this.actPathProfileEnabled()) return;
+    const current = this.actPathTimings.get(stage) ?? { count: 0, totalMs: 0 };
+    current.count += 1;
+    current.totalMs += elapsedMs;
+    this.actPathTimings.set(stage, current);
+  }
+
+  private emitActPathProfile() {
+    if (!this.actPathProfileEnabled() || !this.actPathTimings.size) return;
+    const stages = Object.fromEntries(
+      Array.from(this.actPathTimings.entries()).map(([name, item]) => [
+        name,
+        {
+          count: item.count,
+          totalMs: Number(item.totalMs.toFixed(3)),
+          avgMs: Number((item.totalMs / item.count).toFixed(6)),
+        },
+      ]),
+    );
+    process.stderr.write(
+      "[PPO act path node] " + JSON.stringify({ stages }) + "\n",
+    );
+  }
 
   constructor(private readonly options: {
     command?: string;
@@ -216,8 +250,31 @@ export class PythonPpoClient {
       );
     }
 
+    const packStarted = performance.now();
+    const packed = packPpoActBatchInput(
+      samples.map(({ observation, legalActions }) =>
+        "sparseActions" in legalActions
+          ? {
+            observation,
+            sparseActions: legalActions.sparseActions,
+          }
+          : {
+            observation,
+            actions: legalActions.actions,
+          }
+      ),
+      this.featureSpec,
+      {
+        compactMaskedPrefixes:
+          this.options.compactPaddedRows ?? false,
+        sparseActions: sparseActionTransport,
+      },
+    );
+    this.recordActPath("node_pack", performance.now() - packStarted);
+
     const requestId = this.nextRequestId++;
     const responsePromise = this.wait();
+    const writeStarted = performance.now();
     this.sendPreparedPacked(
       {
         type: "packedActBatch",
@@ -225,27 +282,12 @@ export class PythonPpoClient {
         ...(retentionIds ? { retentionIds } : {}),
         ...(retentionBatchId ? { retentionBatchId } : {}),
       },
-      packPpoActBatchInput(
-        samples.map(({ observation, legalActions }) =>
-          "sparseActions" in legalActions
-            ? {
-              observation,
-              sparseActions: legalActions.sparseActions,
-            }
-            : {
-              observation,
-              actions: legalActions.actions,
-            }
-        ),
-        this.featureSpec,
-        {
-          compactMaskedPrefixes:
-            this.options.compactPaddedRows ?? false,
-          sparseActions: sparseActionTransport,
-        },
-      ),
+      packed,
     );
+    this.recordActPath("node_write_enqueue", performance.now() - writeStarted);
+    const waitStarted = performance.now();
     const response = await responsePromise;
+    this.recordActPath("node_rpc_wait", performance.now() - waitStarted);
     if (response.type === "error") throw new Error(response.message);
     if (response.type !== "actions" || response.requestId !== requestId) throw new Error("Unexpected PPO batch-action response");
     if (
@@ -590,5 +632,6 @@ export class PythonPpoClient {
     }
     this.lines?.close(); this.process.kill(); this.process = undefined;
     this.featureSpec = undefined;
+    this.emitActPathProfile();
   }
 }
