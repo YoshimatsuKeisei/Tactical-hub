@@ -344,3 +344,348 @@ export function packBcEncodedSamples(
     ...(actionSparseShape ? { actionSparseShape } : {}),
   };
 }
+
+
+const VARIABLE_BATCH_ROW_TENSORS = new Set([
+  "teams",
+  "units",
+  "bases",
+  "constructions",
+  "map",
+  "actions",
+  ...strategicNames.map((name) => `strategic.${name}`),
+  "teamMask",
+  "unitMask",
+  "baseMask",
+  "constructionMask",
+  "mapMask",
+  "actionMask",
+  ...strategicNames.map((name) => `strategicMask.${name}`),
+]);
+
+const PACKED_DTYPE_BYTES: Record<PackedTensorDescriptor["dtype"], number> = {
+  float32: 4,
+  int32: 4,
+  uint8: 1,
+};
+
+function sameRowCompaction(
+  left: PackedRowCompaction | undefined,
+  right: PackedRowCompaction | undefined,
+) {
+  return (
+    left?.units === right?.units
+    && left?.bases === right?.bases
+    && left?.constructions === right?.constructions
+  );
+}
+
+/**
+ * Combines batch-size-1 packed samples without rebuilding JS number arrays.
+ *
+ * V7-D uses this to let rollout workers perform compact observation + sparse
+ * action packing locally, transfer only packed bytes/metadata to the parent,
+ * and still reconstruct exactly the same central batch layout as the existing
+ * packPpoActBatchInput path.
+ */
+export function combinePackedSingleSampleBatches(
+  samples: PackedBcBatch[],
+): PackedBcBatch {
+  if (!samples.length) {
+    throw new Error("Cannot combine an empty packed sample list");
+  }
+  if (samples.some((sample) => sample.batchSize !== 1)) {
+    throw new Error("Packed worker samples must all have batchSize=1");
+  }
+
+  const template = samples[0].tensors;
+  const sparse = samples[0].actionSparseShape !== undefined;
+  const rowCompaction = samples[0].rowCompaction;
+
+  for (let sampleIndex = 1; sampleIndex < samples.length; sampleIndex += 1) {
+    const sample = samples[sampleIndex];
+    const descriptors = sample.tensors;
+    if (descriptors.length !== template.length) {
+      throw new Error("Packed worker tensor count mismatch");
+    }
+    for (let index = 0; index < template.length; index += 1) {
+      const left = template[index];
+      const right = descriptors[index];
+      if (left.name !== right.name || left.dtype !== right.dtype) {
+        throw new Error(
+          `Packed worker tensor mismatch at ${index}: ${left.name}/${right.name}`,
+        );
+      }
+    }
+    if ((sample.actionSparseShape !== undefined) !== sparse) {
+      throw new Error("Packed worker sparse-action mode mismatch");
+    }
+    if (!sameRowCompaction(rowCompaction, sample.rowCompaction)) {
+      throw new Error("Packed worker row-compaction metadata mismatch");
+    }
+  }
+
+  let sparseMaxRows = 0;
+  let sparseWidth = 0;
+  if (sparse) {
+    for (const sample of samples) {
+      const shape = sample.actionSparseShape;
+      if (!shape || shape[0] !== 1) {
+        throw new Error("Packed worker sparse-action shape must be batch-size 1");
+      }
+      if (!sparseWidth) sparseWidth = shape[2];
+      if (shape[2] !== sparseWidth) {
+        throw new Error("Packed worker sparse-action width mismatch");
+      }
+      sparseMaxRows = Math.max(sparseMaxRows, shape[1]);
+    }
+  }
+
+  let byteOffset = 0;
+  const tensors: PackedTensorDescriptor[] = [];
+  const buffers: Buffer[] = [];
+
+  const push = (
+    descriptor: Omit<PackedTensorDescriptor, "byteOffset" | "byteLength">,
+    output: Buffer,
+  ) => {
+    tensors.push({
+      ...descriptor,
+      byteOffset,
+      byteLength: output.byteLength,
+    });
+    buffers.push(output);
+    byteOffset += output.byteLength;
+  };
+
+  for (
+    let descriptorIndex = 0;
+    descriptorIndex < template.length;
+    descriptorIndex += 1
+  ) {
+    const descriptors = samples.map(
+      (sample) => sample.tensors[descriptorIndex],
+    );
+    const first = descriptors[0];
+    const itemBytes = PACKED_DTYPE_BYTES[first.dtype];
+
+    if (first.name === "actionSparseIndices") {
+      if (!sparse || first.dtype !== "int32") {
+        throw new Error("Unexpected sparse-action index tensor");
+      }
+      const remapped: number[] = [];
+      descriptors.forEach((descriptor, sampleIndex) => {
+        if (descriptor.shape.length !== 1) {
+          throw new Error("Sparse-action indices must be rank 1");
+        }
+        const source = samples[sampleIndex].payload.subarray(
+          descriptor.byteOffset,
+          descriptor.byteOffset + descriptor.byteLength,
+        );
+        const local = new Int32Array(
+          source.buffer,
+          source.byteOffset,
+          source.byteLength / Int32Array.BYTES_PER_ELEMENT,
+        );
+        for (const flatIndex of local) {
+          const row = Math.floor(flatIndex / sparseWidth);
+          const featureIndex = flatIndex % sparseWidth;
+          if (
+            row < 0
+            || row >= (samples[sampleIndex].actionSparseShape?.[1] ?? 0)
+            || featureIndex < 0
+            || featureIndex >= sparseWidth
+          ) {
+            throw new Error("Sparse-action index is outside the local shape");
+          }
+          remapped.push(
+            (
+              (sampleIndex * sparseMaxRows + row)
+              * sparseWidth
+            ) + featureIndex,
+          );
+        }
+      });
+      const outputArray = Int32Array.from(remapped);
+      push(
+        {
+          name: first.name,
+          dtype: first.dtype,
+          shape: [outputArray.length],
+        },
+        Buffer.from(
+          outputArray.buffer,
+          outputArray.byteOffset,
+          outputArray.byteLength,
+        ),
+      );
+      continue;
+    }
+
+    if (first.name === "actionSparseValues") {
+      if (!sparse || first.dtype !== "float32") {
+        throw new Error("Unexpected sparse-action values tensor");
+      }
+      const totalBytes = descriptors.reduce(
+        (sum, descriptor) => sum + descriptor.byteLength,
+        0,
+      );
+      const output = Buffer.allocUnsafe(totalBytes);
+      let cursor = 0;
+      descriptors.forEach((descriptor, sampleIndex) => {
+        if (descriptor.shape.length !== 1) {
+          throw new Error("Sparse-action values must be rank 1");
+        }
+        const source = samples[sampleIndex].payload.subarray(
+          descriptor.byteOffset,
+          descriptor.byteOffset + descriptor.byteLength,
+        );
+        source.copy(output, cursor);
+        cursor += source.byteLength;
+      });
+      push(
+        {
+          name: first.name,
+          dtype: first.dtype,
+          shape: [totalBytes / Float32Array.BYTES_PER_ELEMENT],
+        },
+        output,
+      );
+      continue;
+    }
+
+    if (VARIABLE_BATCH_ROW_TENSORS.has(first.name)) {
+      if (first.shape.length !== 2 && first.shape.length !== 3) {
+        throw new Error(
+          `Unexpected variable packed tensor rank for ${first.name}: ${first.shape.length}`,
+        );
+      }
+
+      const trailing = first.shape.slice(2);
+      for (const descriptor of descriptors) {
+        if (
+          descriptor.shape[0] !== 1
+          || descriptor.shape.length !== first.shape.length
+        ) {
+          throw new Error(
+            `Packed worker variable shape mismatch: ${first.name}`,
+          );
+        }
+        if (
+          descriptor.shape.slice(2).length !== trailing.length
+          || descriptor.shape.slice(2).some(
+            (value, index) => value !== trailing[index],
+          )
+        ) {
+          throw new Error(
+            `Packed worker variable width mismatch: ${first.name}`,
+          );
+        }
+      }
+
+      const maxRows = Math.max(
+        ...descriptors.map((descriptor) => descriptor.shape[1]),
+      );
+      const rowWidth = first.shape.length === 3
+        ? first.shape[2]
+        : 1;
+      const rowBytes = rowWidth * itemBytes;
+      const output = Buffer.alloc(
+        samples.length * maxRows * rowBytes,
+      );
+
+      descriptors.forEach((descriptor, sampleIndex) => {
+        const source = samples[sampleIndex].payload.subarray(
+          descriptor.byteOffset,
+          descriptor.byteOffset + descriptor.byteLength,
+        );
+        const expectedBytes = descriptor.shape[1] * rowBytes;
+        if (source.byteLength !== expectedBytes) {
+          throw new Error(
+            `Packed worker byte length mismatch: ${first.name}`,
+          );
+        }
+        source.copy(
+          output,
+          sampleIndex * maxRows * rowBytes,
+        );
+      });
+
+      push(
+        {
+          name: first.name,
+          dtype: first.dtype,
+          shape: first.shape.length === 3
+            ? [samples.length, maxRows, first.shape[2]]
+            : [samples.length, maxRows],
+        },
+        output,
+      );
+      continue;
+    }
+
+    const trailingShape = first.shape.slice(1);
+    for (const descriptor of descriptors) {
+      if (
+        descriptor.shape[0] !== 1
+        || descriptor.shape.length !== first.shape.length
+        || descriptor.shape.slice(1).some(
+          (value, index) => value !== trailingShape[index],
+        )
+      ) {
+        throw new Error(
+          `Packed worker fixed tensor shape mismatch: ${first.name}`,
+        );
+      }
+    }
+
+    const sampleByteLength = first.byteLength;
+    if (
+      descriptors.some(
+        (descriptor) => descriptor.byteLength !== sampleByteLength,
+      )
+    ) {
+      throw new Error(
+        `Packed worker fixed byte length mismatch: ${first.name}`,
+      );
+    }
+
+    const output = Buffer.allocUnsafe(
+      samples.length * sampleByteLength,
+    );
+    descriptors.forEach((descriptor, sampleIndex) => {
+      const source = samples[sampleIndex].payload.subarray(
+        descriptor.byteOffset,
+        descriptor.byteOffset + descriptor.byteLength,
+      );
+      source.copy(output, sampleIndex * sampleByteLength);
+    });
+
+    push(
+      {
+        name: first.name,
+        dtype: first.dtype,
+        shape: [samples.length, ...trailingShape],
+      },
+      output,
+    );
+  }
+
+  return {
+    payload: Buffer.concat(buffers, byteOffset),
+    tensors,
+    batchSize: samples.length,
+    ...(rowCompaction
+      ? { rowCompaction: { ...rowCompaction } }
+      : {}),
+    ...(sparse
+      ? {
+          actionSparseShape: [
+            samples.length,
+            sparseMaxRows,
+            sparseWidth,
+          ] as [number, number, number],
+        }
+      : {}),
+  };
+}
