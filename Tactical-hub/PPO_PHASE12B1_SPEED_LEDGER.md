@@ -1499,3 +1499,26 @@ Update it whenever the verified fastest path, failed routes, or next experiment 
 - Worker CPU totals included observation 39.08 ms, legal actions 3.07 ms, observation encode 677.68 ms, action encode 540.60 ms, packing 1,003.86 ms and game-step 774.34 ms. These totals overlap across workers and are not wall time.
 - Interpretation: worker-side packing/transfer fixes the dominant V7-C structured-clone penalty, but the 1k rollout itself is still slightly slower than V7-A. The end-to-end wall improvement may include run-to-run variation outside rollout/replay.
 - Decision: do not promote from 1k alone. Run the same exact-preserving paired gate at 4k before deciding promotion or closure.
+
+
+## V7-D worker packed transfer 1k exact gate — PASS
+- Branch: experiment/ppo-fast-batch-v7d-worker-packed-transfer
+- Candidate commit: 38018f87082e90cbd0cfdcfb1398b51ab89a00cc
+- Kaggle Version 155: COMPLETE.
+- Probe: ppo_v7d_worker_packed_transfer_1k_gate.
+- Workload: fixed update2, 8 environments x 125 decisions = 1,000 decisions.
+- allExact=true.
+- Exact checks passed for semantic summaries, update result, parameter/optimizer/RNG/gradient hashes, model/optimizer checkpoint state, CPU/CUDA RNG state, counters, Feature Spec, hyperparameters, seed and sample counts.
+- Baseline V7-A wall: 14.5144 sec.
+- Candidate V7-D wall: 12.4270 sec.
+- wallSpeedup: 1.16798x (~14.39% elapsed reduction).
+- Baseline rollout: 3,048.91 ms.
+- Candidate rollout: 3,003.20 ms.
+- rolloutSpeedup: 1.01522x (~1.50% rollout reduction).
+- Baseline replay: 1,775.70 ms.
+- Candidate replay: 2,021.75 ms; 1k replay timing is worse/noisy and must not be treated as an improvement.
+- V7-D 4-worker prepare barrier: 937.41 ms versus V7-C 3,149.16 ms at the same 1k scale, a ~70% barrier reduction.
+- V7-D apply barrier: 465.07 ms.
+- Worker CPU totals include observation 32.53 ms, legal actions 5.27 ms, encode observation 658.09 ms, encode actions 440.69 ms, worker-side pack 904.52 ms, game step 773.92 ms.
+- Interpretation: worker-side packed transferable payloads remove most of the V7-C structured-clone penalty while preserving exact PPO semantics.
+- Decision: 1k gate PASS; do not promote yet. Proceed to 4k paired exact timing gate before any 50k validation.
