@@ -30,6 +30,26 @@ describe("packed BC batches", () => {
     ];
     const packed = packBcEncodedSamples(samples, spec);
 
+    const packedMap = tensorView(packed, "map");
+    const expectedMapRows = encodedObservation.map.flat();
+    const expectedMapValues = Float32Array.from([
+      ...expectedMapRows.flat(),
+      ...expectedMapRows.flat(),
+    ]);
+    expect(packedMap.descriptor.shape).toEqual([
+      2,
+      expectedMapRows.length,
+      spec.mapTileWidth,
+    ]);
+    expect(Buffer.compare(
+      packedMap.buffer,
+      Buffer.from(
+        expectedMapValues.buffer,
+        expectedMapValues.byteOffset,
+        expectedMapValues.byteLength,
+      ),
+    )).toBe(0);
+
     const actions = tensorView(packed, "actions");
     const actionValues = new Float32Array(
       actions.buffer.buffer,
