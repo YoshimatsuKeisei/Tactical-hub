@@ -536,7 +536,7 @@ class PpoTrainer:
                 )
                 probabilities = timed(
                     "act_batch_distribution_softmax",
-                    normalized_logits.softmax,
+                    lambda: normalized_logits.softmax(dim=-1),
                 )
                 selected = timed(
                     "act_batch_sampling",
