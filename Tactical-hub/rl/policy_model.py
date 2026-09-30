@@ -228,7 +228,10 @@ class TacticalPolicyValueNetwork(nn.Module):
                         dtype=table.dtype,
                         device=table.device,
                     )
-                encoded_valid = encoder(table[:, :valid_count, :])
+                encoded_valid = timed(
+                    f"state_pool.{key}.encoder",
+                    lambda: encoder(table[:, :valid_count, :]),
+                )
                 trailing = torch.zeros(
                     (
                         table.shape[0],
@@ -239,8 +242,18 @@ class TacticalPolicyValueNetwork(nn.Module):
                     device=encoded_valid.device,
                 )
                 encoded = torch.cat((encoded_valid, trailing), dim=1)
-                return batched_masked_mean_pool(encoded, mask)
-            return batched_masked_mean_pool(encoder(table), mask)
+                return timed(
+                    f"state_pool.{key}.reduce",
+                    lambda: batched_masked_mean_pool(encoded, mask),
+                )
+            encoded = timed(
+                f"state_pool.{key}.encoder",
+                lambda: encoder(table),
+            )
+            return timed(
+                f"state_pool.{key}.reduce",
+                lambda: batched_masked_mean_pool(encoded, mask),
+            )
 
         embeddings = [
             timed(
