@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { BcEncodedSample } from "./pythonBcTrainerClient";
 import type { SparseActionRow } from "./rlActionEncoder";
 import type { RlFeatureSpec } from "./rlFeatureSpec";
@@ -60,6 +61,7 @@ export type PackBcEncodedSamplesOptions = {
   compactMaskedPrefixes?: boolean;
   sparseActions?: boolean;
   directSparseActions?: SparseActionRow[][];
+  profileStage?: (stage: string, elapsedMs: number) => void;
 };
 
 function validMaskPrefixLength(
@@ -86,6 +88,17 @@ export function packBcEncodedSamples(
   options: PackBcEncodedSamplesOptions = {},
 ): PackedBcBatch {
   if (!samples.length) throw new Error("Cannot pack an empty BC batch");
+  const profile = options.profileStage;
+  const timed = <T>(stage: string, operation: () => T): T => {
+    if (!profile) return operation();
+    const started = performance.now();
+    try {
+      return operation();
+    } finally {
+      profile(stage, performance.now() - started);
+    }
+  };
+
   const observations = samples.map((sample) => sample.observation);
   const floats: PendingTensor[] = [];
   const masks: PendingTensor[] = [];
@@ -94,9 +107,12 @@ export function packBcEncodedSamples(
     if (rows.some((row) => row.length !== width)) throw new Error(`${name} feature width does not match Feature Spec`);
     return floatMatrix(name, rows);
   };
-  floats.push(checkedMatrix("global", observations.map((value) => value.global), featureSpec.globalWidth));
-  floats.push(checkedMatrix("strategicGlobal", observations.map((value) => value.strategicState.global), featureSpec.strategicGlobalWidth));
+  timed("pack_fixed_globals", () => {
+    floats.push(checkedMatrix("global", observations.map((value) => value.global), featureSpec.globalWidth));
+    floats.push(checkedMatrix("strategicGlobal", observations.map((value) => value.strategicState.global), featureSpec.strategicGlobalWidth));
+  });
 
+  timed("pack_masked_tables", () => {
   for (const [name, maskName, width] of [
     ["teams", "teamMask", featureSpec.teamWidth],
     ["units", "unitMask", featureSpec.unitWidth],
@@ -211,12 +227,16 @@ export function packBcEncodedSamples(
       ),
     );
   }
+  });
+  timed("pack_map", () => {
   const mapRows = observations.map((value) => value.map.flat());
   if (mapRows.some((batch) => batch.some((row) => row.length !== featureSpec.mapTileWidth))) throw new Error("map feature width does not match Feature Spec");
   const [map, mapPresence] = paddedFloatRows("map", mapRows, featureSpec.mapTileWidth);
   floats.push(map);
   masks.push({ name: "mapMask", dtype: "uint8", shape: [samples.length, map.shape[1]], bytes: Buffer.from(mapPresence.buffer) });
+  });
 
+  timed("pack_strategic_tables", () => {
   for (const name of strategicNames) {
     const rows = observations.map((value) => value.strategicState[name]);
     const width = featureSpec.strategicTableRowWidths[name];
@@ -225,6 +245,7 @@ export function packBcEncodedSamples(
     floats.push(tensor);
     masks.push({ name: `strategicMask.${name}`, dtype: "uint8", shape: [samples.length, tensor.shape[1]], bytes: Buffer.from(presence.buffer) });
   }
+  });
   const directSparseActions = options.directSparseActions;
   if (directSparseActions && !options.sparseActions) {
     throw new Error("direct sparse actions require sparseActions transport");
@@ -233,6 +254,7 @@ export function packBcEncodedSamples(
     throw new Error("direct sparse action batch size does not match samples");
   }
 
+  const actionPackStarted = profile ? performance.now() : 0;
   const actionRows = directSparseActions
     ? undefined
     : samples.map((sample) => sample.actions);
@@ -325,6 +347,7 @@ export function packBcEncodedSamples(
     floats.push(actions);
   }
   masks.push({ name: "actionMask", dtype: "uint8", shape: [samples.length, maxActionRows], bytes: Buffer.from(actionPresence.buffer) });
+  if (profile) profile("pack_actions_targets_masks", performance.now() - actionPackStarted);
 
   let byteOffset = 0;
   const tensors: PackedTensorDescriptor[] = [];
@@ -334,8 +357,9 @@ export function packBcEncodedSamples(
     buffers.push(tensor.bytes);
     byteOffset += tensor.bytes.byteLength;
   }
+  const payload = timed("pack_buffer_concat", () => Buffer.concat(buffers, byteOffset));
   return {
-    payload: Buffer.concat(buffers, byteOffset),
+    payload,
     tensors,
     batchSize: samples.length,
     ...(Object.keys(rowCompaction).length
