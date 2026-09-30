@@ -538,6 +538,30 @@ def _apply_logical_row_counts(
         )
 
 
+def _validate_action_mask_cpu_rows(
+    descriptor: dict[str, Any],
+    payload: bytearray,
+) -> None:
+    shape = tuple(int(value) for value in descriptor["shape"])
+    if len(shape) != 2 or shape[0] <= 0 or shape[1] <= 0:
+        raise ValueError("Packed actionMask must have positive [batch, actions] shape")
+    count = int(np.prod(shape, dtype=np.int64))
+    if int(descriptor["byteLength"]) != count * _DTYPES["uint8"].itemsize:
+        raise ValueError("Packed actionMask byte length mismatch")
+    values = np.frombuffer(
+        payload,
+        dtype=_DTYPES["uint8"],
+        count=count,
+        offset=int(descriptor["byteOffset"]),
+    ).reshape(shape)
+    if not bool(values.any(axis=1).all()):
+        if shape[0] == 1:
+            raise ValueError("Packed PPO act requires legal actions")
+        raise ValueError(
+            "Packed PPO batch act requires legal actions for every sample"
+        )
+
+
 def prepare_packed_tensors_grouped_h2d(
     header: dict[str, Any],
     payload: bytearray,
@@ -731,15 +755,11 @@ def prepare_packed_tensors_grouped_h2d(
                 for key, mask_name in table_masks.items()
             }
     if validate_action_mask_cpu:
-        descriptor = by_name["actionMask"]
-        action_mask_cpu = np.frombuffer(
+        _validate_action_mask_cpu_rows(
+            by_name["actionMask"],
             payload,
-            dtype=_DTYPES["uint8"],
-            count=int(descriptor["byteLength"]),
-            offset=int(descriptor["byteOffset"]),
         )
-        if not bool(action_mask_cpu.any()):
-            raise ValueError("Packed PPO act requires legal actions")
+        prepared["_actionMaskCpuValidated"] = True
 
     targets = (
         view("targets", targets_flat, int_start, int_itemsize)
