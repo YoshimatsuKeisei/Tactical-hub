@@ -35,6 +35,40 @@ function paddedFloatRows(name: string, values: number[][][], width: number): [Pe
   return [{ name, dtype: "float32", shape: [values.length, maxRows, width], bytes: Buffer.from(packed.buffer) }, presence];
 }
 
+function paddedMapRows(
+  name: string,
+  values: number[][][][],
+  width: number,
+): [PendingTensor, Uint8Array] {
+  const rowCounts = values.map((map) =>
+    map.reduce((count, row) => count + row.length, 0)
+  );
+  const maxRows = Math.max(0, ...rowCounts);
+  const packed = new Float32Array(values.length * maxRows * width);
+  const presence = new Uint8Array(values.length * maxRows);
+
+  values.forEach((map, batch) => {
+    let rowIndex = 0;
+    for (const mapRow of map) {
+      for (const row of mapRow) {
+        if (row.length !== width) {
+          throw new Error("map feature width does not match Feature Spec");
+        }
+        packed.set(row, (batch * maxRows + rowIndex) * width);
+        presence[batch * maxRows + rowIndex] = 1;
+        rowIndex += 1;
+      }
+    }
+  });
+
+  return [{
+    name,
+    dtype: "float32",
+    shape: [values.length, maxRows, width],
+    bytes: Buffer.from(packed.buffer),
+  }, presence];
+}
+
 function maskTensor(name: string, masks: number[][], maxRows: number, presence?: Uint8Array): PendingTensor {
   const packed = new Uint8Array(masks.length * maxRows);
   masks.forEach((mask, batch) => mask.slice(0, maxRows).forEach((value, row) => {
@@ -211,9 +245,11 @@ export function packBcEncodedSamples(
       ),
     );
   }
-  const mapRows = observations.map((value) => value.map.flat());
-  if (mapRows.some((batch) => batch.some((row) => row.length !== featureSpec.mapTileWidth))) throw new Error("map feature width does not match Feature Spec");
-  const [map, mapPresence] = paddedFloatRows("map", mapRows, featureSpec.mapTileWidth);
+  const [map, mapPresence] = paddedMapRows(
+    "map",
+    observations.map((value) => value.map),
+    featureSpec.mapTileWidth,
+  );
   floats.push(map);
   masks.push({ name: "mapMask", dtype: "uint8", shape: [samples.length, map.shape[1]], bytes: Buffer.from(mapPresence.buffer) });
 
