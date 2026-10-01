@@ -97,6 +97,7 @@ const result = await runPpoFastBatchV2Smoke({
       PPO_ACT_CUDA_GRAPH_MAX_ENTRIES: "32",
       PPO_PERSISTENT_REPLAY_H2D: "1",
       PPO_IMMUTABLE_RAW_RETENTION: "1",
+      PPO_ACT_RPC_PROFILE: "1",
     },
   }),
 });
