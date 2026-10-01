@@ -76,6 +76,18 @@ export type PpoRolloutWorkerV7AdvanceResult = {
   barrierMs: number;
 };
 
+export type PpoRolloutWorkerV7WorkerPrepareResult = {
+  workerId: number;
+  group?: PpoRolloutWorkerV7PreparedGroup;
+  finalized: PpoRolloutWorkerV7Finalized[];
+  mergeLegalActionCount: number;
+  workerCpuTiming: PpoRolloutWorkerV7Timing;
+  operationMs: number;
+};
+
+export type PpoRolloutWorkerV7WorkerAdvanceResult =
+  PpoRolloutWorkerV7WorkerPrepareResult;
+
 export class PpoRolloutWorkerV7Pool {
   private constructor(
     private readonly handles: WorkerHandle[],
@@ -265,6 +277,21 @@ export class PpoRolloutWorkerV7Pool {
     return this.handles.length;
   }
 
+  getWorkerEnvironmentIndices(workerId: number) {
+    return [...this.handleFor(workerId).environmentIndices];
+  }
+
+  private handleFor(workerId: number) {
+    if (!Number.isInteger(workerId)) {
+      throw new Error("PPO V7 rollout workerId must be an integer");
+    }
+    const handle = this.handles[workerId];
+    if (!handle || handle.workerId !== workerId) {
+      throw new Error(`Unknown PPO V7 rollout worker ${workerId}`);
+    }
+    return handle;
+  }
+
   private request(
     handle: WorkerHandle,
     message: RequestWithoutId,
@@ -286,6 +313,91 @@ export class PpoRolloutWorkerV7Pool {
         requestId,
       } as PpoRolloutWorkerV7Request);
     });
+  }
+
+  async prepareWorker(
+    workerId: number,
+    round: number,
+  ): Promise<PpoRolloutWorkerV7WorkerPrepareResult> {
+    const handle = this.handleFor(workerId);
+    const started = performance.now();
+    const response = await this.request(
+      handle,
+      { type: "prepare", round },
+    );
+    if (
+      response.type !== "prepared"
+      || response.workerId !== workerId
+      || response.round !== round
+    ) {
+      throw new Error(
+        `Unexpected PPO rollout prepare response from worker ${workerId}`,
+      );
+    }
+    const finalized = [...response.finalized].sort(
+      (left, right) => left.environmentIndex - right.environmentIndex,
+    );
+    return {
+      workerId,
+      ...(response.group ? { group: response.group } : {}),
+      finalized,
+      mergeLegalActionCount: response.mergeLegalActionCount,
+      workerCpuTiming: response.timing,
+      operationMs: performance.now() - started,
+    };
+  }
+
+  async advanceWorker(
+    workerId: number,
+    round: number,
+    actions: Array<{
+      environmentIndex: number;
+      actionIndex: number;
+      actionKey: string;
+      logProbability: number;
+      value: number;
+    }>,
+  ): Promise<PpoRolloutWorkerV7WorkerAdvanceResult> {
+    const handle = this.handleFor(workerId);
+    for (const action of actions) {
+      const owner = this.environmentToWorker.get(action.environmentIndex);
+      if (owner === undefined) {
+        throw new Error(
+          `Unknown PPO V7 rollout environment ${action.environmentIndex}`,
+        );
+      }
+      if (owner !== workerId) {
+        throw new Error(
+          `PPO V7 rollout environment ${action.environmentIndex} belongs to worker ${owner}, not ${workerId}`,
+        );
+      }
+    }
+
+    const started = performance.now();
+    const response = await this.request(
+      handle,
+      { type: "advance", round, actions },
+    );
+    if (
+      response.type !== "advanced"
+      || response.workerId !== workerId
+      || response.round !== round
+    ) {
+      throw new Error(
+        `Unexpected PPO rollout advance response from worker ${workerId}`,
+      );
+    }
+    const finalized = [...response.finalized].sort(
+      (left, right) => left.environmentIndex - right.environmentIndex,
+    );
+    return {
+      workerId,
+      ...(response.group ? { group: response.group } : {}),
+      finalized,
+      mergeLegalActionCount: response.mergeLegalActionCount,
+      workerCpuTiming: response.timing,
+      operationMs: performance.now() - started,
+    };
   }
 
   async prepare(
