@@ -37,6 +37,7 @@ def main():
     trainer = None
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
+    act_server_profile = os.environ.get("PPO_ACT_SERVER_PROFILE") == "1"
     retention_storage_mode = os.environ.get(
         "PPO_RETENTION_STORAGE_MODE",
         "deflate",
@@ -64,6 +65,7 @@ def main():
     packed_h2d_workspace = None
     replay_h2d_workspace = None
     timings = {}
+    act_server_timings = {}
     legal_action_counts = []
     retained_chunks = {}
     consumed_retention_ids = set()
@@ -396,6 +398,24 @@ def main():
 
     def sync_device():
         if profile and trainer is not None and trainer.device.type == "cuda":
+            torch.cuda.synchronize(trainer.device)
+
+    def record_act_server(stage, elapsed):
+        if not act_server_profile:
+            return
+        item = act_server_timings.setdefault(
+            stage,
+            {"count": 0, "totalMs": 0.0},
+        )
+        item["count"] += 1
+        item["totalMs"] += elapsed * 1000.0
+
+    def sync_act_server():
+        if (
+            act_server_profile
+            and trainer is not None
+            and trainer.device.type == "cuda"
+        ):
             torch.cuda.synchronize(trainer.device)
 
     def read_binary(byte_length):
@@ -865,9 +885,22 @@ def main():
                 actions_result = trainer.act_prepared_stream_batch(prepared_samples)
                 send({"type": "actions", "requestId": message["requestId"], **actions_result})
             elif kind in ("packedAct", "packedActBatch", "packedUpdateChunk"):
+                act_batch_profile = (
+                    act_server_profile
+                    and kind == "packedActBatch"
+                )
                 if profile:
                     prepare_start = time.perf_counter()
+                if act_batch_profile:
+                    payload_read_start = time.perf_counter()
                 payload = read_binary(int(message["byteLength"]))
+                if act_batch_profile:
+                    record_act_server(
+                        "server_payload_read",
+                        time.perf_counter() - payload_read_start,
+                    )
+                    sync_act_server()
+                    prepare_h2d_start = time.perf_counter()
                 views = None
                 state_branch_fingerprints = (
                     packed_state_branch_fingerprints(message, payload)
@@ -916,6 +949,12 @@ def main():
                 else:
                     views = decode_packed_views(message, payload)
                     prepared, actions, action_mask, targets = prepare_packed_tensors(views, trainer.device)
+                if act_batch_profile:
+                    sync_act_server()
+                    record_act_server(
+                        "server_prepare_h2d",
+                        time.perf_counter() - prepare_h2d_start,
+                    )
                 if profile:
                     sync_device()
                     record("packed_read_decode_prepare", time.perf_counter() - prepare_start)
@@ -971,12 +1010,27 @@ def main():
                             )
                     if retention_batch_id:
                         reserve_retention_id(retention_batch_id)
+                    if act_batch_profile:
+                        sync_act_server()
+                        trainer_act_start = time.perf_counter()
                     actions_result = trainer.act_prepared_batch(
                         prepared,
                         actions,
                         action_mask,
                         manual_categorical_mode=packed_prepare_mode in ("fast_batch_v1", "fast_batch_v2"),
+                        profile_stage=(
+                            record_act_server
+                            if act_batch_profile
+                            else None
+                        ),
                     )
+                    if act_batch_profile:
+                        sync_act_server()
+                        record_act_server(
+                            "server_trainer_act_total",
+                            time.perf_counter() - trainer_act_start,
+                        )
+                        retention_start = time.perf_counter()
                     if retention_ids:
                         reserve_retention_ids(retention_ids)
                         enqueue_retained_batch(
@@ -992,11 +1046,22 @@ def main():
                             payload,
                             actions_result["actionIndices"],
                         )
+                    if act_batch_profile:
+                        record_act_server(
+                            "server_retention_enqueue",
+                            time.perf_counter() - retention_start,
+                        )
+                        response_send_start = time.perf_counter()
                     send({
                         "type": "actions",
                         "requestId": message["requestId"],
                         **actions_result,
                     })
+                    if act_batch_profile:
+                        record_act_server(
+                            "server_response_send",
+                            time.perf_counter() - response_send_start,
+                        )
                 else:
                     if profile:
                         sync_device()
@@ -1038,6 +1103,27 @@ def main():
                 retention_queue.put(None)
                 retention_queue.join()
                 retention_thread.join(timeout=5)
+                if act_server_profile:
+                    act_server_summary = {
+                        name: {
+                            "count": item["count"],
+                            "totalMs": round(item["totalMs"], 2),
+                            "avgMs": round(
+                                item["totalMs"] / item["count"],
+                                3,
+                            ),
+                        }
+                        for name, item in act_server_timings.items()
+                    }
+                    sys.stderr.write(
+                        "[PPO act server profile] "
+                        + json.dumps(
+                            {"stages": act_server_summary},
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
+                    sys.stderr.flush()
                 if profile:
                     summary = {name: {"count": item["count"], "totalMs": round(item["totalMs"], 2), "avgMs": round(item["totalMs"] / item["count"], 3)} for name, item in timings.items()}
                     legal_summary = {
