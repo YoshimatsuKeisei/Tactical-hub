@@ -441,14 +441,34 @@ class PpoTrainer:
         prepared: dict[str, Any],
         actions: torch.Tensor,
         action_mask: torch.Tensor,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        if not self._act_cuda_graph_enabled:
-            return self._act_forward(prepared, actions, action_mask)
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if profile_stage is None:
+                return operation()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
 
-        signature = self._act_graph_signature(
-            prepared,
-            actions,
-            action_mask,
+        if not self._act_cuda_graph_enabled:
+            return timed(
+                "graph_disabled_forward",
+                lambda: self._act_forward(prepared, actions, action_mask),
+            )
+
+        signature = timed(
+            "graph_signature",
+            lambda: self._act_graph_signature(
+                prepared,
+                actions,
+                action_mask,
+            ),
         )
         seen = self._act_cuda_graph_seen.get(signature, 0) + 1
         self._act_cuda_graph_seen[signature] = seen
@@ -461,19 +481,32 @@ class PpoTrainer:
                 >= self._act_cuda_graph_max_entries
             ):
                 self._act_cuda_graph_fallbacks += 1
-                return self._act_forward(prepared, actions, action_mask)
-            entry = self._capture_act_cuda_graph(
-                prepared,
-                actions,
-                action_mask,
+                return timed(
+                    "graph_fallback_forward",
+                    lambda: self._act_forward(
+                        prepared,
+                        actions,
+                        action_mask,
+                    ),
+                )
+            entry = timed(
+                "graph_capture",
+                lambda: self._capture_act_cuda_graph(
+                    prepared,
+                    actions,
+                    action_mask,
+                ),
             )
             self._act_cuda_graph_cache[signature] = entry
             self._act_cuda_graph_captures += 1
 
-        self._act_graph_copy_prepared(entry["prepared"], prepared)
-        entry["actions"].copy_(actions)
-        entry["actionMask"].copy_(action_mask)
-        entry["graph"].replay()
+        def copy_static_inputs() -> None:
+            self._act_graph_copy_prepared(entry["prepared"], prepared)
+            entry["actions"].copy_(actions)
+            entry["actionMask"].copy_(action_mask)
+
+        timed("graph_static_copy", copy_static_inputs)
+        timed("graph_replay", entry["graph"].replay)
         self._act_cuda_graph_replays += 1
         return entry["outputs"]
 
@@ -529,6 +562,7 @@ class PpoTrainer:
                     prepared_observations,
                     prepared_actions,
                     action_mask,
+                    profile_stage=profile_stage,
                 ),
             )
             finite_flag = timed(
