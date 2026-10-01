@@ -88,9 +88,9 @@ export async function runPpoAsyncRolloutProbeV8(
   input: PpoAsyncRolloutProbeV8Input,
 ) {
   const environmentCount = input.environmentCount ?? 8;
-  if (![8, 16, 32].includes(environmentCount)) {
+  if (![8, 16, 32, 64].includes(environmentCount)) {
     throw new Error(
-      "PPO async rollout V8 structural probe supports exactly 8, 16, or 32 environments",
+      "PPO async rollout V8 structural probe supports exactly 8, 16, 32, or 64 environments",
     );
   }
 
