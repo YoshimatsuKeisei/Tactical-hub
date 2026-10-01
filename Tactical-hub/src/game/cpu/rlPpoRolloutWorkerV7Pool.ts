@@ -68,6 +68,14 @@ export type PpoRolloutWorkerV7ApplyResult = {
   barrierMs: number;
 };
 
+export type PpoRolloutWorkerV7AdvanceResult = {
+  groups: PpoRolloutWorkerV7PreparedGroup[];
+  finalized: PpoRolloutWorkerV7Finalized[];
+  mergeLegalActionCount: number;
+  workerCpuTiming: PpoRolloutWorkerV7Timing;
+  barrierMs: number;
+};
+
 export class PpoRolloutWorkerV7Pool {
   private constructor(
     private readonly handles: WorkerHandle[],
@@ -369,6 +377,74 @@ export class PpoRolloutWorkerV7Pool {
 
     return {
       finalized,
+      workerCpuTiming,
+      barrierMs: performance.now() - started,
+    };
+  }
+
+  async advance(
+    round: number,
+    actions: Array<{
+      environmentIndex: number;
+      actionIndex: number;
+      actionKey: string;
+      logProbability: number;
+      value: number;
+    }>,
+  ): Promise<PpoRolloutWorkerV7AdvanceResult> {
+    const actionsByWorker = new Map<number, typeof actions>();
+    for (const action of actions) {
+      const workerId = this.environmentToWorker.get(action.environmentIndex);
+      if (workerId === undefined) {
+        throw new Error(
+          "Unknown PPO rollout environment " + action.environmentIndex,
+        );
+      }
+      const list = actionsByWorker.get(workerId) ?? [];
+      list.push(action);
+      actionsByWorker.set(workerId, list);
+    }
+
+    const started = performance.now();
+    const responses = await Promise.all(
+      this.handles.map((handle) =>
+        this.request(handle, {
+          type: "advance",
+          round,
+          actions: actionsByWorker.get(handle.workerId) ?? [],
+        }),
+      ),
+    );
+
+    const groups: PpoRolloutWorkerV7PreparedGroup[] = [];
+    const finalized: PpoRolloutWorkerV7Finalized[] = [];
+    const workerCpuTiming = emptyTiming();
+    let mergeLegalActionCount = 0;
+
+    for (const response of responses) {
+      if (response.type !== "advanced") {
+        throw new Error(
+          "Unexpected PPO rollout advance response: " + response.type,
+        );
+      }
+      if (response.group) groups.push(response.group);
+      finalized.push(...response.finalized);
+      mergeLegalActionCount += response.mergeLegalActionCount;
+      addTiming(workerCpuTiming, response.timing);
+    }
+    groups.sort(
+      (left, right) =>
+        (left.environmentIndices[0] ?? Number.MAX_SAFE_INTEGER)
+        - (right.environmentIndices[0] ?? Number.MAX_SAFE_INTEGER),
+    );
+    finalized.sort(
+      (left, right) => left.environmentIndex - right.environmentIndex,
+    );
+
+    return {
+      groups,
+      finalized,
+      mergeLegalActionCount,
       workerCpuTiming,
       barrierMs: performance.now() - started,
     };

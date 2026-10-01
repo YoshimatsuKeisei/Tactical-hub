@@ -38,8 +38,8 @@ const pool = await PpoRolloutWorkerV7Pool.create({
   safetyMaxActions: 20,
 });
 try {
+  let prepared = await pool.prepare(0);
   for (let round = 0; round < 2; round += 1) {
-    const prepared = await pool.prepare(round);
     assert.deepEqual(
       prepared.groups.flatMap((group) => group.environmentIndices),
       direct.map((entry) => entry.environmentIndex),
@@ -52,9 +52,15 @@ try {
       const observation = entry.environment.getObservationForEncoding(actor);
       const legal = entry.environment.getLegalActionsForEncoding(actor);
       assert.ok(legal.length > 0);
-      const encodedObservation = encodeRlObservationCompactPackedMapV2(observation, entry.encoderCache);
+      const encodedObservation = encodeRlObservationCompactPackedMapV2(
+        observation,
+        entry.encoderCache,
+      );
       const encodedActions = encodeRlLegalActionsSparseV2(observation, legal);
-      samples.push({ observation: encodedObservation, sparseActions: encodedActions.sparseActions });
+      samples.push({
+        observation: encodedObservation,
+        sparseActions: encodedActions.sparseActions,
+      });
       actionKeys.push(encodedActions.actionKeys);
     }
     const directPacked = packPpoActBatchInput(samples, featureSpec, {
@@ -62,24 +68,41 @@ try {
       sparseActions: true,
     });
     const workerPacked = combinePackedWorkerBatchesV7(
-      prepared.groups.map((group) => fromTransferablePackedBcBatch(group.packed)),
+      prepared.groups.map(
+        (group) => fromTransferablePackedBcBatch(group.packed),
+      ),
     );
     assert.equal(workerPacked.batchSize, directPacked.batchSize);
     assert.deepEqual(workerPacked.tensors, directPacked.tensors);
     assert.deepEqual(workerPacked.rowCompaction, directPacked.rowCompaction);
-    assert.deepEqual(workerPacked.actionSparseShape, directPacked.actionSparseShape);
-    assert.equal(Buffer.compare(workerPacked.payload, directPacked.payload), 0,
-      "round " + round + " packed payload mismatch");
-    assert.deepEqual(prepared.groups.flatMap((group) => group.actionKeys), actionKeys);
+    assert.deepEqual(
+      workerPacked.actionSparseShape,
+      directPacked.actionSparseShape,
+    );
+    assert.equal(
+      Buffer.compare(workerPacked.payload, directPacked.payload),
+      0,
+      "round " + round + " packed payload mismatch",
+    );
+    assert.deepEqual(
+      prepared.groups.flatMap((group) => group.actionKeys),
+      actionKeys,
+    );
 
     const actions = actionKeys.map((keys, environmentIndex) => {
       assert.ok(keys.length > 0);
-      return { environmentIndex, actionIndex: 0, actionKey: keys[0], logProbability: 0, value: 0 };
+      return {
+        environmentIndex,
+        actionIndex: 0,
+        actionKey: keys[0],
+        logProbability: 0,
+        value: 0,
+      };
     });
-    await pool.apply(round, actions);
     direct.forEach((entry, environmentIndex) => {
       entry.environment.stepWithoutObservation(actionKeys[environmentIndex][0]);
     });
+    prepared = await pool.advance(round, actions);
   }
   console.log(JSON.stringify({
     preflight: "passed",
@@ -87,6 +110,7 @@ try {
     environmentCount,
     rounds: 2,
     groupedPackedExact: true,
+    fusedAdvanceExact: true,
   }));
 } finally {
   await pool.close();

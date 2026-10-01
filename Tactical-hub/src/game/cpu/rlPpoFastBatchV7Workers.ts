@@ -185,7 +185,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
   let rolloutMs = 0;
   let replayMs = 0;
   let prepareBarrierMs = 0;
-  let applyBarrierMs = 0;
+  let advanceBarrierMs = 0;
   const rolloutWorkerCpuTiming: PpoRolloutWorkerV7Timing = {
     observationMs: 0,
     legalActionsMs: 0,
@@ -241,16 +241,16 @@ export async function runPpoFastBatchV7WorkersSmoke(
 
     const rolloutStarted = performance.now();
 
-    while (summaryByEnvironment.size < environmentCount) {
-      const prepared = await profiler.measureAsync(
-        "fast_worker_prepare_barrier",
-        () => rolloutPool!.prepare(batchRounds),
-      );
-      prepareBarrierMs += prepared.barrierMs;
-      addWorkerTiming(prepared.workerCpuTiming);
-      mergeLegalActionCount += prepared.mergeLegalActionCount;
-      recordFinalized(prepared.finalized);
+    let prepared = await profiler.measureAsync(
+      "fast_worker_initial_prepare_barrier",
+      () => rolloutPool!.prepare(0),
+    );
+    prepareBarrierMs += prepared.barrierMs;
+    addWorkerTiming(prepared.workerCpuTiming);
+    mergeLegalActionCount += prepared.mergeLegalActionCount;
+    recordFinalized(prepared.finalized);
 
+    while (summaryByEnvironment.size < environmentCount) {
       const preparedSamples = prepared.groups.flatMap((group) => {
         if (group.environmentIndices.length !== group.decisionIndices.length
           || group.environmentIndices.length !== group.actionKeys.length
@@ -265,11 +265,18 @@ export async function runPpoFastBatchV7WorkersSmoke(
       });
       if (!preparedSamples.length) {
         if (summaryByEnvironment.size >= environmentCount) break;
-        throw new Error("Grouped workers produced no active samples before all environments finalized");
+        throw new Error(
+          "Grouped workers produced no active samples before all environments finalized",
+        );
       }
       for (let index = 1; index < preparedSamples.length; index += 1) {
-        if (preparedSamples[index - 1].environmentIndex >= preparedSamples[index].environmentIndex) {
-          throw new Error("Grouped worker samples are not in environment-index order");
+        if (
+          preparedSamples[index - 1].environmentIndex
+          >= preparedSamples[index].environmentIndex
+        ) {
+          throw new Error(
+            "Grouped worker samples are not in environment-index order",
+          );
         }
       }
 
@@ -277,7 +284,9 @@ export async function runPpoFastBatchV7WorkersSmoke(
       const packed = profiler.measure(
         "fast_worker_combine_grouped_packed",
         () => combinePackedWorkerBatchesV7(
-          prepared.groups.map((group) => fromTransferablePackedBcBatch(group.packed)),
+          prepared.groups.map(
+            (group) => fromTransferablePackedBcBatch(group.packed),
+          ),
         ),
       );
       const selected = await profiler.measureAsync(
@@ -299,9 +308,9 @@ export async function runPpoFastBatchV7WorkersSmoke(
       outstandingRetentionIds.add(retentionBatchId);
       totalDecisions += preparedSamples.length;
 
-      const applied = await profiler.measureAsync(
-        "fast_worker_apply_barrier",
-        () => rolloutPool!.apply(
+      const advanced = await profiler.measureAsync(
+        "fast_worker_advance_barrier",
+        () => rolloutPool!.advance(
           batchRounds,
           preparedSamples.map((sample, index) => ({
             environmentIndex: sample.environmentIndex,
@@ -312,9 +321,11 @@ export async function runPpoFastBatchV7WorkersSmoke(
           })),
         ),
       );
-      applyBarrierMs += applied.barrierMs;
-      addWorkerTiming(applied.workerCpuTiming);
-      recordFinalized(applied.finalized);
+      advanceBarrierMs += advanced.barrierMs;
+      addWorkerTiming(advanced.workerCpuTiming);
+      mergeLegalActionCount += advanced.mergeLegalActionCount;
+      recordFinalized(advanced.finalized);
+      prepared = advanced;
 
       batchRounds += 1;
 
@@ -323,12 +334,14 @@ export async function runPpoFastBatchV7WorkersSmoke(
         || summaryByEnvironment.size >= environmentCount
       ) {
         process.stderr.write(
-          `[PPO fast batch v7 workers] ${JSON.stringify({
+          "[PPO fast batch fused workers] "
+          + JSON.stringify({
             totalDecisions,
             batchRounds,
             finalizedEnvironments: summaryByEnvironment.size,
             rolloutWorkerCount,
-          })}\n`,
+          })
+          + "\n",
         );
       }
     }
@@ -552,8 +565,8 @@ export async function runPpoFastBatchV7WorkersSmoke(
     ).length;
 
     const metadata = {
-      purpose: "phase_12b_worker_grouped_pack",
-      ppoMode: "fast_batch_worker_grouped_pack",
+      purpose: "phase_12b_worker_fused_advance",
+      ppoMode: "fast_batch_worker_fused_advance",
       environmentCount,
       seeds,
       mergeOrder: Array.from(
@@ -589,7 +602,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
     const totalMs = performance.now() - started;
 
     return {
-      mode: "fast_batch_worker_grouped_pack",
+      mode: "fast_batch_worker_fused_advance",
       environmentCount,
       seeds,
       mergeOrder: Array.from(
@@ -611,7 +624,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       rolloutWorkerTiming: {
         workerCount: rolloutWorkerCount,
         prepareBarrierMs,
-        applyBarrierMs,
+        advanceBarrierMs,
         cpuTotals: rolloutWorkerCpuTiming,
       },
       mergeLegalActionCount,
@@ -650,7 +663,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
         // Preserve the original fast-mode error.
       }
     }
-    profiler.report("fast_batch_worker_grouped_pack_final");
+    profiler.report("fast_batch_worker_fused_advance_final");
     await client.close();
   }
 }

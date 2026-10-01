@@ -233,14 +233,14 @@ async function handleInit(
   } satisfies PpoRolloutWorkerV7Response);
 }
 
-async function handlePrepare(
-  message: Extract<PpoRolloutWorkerV7Request, { type: "prepare" }>,
+async function prepareRound(
+  round: number,
+  stageTiming: PpoRolloutWorkerV7Timing,
 ) {
   if (!featureSpec || !hyperparameters || workerId < 0) {
     throw new Error("PPO rollout worker is not initialized");
   }
   const activeFeatureSpec = featureSpec;
-  const stageTiming = timing();
   const finalized: PpoRolloutWorkerV7Finalized[] = [];
   const packedSamples: Parameters<typeof packPpoActBatchInput>[0] = [];
   const environmentIndices: number[] = [];
@@ -290,7 +290,9 @@ async function handlePrepare(
       () => encodeRlObservationCompactPackedMapV2(observation, slot.encoderCache));
     const encodedActions = measure(stageTiming, "encodeActionsMs",
       () => encodeRlLegalActionsSparseV2(observation, legal));
-    mergeLegalActionCount += legal.filter((action) => action.actionType === "merge_infantry").length;
+    mergeLegalActionCount += legal.filter(
+      (action) => action.actionType === "merge_infantry",
+    ).length;
 
     const pending: PendingDecision = {
       decisionIndex: slot.trajectory.length,
@@ -322,35 +324,24 @@ async function handlePrepare(
     )),
   } : undefined;
 
-  const response = {
-    type: "prepared",
-    requestId: message.requestId,
-    workerId,
-    round: message.round,
-    ...(group ? { group } : {}),
+  return {
+    round,
+    group,
     finalized,
     mergeLegalActionCount,
-    timing: stageTiming,
-  } satisfies PpoRolloutWorkerV7Response;
-  parentPort!.postMessage(
-    response,
-    group ? [group.packed.payload.buffer as ArrayBuffer] : [],
-  );
+  };
 }
 
-async function handleApply(
-  message: Extract<PpoRolloutWorkerV7Request, { type: "apply" }>,
+async function applyRound(
+  actions: Extract<PpoRolloutWorkerV7Request, { type: "apply" }>["actions"],
+  stageTiming: PpoRolloutWorkerV7Timing,
 ) {
   if (workerId < 0) {
-    throw new Error("PPO V7 rollout worker is not initialized");
+    throw new Error("PPO rollout worker is not initialized");
   }
-  const stageTiming = timing();
   const finalized: PpoRolloutWorkerV7Finalized[] = [];
   const actionByEnvironment = new Map(
-    message.actions.map((action) => [
-      action.environmentIndex,
-      action,
-    ]),
+    actions.map((action) => [action.environmentIndex, action]),
   );
 
   for (const slot of slots) {
@@ -360,7 +351,7 @@ async function handleApply(
     const action = actionByEnvironment.get(slot.environmentIndex);
     if (!action) {
       throw new Error(
-        `PPO V7 rollout worker missing action for env=${slot.environmentIndex}`,
+        "PPO rollout worker missing action for env=" + slot.environmentIndex,
       );
     }
     if (
@@ -370,12 +361,12 @@ async function handleApply(
       || pending.actionKeys[action.actionIndex] !== action.actionKey
     ) {
       throw new Error(
-        `PPO V7 rollout worker action mismatch env=${slot.environmentIndex}`,
+        "PPO rollout worker action mismatch env=" + slot.environmentIndex,
       );
     }
     if (![action.logProbability, action.value].every(Number.isFinite)) {
       throw new Error(
-        `PPO V7 rollout worker non-finite action output env=${slot.environmentIndex}`,
+        "PPO rollout worker non-finite action output env=" + slot.environmentIndex,
       );
     }
 
@@ -398,23 +389,50 @@ async function handleApply(
     });
     slot.pending = undefined;
 
-    if (
-      slot.environment.getProgressHash()
-      === pending.progressHash
-    ) {
+    if (slot.environment.getProgressHash() === pending.progressHash) {
       slot.reason = "phase_stall";
-      const finalizedSlot = await finalizeSlot(slot);
-      if (finalizedSlot) finalized.push(finalizedSlot);
+      const item = await finalizeSlot(slot);
+      if (item) finalized.push(item);
     } else if (slot.environment.isTerminal()) {
-      const finalizedSlot = await finalizeSlot(slot);
-      if (finalizedSlot) finalized.push(finalizedSlot);
+      const item = await finalizeSlot(slot);
+      if (item) finalized.push(item);
     }
   }
 
-  if (actionByEnvironment.size !== message.actions.length) {
-    throw new Error("PPO V7 rollout worker duplicate environment action");
+  if (actionByEnvironment.size !== actions.length) {
+    throw new Error("PPO rollout worker duplicate environment action");
   }
+  return finalized;
+}
 
+async function handlePrepare(
+  message: Extract<PpoRolloutWorkerV7Request, { type: "prepare" }>,
+) {
+  const stageTiming = timing();
+  const prepared = await prepareRound(message.round, stageTiming);
+  const response = {
+    type: "prepared",
+    requestId: message.requestId,
+    workerId,
+    round: message.round,
+    ...(prepared.group ? { group: prepared.group } : {}),
+    finalized: prepared.finalized,
+    mergeLegalActionCount: prepared.mergeLegalActionCount,
+    timing: stageTiming,
+  } satisfies PpoRolloutWorkerV7Response;
+  parentPort!.postMessage(
+    response,
+    prepared.group
+      ? [prepared.group.packed.payload.buffer as ArrayBuffer]
+      : [],
+  );
+}
+
+async function handleApply(
+  message: Extract<PpoRolloutWorkerV7Request, { type: "apply" }>,
+) {
+  const stageTiming = timing();
+  const finalized = await applyRound(message.actions, stageTiming);
   parentPort!.postMessage({
     type: "applied",
     requestId: message.requestId,
@@ -423,6 +441,31 @@ async function handleApply(
     finalized,
     timing: stageTiming,
   } satisfies PpoRolloutWorkerV7Response);
+}
+
+async function handleAdvance(
+  message: Extract<PpoRolloutWorkerV7Request, { type: "advance" }>,
+) {
+  const stageTiming = timing();
+  const appliedFinalized = await applyRound(message.actions, stageTiming);
+  const prepared = await prepareRound(message.round + 1, stageTiming);
+  const finalized = [...appliedFinalized, ...prepared.finalized];
+  const response = {
+    type: "advanced",
+    requestId: message.requestId,
+    workerId,
+    round: message.round,
+    ...(prepared.group ? { group: prepared.group } : {}),
+    finalized,
+    mergeLegalActionCount: prepared.mergeLegalActionCount,
+    timing: stageTiming,
+  } satisfies PpoRolloutWorkerV7Response;
+  parentPort!.postMessage(
+    response,
+    prepared.group
+      ? [prepared.group.packed.payload.buffer as ArrayBuffer]
+      : [],
+  );
 }
 
 async function handle(message: PpoRolloutWorkerV7Request) {
@@ -436,6 +479,10 @@ async function handle(message: PpoRolloutWorkerV7Request) {
   }
   if (message.type === "apply") {
     await handleApply(message);
+    return;
+  }
+  if (message.type === "advance") {
+    await handleAdvance(message);
     return;
   }
   if (message.type === "shutdown") {

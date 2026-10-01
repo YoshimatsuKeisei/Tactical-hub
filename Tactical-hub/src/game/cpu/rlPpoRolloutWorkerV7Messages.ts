@@ -39,10 +39,12 @@ export type PpoRolloutWorkerV7Request =
   | { type: "init"; requestId: number; workerId: number; environments: Array<{environmentIndex:number; seed:number}>; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; safetyMaxTurns: number; safetyMaxActions: number }
   | { type: "prepare"; requestId: number; round: number }
   | { type: "apply"; requestId: number; round: number; actions: Array<{environmentIndex:number; actionIndex:number; actionKey:string; logProbability:number; value:number}> }
+  | { type: "advance"; requestId: number; round: number; actions: Array<{environmentIndex:number; actionIndex:number; actionKey:string; logProbability:number; value:number}> }
   | { type: "shutdown"; requestId: number };
 export type PpoRolloutWorkerV7Response =
   | { type: "ready"; requestId: number; workerId: number; environmentIndices: number[] }
   | { type: "prepared"; requestId: number; workerId: number; round: number; group?: PpoRolloutWorkerV7PreparedGroup; finalized: PpoRolloutWorkerV7Finalized[]; mergeLegalActionCount: number; timing: PpoRolloutWorkerV7Timing }
   | { type: "applied"; requestId: number; workerId: number; round: number; finalized: PpoRolloutWorkerV7Finalized[]; timing: PpoRolloutWorkerV7Timing }
+  | { type: "advanced"; requestId: number; workerId: number; round: number; group?: PpoRolloutWorkerV7PreparedGroup; finalized: PpoRolloutWorkerV7Finalized[]; mergeLegalActionCount: number; timing: PpoRolloutWorkerV7Timing }
   | { type: "closed"; requestId: number; workerId: number }
   | { type: "workerError"; requestId?: number; workerId?: number; error: string };
