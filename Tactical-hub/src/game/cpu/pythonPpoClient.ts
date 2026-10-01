@@ -75,6 +75,10 @@ export class PythonPpoClient {
   private readonly waiting: Array<{ resolve: (response: Response) => void; reject: (error: Error) => void }> = [];
   private stderr = "";
   private featureSpec?: RlFeatureSpecV2;
+  private readonly actRpcProfileEnabled =
+    this.options.env?.PPO_ACT_RPC_PROFILE === "1";
+  private readonly actRpcProfileTotals =
+    new Map<string, { count: number; totalMs: number }>();
 
   constructor(private readonly options: {
     command?: string;
@@ -86,6 +90,15 @@ export class PythonPpoClient {
   } = {}) {}
 
   private wait() { return new Promise<Response>((resolve, reject) => this.waiting.push({ resolve, reject })); }
+
+  private addActRpcProfile(stage: string, elapsedMs: number) {
+    if (!this.actRpcProfileEnabled) return;
+    const item = this.actRpcProfileTotals.get(stage)
+      ?? { count: 0, totalMs: 0 };
+    item.count += 1;
+    item.totalMs += elapsedMs;
+    this.actRpcProfileTotals.set(stage, item);
+  }
   private send(payload: unknown) {
     if (!this.process?.stdin.writable) throw new Error("Python PPO process is not running");
     this.process.stdin.write(`${JSON.stringify(payload)}\n`);
@@ -218,6 +231,33 @@ export class PythonPpoClient {
 
     const requestId = this.nextRequestId++;
     const responsePromise = this.wait();
+
+    const packStarted = performance.now();
+    const packed = packPpoActBatchInput(
+      samples.map(({ observation, legalActions }) =>
+        "sparseActions" in legalActions
+          ? {
+            observation,
+            sparseActions: legalActions.sparseActions,
+          }
+          : {
+            observation,
+            actions: legalActions.actions,
+          }
+      ),
+      this.featureSpec,
+      {
+        compactMaskedPrefixes:
+          this.options.compactPaddedRows ?? false,
+        sparseActions: sparseActionTransport,
+      },
+    );
+    this.addActRpcProfile(
+      "node_pack",
+      performance.now() - packStarted,
+    );
+
+    const sendStarted = performance.now();
     this.sendPreparedPacked(
       {
         type: "packedActBatch",
@@ -225,27 +265,19 @@ export class PythonPpoClient {
         ...(retentionIds ? { retentionIds } : {}),
         ...(retentionBatchId ? { retentionBatchId } : {}),
       },
-      packPpoActBatchInput(
-        samples.map(({ observation, legalActions }) =>
-          "sparseActions" in legalActions
-            ? {
-              observation,
-              sparseActions: legalActions.sparseActions,
-            }
-            : {
-              observation,
-              actions: legalActions.actions,
-            }
-        ),
-        this.featureSpec,
-        {
-          compactMaskedPrefixes:
-            this.options.compactPaddedRows ?? false,
-          sparseActions: sparseActionTransport,
-        },
-      ),
+      packed,
     );
+    this.addActRpcProfile(
+      "node_write_enqueue",
+      performance.now() - sendStarted,
+    );
+
+    const waitStarted = performance.now();
     const response = await responsePromise;
+    this.addActRpcProfile(
+      "node_rpc_wait",
+      performance.now() - waitStarted,
+    );
     if (response.type === "error") throw new Error(response.message);
     if (response.type !== "actions" || response.requestId !== requestId) throw new Error("Unexpected PPO batch-action response");
     if (
@@ -253,7 +285,8 @@ export class PythonPpoClient {
       || response.logProbabilities.length !== samples.length
       || response.values.length !== samples.length
     ) throw new Error("PPO returned an action batch with the wrong length");
-    return samples.map((sample, index) => {
+    const postStarted = performance.now();
+    const mapped = samples.map((sample, index) => {
       const actionIndex = response.actionIndices[index];
       const logProbability = response.logProbabilities[index];
       const value = response.values[index];
@@ -268,6 +301,11 @@ export class PythonPpoClient {
         actionKey: sample.legalActions.actionKeys[actionIndex],
       };
     });
+    this.addActRpcProfile(
+      "node_response_map",
+      performance.now() - postStarted,
+    );
+    return mapped;
   }
 
   /**
@@ -585,6 +623,25 @@ export class PythonPpoClient {
 
   async close() {
     if (!this.process) return;
+    if (this.actRpcProfileEnabled) {
+      const stages = Object.fromEntries(
+        [...this.actRpcProfileTotals].map(([key, value]) => [
+          key,
+          {
+            count: value.count,
+            totalMs:
+              Math.round(value.totalMs * 100) / 100,
+            avgMs:
+              Math.round(
+                value.totalMs / value.count * 1000,
+              ) / 1000,
+          },
+        ]),
+      );
+      process.stderr.write(
+        `[PPO act rpc profile] ${JSON.stringify({ stages })}\n`,
+      );
+    }
     if (this.process.exitCode === null && this.process.stdin.writable) {
       const response = this.wait(); this.send({ type: "close" }); await response.catch(() => undefined);
     }
