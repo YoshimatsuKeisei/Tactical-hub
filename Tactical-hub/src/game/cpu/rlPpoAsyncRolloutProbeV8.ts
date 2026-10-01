@@ -379,12 +379,16 @@ export async function runPpoAsyncRolloutProbeV8(
     const retentionFinal = await client.retentionStats();
     if (
       retentionFinal.currentChunks !== 0
+      || (retentionFinal.pendingChunks ?? 0) !== 0
       || retentionFinal.currentRetainedBytes !== 0
+      || (retentionFinal.pendingRawBytes ?? 0) !== 0
     ) {
       throw new Error(
         "PPO async rollout retention leak after discard: "
         + `chunks=${retentionFinal.currentChunks} `
-        + `bytes=${retentionFinal.currentRetainedBytes}`,
+        + `pendingChunks=${retentionFinal.pendingChunks ?? 0} `
+        + `bytes=${retentionFinal.currentRetainedBytes} `
+        + `pendingRawBytes=${retentionFinal.pendingRawBytes ?? 0}`,
       );
     }
 
@@ -394,7 +398,7 @@ export async function runPpoAsyncRolloutProbeV8(
     rolloutPool = undefined;
 
     return {
-      mode: "async_rollout_dynamic_broker_v8_structural_probe",
+      mode: "async_rollout_dynamic_broker_v8",
       purpose: "rollout_only_global_round_barrier_removal",
       structuralProbeOnly: true,
       fixedPolicyForFullProbe: true,
@@ -404,6 +408,8 @@ export async function runPpoAsyncRolloutProbeV8(
       v7qTrajectoryExactnessExpected: false,
       samplingOrderContract:
         "broker_microbatch_composition_depends_on_worker_readiness",
+      samplingOrderNote:
+        "Sampling order may differ from V7-Q because broker micro-batch composition depends on worker readiness.",
       environmentCount,
       rolloutWorkerCount: workerIds.length,
       seeds,
