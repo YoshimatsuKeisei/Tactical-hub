@@ -75,8 +75,7 @@ export class PythonPpoClient {
   private readonly waiting: Array<{ resolve: (response: Response) => void; reject: (error: Error) => void }> = [];
   private stderr = "";
   private featureSpec?: RlFeatureSpecV2;
-  private readonly actRpcProfileEnabled =
-    this.options.env?.PPO_ACT_RPC_PROFILE === "1";
+  private readonly actRpcProfileEnabled: boolean;
   private readonly actRpcProfileTotals =
     new Map<string, { count: number; totalMs: number }>();
 
@@ -87,7 +86,10 @@ export class PythonPpoClient {
     device?: RlTorchDevice;
     env?: NodeJS.ProcessEnv;
     compactPaddedRows?: boolean;
-  } = {}) {}
+  } = {}) {
+    this.actRpcProfileEnabled =
+      this.options.env?.PPO_ACT_RPC_PROFILE === "1";
+  }
 
   private wait() { return new Promise<Response>((resolve, reject) => this.waiting.push({ resolve, reject })); }
 
