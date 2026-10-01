@@ -102,6 +102,8 @@ export class PpoRolloutWorkerV7Pool {
     hyperparameters: PpoHyperparameters;
     safetyMaxTurns: number;
     safetyMaxActions: number;
+    autoRecycle?: boolean;
+    recycleSeedStride?: number;
   }) {
     if (!Number.isInteger(input.workerCount) || input.workerCount <= 0) {
       throw new Error("PPO V7 rollout workerCount must be a positive integer");
@@ -112,6 +114,17 @@ export class PpoRolloutWorkerV7Pool {
     ) {
       throw new Error(
         "PPO V7 rollout environmentCount must be a positive integer",
+      );
+    }
+    if (
+      input.recycleSeedStride !== undefined
+      && (
+        !Number.isInteger(input.recycleSeedStride)
+        || input.recycleSeedStride <= 0
+      )
+    ) {
+      throw new Error(
+        "PPO V7 rollout recycleSeedStride must be a positive integer",
       );
     }
 
@@ -254,6 +267,12 @@ export class PpoRolloutWorkerV7Pool {
               hyperparameters: input.hyperparameters,
               safetyMaxTurns: input.safetyMaxTurns,
               safetyMaxActions: input.safetyMaxActions,
+              ...(input.autoRecycle === undefined
+                ? {}
+                : { autoRecycle: input.autoRecycle }),
+              ...(input.recycleSeedStride === undefined
+                ? {}
+                : { recycleSeedStride: input.recycleSeedStride }),
             },
           );
           if (
@@ -313,6 +332,26 @@ export class PpoRolloutWorkerV7Pool {
         requestId,
       } as PpoRolloutWorkerV7Request);
     });
+  }
+
+  async setWorkerAutoRecycle(
+    workerId: number,
+    enabled: boolean,
+  ) {
+    const handle = this.handleFor(workerId);
+    const response = await this.request(
+      handle,
+      { type: "setAutoRecycle", enabled },
+    );
+    if (
+      response.type !== "autoRecycleSet"
+      || response.workerId !== workerId
+      || response.enabled !== enabled
+    ) {
+      throw new Error(
+        `Unexpected PPO rollout auto-recycle response from worker ${workerId}`,
+      );
+    }
   }
 
   async prepareWorker(

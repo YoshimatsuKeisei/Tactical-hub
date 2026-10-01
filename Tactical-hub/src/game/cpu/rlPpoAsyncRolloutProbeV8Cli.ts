@@ -39,6 +39,10 @@ const result = await runPpoAsyncRolloutProbeV8({
     positiveInteger("--environments", 8),
   rolloutWorkerCount:
     positiveInteger("--rollout-workers", 4),
+  continuousRecycle: args.includes("--continuous-recycle"),
+  targetDecisions: value("--target-decisions") === undefined
+    ? undefined
+    : positiveInteger("--target-decisions", 1),
   initialCheckpoint:
     value("--initial-checkpoint")
     ?? "rl-checkpoints/bc-v2-init.pt",

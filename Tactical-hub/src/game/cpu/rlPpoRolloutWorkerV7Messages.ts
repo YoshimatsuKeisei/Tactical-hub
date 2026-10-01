@@ -36,13 +36,15 @@ export type PpoRolloutWorkerV7Timing = {
   gameStepMs: number;
 };
 export type PpoRolloutWorkerV7Request =
-  | { type: "init"; requestId: number; workerId: number; environments: Array<{environmentIndex:number; seed:number}>; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; safetyMaxTurns: number; safetyMaxActions: number }
+  | { type: "init"; requestId: number; workerId: number; environments: Array<{environmentIndex:number; seed:number}>; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; safetyMaxTurns: number; safetyMaxActions: number; autoRecycle?: boolean; recycleSeedStride?: number }
+  | { type: "setAutoRecycle"; requestId: number; enabled: boolean }
   | { type: "prepare"; requestId: number; round: number }
   | { type: "apply"; requestId: number; round: number; actions: Array<{environmentIndex:number; actionIndex:number; actionKey:string; logProbability:number; value:number}> }
   | { type: "advance"; requestId: number; round: number; actions: Array<{environmentIndex:number; actionIndex:number; actionKey:string; logProbability:number; value:number}> }
   | { type: "shutdown"; requestId: number };
 export type PpoRolloutWorkerV7Response =
   | { type: "ready"; requestId: number; workerId: number; environmentIndices: number[] }
+  | { type: "autoRecycleSet"; requestId: number; workerId: number; enabled: boolean }
   | { type: "prepared"; requestId: number; workerId: number; round: number; group?: PpoRolloutWorkerV7PreparedGroup; finalized: PpoRolloutWorkerV7Finalized[]; mergeLegalActionCount: number; timing: PpoRolloutWorkerV7Timing }
   | { type: "applied"; requestId: number; workerId: number; round: number; finalized: PpoRolloutWorkerV7Finalized[]; timing: PpoRolloutWorkerV7Timing }
   | { type: "advanced"; requestId: number; workerId: number; round: number; group?: PpoRolloutWorkerV7PreparedGroup; finalized: PpoRolloutWorkerV7Finalized[]; mergeLegalActionCount: number; timing: PpoRolloutWorkerV7Timing }

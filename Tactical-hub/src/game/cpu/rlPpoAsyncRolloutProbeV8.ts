@@ -28,6 +28,8 @@ export type PpoAsyncRolloutProbeV8Input = {
   safetyMaxActions?: number;
   memoryLogInterval?: number;
   rolloutWorkerCount?: number;
+  continuousRecycle?: boolean;
+  targetDecisions?: number;
   client?: PythonPpoClient;
 };
 
@@ -95,6 +97,8 @@ export async function runPpoAsyncRolloutProbeV8(
   }
 
   const rolloutWorkerCount = input.rolloutWorkerCount ?? 4;
+  const continuousRecycle = input.continuousRecycle ?? false;
+  const targetDecisions = input.targetDecisions;
   const safetyMaxTurns = input.safetyMaxTurns ?? 1_000;
   const safetyMaxActions = input.safetyMaxActions ?? 100_000;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
@@ -107,6 +111,20 @@ export async function runPpoAsyncRolloutProbeV8(
     if (!Number.isInteger(value) || value <= 0) {
       throw new Error(`${name} must be a positive integer`);
     }
+  }
+  if (
+    targetDecisions !== undefined
+    && (
+      !Number.isInteger(targetDecisions)
+      || targetDecisions <= 0
+    )
+  ) {
+    throw new Error("targetDecisions must be a positive integer");
+  }
+  if (continuousRecycle && targetDecisions === undefined) {
+    throw new Error(
+      "targetDecisions is required in continuous recycle mode",
+    );
   }
 
   const hyperparameters = {
@@ -139,6 +157,7 @@ export async function runPpoAsyncRolloutProbeV8(
     number,
     PpoRolloutWorkerV7EpisodeSummary
   >();
+  const completedSummaries: PpoRolloutWorkerV7EpisodeSummary[] = [];
   const workerCpuTiming = emptyWorkerTiming();
   const workerAdvanceOperationMsByWorker = Array.from(
     { length: rolloutWorkerCount },
@@ -150,6 +169,7 @@ export async function runPpoAsyncRolloutProbeV8(
   );
 
   let totalDecisions = 0;
+  let draining = false;
   let mergeLegalActionCount = 0;
   let initialPrepareMs = 0;
   let initialPrepareOperationMsSum = 0;
@@ -158,15 +178,21 @@ export async function runPpoAsyncRolloutProbeV8(
     finalized: PpoRolloutWorkerV7Finalized[],
   ) => {
     for (const item of finalized) {
-      if (summaryByEnvironment.has(item.environmentIndex)) {
+      if (
+        !continuousRecycle
+        && summaryByEnvironment.has(item.environmentIndex)
+      ) {
         throw new Error(
           `PPO async rollout duplicate finalized env=${item.environmentIndex}`,
         );
       }
-      summaryByEnvironment.set(
-        item.environmentIndex,
-        item.summary,
-      );
+      completedSummaries.push(item.summary);
+      if (!continuousRecycle) {
+        summaryByEnvironment.set(
+          item.environmentIndex,
+          item.summary,
+        );
+      }
     }
   };
 
@@ -199,6 +225,12 @@ export async function runPpoAsyncRolloutProbeV8(
       hyperparameters,
       safetyMaxTurns,
       safetyMaxActions,
+      ...(continuousRecycle
+        ? {
+            autoRecycle: true,
+            recycleSeedStride: environmentCount,
+          }
+        : {}),
     });
 
     broker = new PpoDynamicInferenceBrokerV8(
@@ -253,11 +285,20 @@ export async function runPpoAsyncRolloutProbeV8(
       const finalizedAssigned = () =>
         assigned.filter((environmentIndex) =>
           summaryByEnvironment.has(environmentIndex)).length;
+      const finalizedAfterRecycleDisabled = new Set<number>();
+      let recycleDisabled = false;
 
       let prepared = initial;
       let round = 0;
 
-      while (finalizedAssigned() < assigned.length) {
+      while (
+        continuousRecycle
+          ? (
+              !recycleDisabled
+              || finalizedAfterRecycleDisabled.size < assigned.length
+            )
+          : finalizedAssigned() < assigned.length
+      ) {
         const group = prepared.group;
         if (!group) {
           throw new Error(
@@ -277,6 +318,13 @@ export async function runPpoAsyncRolloutProbeV8(
 
         const selected = await broker!.submit(group);
         totalDecisions += selected.length;
+        if (
+          continuousRecycle
+          && !draining
+          && totalDecisions >= (targetDecisions ?? Number.POSITIVE_INFINITY)
+        ) {
+          draining = true;
+        }
 
         if (
           totalDecisions % memoryLogInterval < selected.length
@@ -285,12 +333,31 @@ export async function runPpoAsyncRolloutProbeV8(
             "[PPO async rollout V8] "
             + JSON.stringify({
               totalDecisions,
-              finalizedEnvironments:
-                summaryByEnvironment.size,
+              ...(continuousRecycle
+                ? {
+                    completedEpisodes:
+                      completedSummaries.length,
+                  }
+                : {
+                    finalizedEnvironments:
+                      summaryByEnvironment.size,
+                  }),
               broker: broker!.diagnostics(),
             })
             + "\n",
           );
+        }
+
+        if (
+          continuousRecycle
+          && draining
+          && !recycleDisabled
+        ) {
+          await rolloutPool!.setWorkerAutoRecycle(
+            workerId,
+            false,
+          );
+          recycleDisabled = true;
         }
 
         const advanced = await rolloutPool!.advanceWorker(
@@ -316,6 +383,15 @@ export async function runPpoAsyncRolloutProbeV8(
         mergeLegalActionCount +=
           advanced.mergeLegalActionCount;
         recordFinalized(advanced.finalized);
+        if (recycleDisabled) {
+          for (const item of advanced.finalized) {
+            if (assignedSet.has(item.environmentIndex)) {
+              finalizedAfterRecycleDisabled.add(
+                item.environmentIndex,
+              );
+            }
+          }
+        }
         prepared = advanced;
         round += 1;
         workerRounds[workerId] = round;
@@ -337,26 +413,41 @@ export async function runPpoAsyncRolloutProbeV8(
     if (failed) throw failed.reason;
 
     const rolloutMs = performance.now() - rolloutStarted;
-    if (summaryByEnvironment.size !== environmentCount) {
+    if (
+      !continuousRecycle
+      && summaryByEnvironment.size !== environmentCount
+    ) {
       throw new Error(
         `PPO async rollout finalized ${summaryByEnvironment.size}/${environmentCount} environments`,
       );
     }
 
-    const summaries = Array.from(
-      { length: environmentCount },
-      (_, environmentIndex) => {
-        const summary = summaryByEnvironment.get(
-          environmentIndex,
+    const summaries = continuousRecycle
+      ? completedSummaries
+      : Array.from(
+          { length: environmentCount },
+          (_, environmentIndex) => {
+            const summary = summaryByEnvironment.get(
+              environmentIndex,
+            );
+            if (!summary) {
+              throw new Error(
+                `PPO async rollout missing summary env=${environmentIndex}`,
+              );
+            }
+            return summary;
+          },
         );
-        if (!summary) {
-          throw new Error(
-            `PPO async rollout missing summary env=${environmentIndex}`,
-          );
-        }
-        return summary;
-      },
-    );
+    if (
+      continuousRecycle
+      && new Set(
+        summaries.map((summary) => summary.seed),
+      ).size !== summaries.length
+    ) {
+      throw new Error(
+        "PPO async continuous recycle produced duplicate episode seeds",
+      );
+    }
 
     const brokerDiagnostics = broker.diagnostics();
     if (
@@ -413,12 +504,26 @@ export async function runPpoAsyncRolloutProbeV8(
       environmentCount,
       rolloutWorkerCount: workerIds.length,
       seeds,
+      continuousRecycle,
+      targetDecisions: continuousRecycle
+        ? targetDecisions
+        : undefined,
+      collectedDecisions: totalDecisions,
+      decisionOvershoot: continuousRecycle
+        ? totalDecisions - (targetDecisions ?? 0)
+        : 0,
+      completedEpisodes: summaries.length,
+      drainingTriggered: draining,
+      episodeSeeds: summaries.map((summary) => summary.seed),
       checkpointStart: {
         updateCount: initialized.updateCount,
         episodeCount: initialized.episodeCount,
       },
       totalDecisions,
-      finalizedEnvironments: summaries.length,
+      finalizedEnvironments:
+        continuousRecycle
+          ? environmentCount
+          : summaries.length,
       summaries,
       mergeLegalActionCount,
       workerRounds,

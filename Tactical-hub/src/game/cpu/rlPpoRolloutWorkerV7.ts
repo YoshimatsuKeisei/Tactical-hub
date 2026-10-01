@@ -55,6 +55,8 @@ let featureSpec: RlFeatureSpecV2 | undefined;
 let hyperparameters: PpoHyperparameters | undefined;
 let safetyMaxTurns = 0;
 let safetyMaxActions = 0;
+let autoRecycle = false;
+let recycleSeedStride = 1;
 let slots: WorkerSlot[] = [];
 
 function timing(): PpoRolloutWorkerV7Timing {
@@ -178,10 +180,7 @@ async function finalizeSlot(
     );
   }
 
-  slot.finished = true;
-  slot.pending = undefined;
-
-  return {
+  const finalized: PpoRolloutWorkerV7Finalized = {
     environmentIndex: slot.environmentIndex,
     summary,
     rollout: summary.outcomeKind === "abnormal_truncated"
@@ -199,6 +198,28 @@ async function finalizeSlot(
           trajectory: slot.trajectory,
         },
   };
+
+  if (autoRecycle && slot.pending) {
+    throw new Error(
+      "PPO V7 rollout worker cannot recycle env="
+      + slot.environmentIndex
+      + " with an unapplied action",
+    );
+  }
+  slot.finished = true;
+  slot.pending = undefined;
+
+  if (autoRecycle) {
+    slot.seed += recycleSeedStride;
+    slot.environment.reset(slot.seed, 4);
+    slot.encoderCache = createRlObservationEncoderCache();
+    slot.trajectory = [];
+    slot.finished = false;
+    slot.reason = undefined;
+    slot.pending = undefined;
+  }
+
+  return finalized;
 }
 
 async function handleInit(
@@ -212,6 +233,13 @@ async function handleInit(
   hyperparameters = message.hyperparameters;
   safetyMaxTurns = message.safetyMaxTurns;
   safetyMaxActions = message.safetyMaxActions;
+  autoRecycle = message.autoRecycle ?? false;
+  recycleSeedStride = message.recycleSeedStride ?? 1;
+  if (!Number.isInteger(recycleSeedStride) || recycleSeedStride <= 0) {
+    throw new Error(
+      "PPO V7 rollout recycleSeedStride must be a positive integer",
+    );
+  }
   slots = message.environments.map((entry) => {
     const environment = createEnvironment();
     environment.reset(entry.seed, 4);
@@ -248,68 +276,76 @@ async function prepareRound(
   const actionKeys: string[][] = [];
   let mergeLegalActionCount = 0;
 
-  for (const slot of slots) {
+  slotLoop: for (const slot of slots) {
     if (slot.finished) continue;
     if (slot.pending) throw new Error("Worker has unapplied env=" + slot.environmentIndex);
-    if (slot.environment.isTerminal()) {
-      const item = await finalizeSlot(slot);
-      if (item) finalized.push(item);
-      continue;
-    }
-    const actor = slot.environment.getCurrentActorTeamId();
-    if (!actor) {
-      slot.reason = "no_actor";
-      const item = await finalizeSlot(slot);
-      if (item) finalized.push(item);
-      continue;
-    }
-    const observation = measure(stageTiming, "observationMs",
-      () => slot.environment.getObservationForEncoding(actor));
-    const legal = measure(stageTiming, "legalActionsMs",
-      () => slot.environment.getLegalActionsForEncoding(actor));
-    if (!legal.length) {
-      slot.reason = "no_legal_actions";
-      const item = await finalizeSlot(slot);
-      if (item) finalized.push(item);
-      continue;
-    }
-    if (observation.turnNumber > safetyMaxTurns) {
-      slot.reason = "safety_turn_limit";
-      const item = await finalizeSlot(slot);
-      if (item) finalized.push(item);
-      continue;
-    }
-    if (slot.trajectory.length >= safetyMaxActions) {
-      slot.reason = "safety_action_limit";
-      const item = await finalizeSlot(slot);
-      if (item) finalized.push(item);
-      continue;
-    }
+    while (true) {
+      if (slot.environment.isTerminal()) {
+        const item = await finalizeSlot(slot);
+        if (item) finalized.push(item);
+        if (slot.finished) continue slotLoop;
+        continue;
+      }
+      const actor = slot.environment.getCurrentActorTeamId();
+      if (!actor) {
+        slot.reason = "no_actor";
+        const item = await finalizeSlot(slot);
+        if (item) finalized.push(item);
+        if (slot.finished) continue slotLoop;
+        continue;
+      }
+      const observation = measure(stageTiming, "observationMs",
+        () => slot.environment.getObservationForEncoding(actor));
+      const legal = measure(stageTiming, "legalActionsMs",
+        () => slot.environment.getLegalActionsForEncoding(actor));
+      if (!legal.length) {
+        slot.reason = "no_legal_actions";
+        const item = await finalizeSlot(slot);
+        if (item) finalized.push(item);
+        if (slot.finished) continue slotLoop;
+        continue;
+      }
+      if (observation.turnNumber > safetyMaxTurns) {
+        slot.reason = "safety_turn_limit";
+        const item = await finalizeSlot(slot);
+        if (item) finalized.push(item);
+        if (slot.finished) continue slotLoop;
+        continue;
+      }
+      if (slot.trajectory.length >= safetyMaxActions) {
+        slot.reason = "safety_action_limit";
+        const item = await finalizeSlot(slot);
+        if (item) finalized.push(item);
+        if (slot.finished) continue slotLoop;
+        continue;
+      }
 
-    const encodedObservation = measure(stageTiming, "encodeObservationMs",
-      () => encodeRlObservationCompactPackedMapV2(observation, slot.encoderCache));
-    const encodedActions = measure(stageTiming, "encodeActionsMs",
-      () => encodeRlLegalActionsSparseV2(observation, legal));
-    mergeLegalActionCount += legal.filter(
-      (action) => action.actionType === "merge_infantry",
-    ).length;
+      const encodedObservation = measure(stageTiming, "encodeObservationMs",
+        () => encodeRlObservationCompactPackedMapV2(observation, slot.encoderCache));
+      const encodedActions = measure(stageTiming, "encodeActionsMs",
+        () => encodeRlLegalActionsSparseV2(observation, legal));
+      mergeLegalActionCount += legal.filter(
+        (action) => action.actionType === "merge_infantry",
+      ).length;
 
-    const pending: PendingDecision = {
-      decisionIndex: slot.trajectory.length,
-      turnNumber: observation.turnNumber,
-      phase: observation.phase,
-      teamId: actor,
-      progressHash: slot.environment.getProgressHash(),
-      actionKeys: encodedActions.actionKeys,
-    };
-    slot.pending = pending;
-    packedSamples.push({
-      observation: encodedObservation,
-      sparseActions: encodedActions.sparseActions,
-    });
-    environmentIndices.push(slot.environmentIndex);
-    decisionIndices.push(pending.decisionIndex);
-    actionKeys.push(encodedActions.actionKeys);
+      const pending: PendingDecision = {
+        decisionIndex: slot.trajectory.length,
+        turnNumber: observation.turnNumber,
+        phase: observation.phase,
+        teamId: actor,
+        progressHash: slot.environment.getProgressHash(),
+        actionKeys: encodedActions.actionKeys,
+      };
+      slot.pending = pending;
+      packedSamples.push({
+        observation: encodedObservation,
+        sparseActions: encodedActions.sparseActions,
+      });
+      environmentIndices.push(slot.environmentIndex);
+      decisionIndices.push(pending.decisionIndex);
+      actionKeys.push(encodedActions.actionKeys);
+      continue slotLoop;
+    }
   }
 
   const group = packedSamples.length ? {
@@ -475,6 +511,19 @@ async function handle(message: PpoRolloutWorkerV7Request) {
   }
   if (message.type === "prepare") {
     await handlePrepare(message);
+    return;
+  }
+  if (message.type === "setAutoRecycle") {
+    if (workerId < 0) {
+      throw new Error("PPO rollout worker is not initialized");
+    }
+    autoRecycle = message.enabled;
+    parentPort!.postMessage({
+      type: "autoRecycleSet",
+      requestId: message.requestId,
+      workerId,
+      enabled: autoRecycle,
+    } satisfies PpoRolloutWorkerV7Response);
     return;
   }
   if (message.type === "apply") {
