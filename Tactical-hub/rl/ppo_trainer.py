@@ -494,6 +494,7 @@ class PpoTrainer:
         prepared_actions: torch.Tensor,
         action_mask: torch.Tensor,
         manual_categorical_mode: bool = False,
+        profile_stage: Callable[[str, float], None] | None = None,
     ) -> dict[str, list[float] | list[int]]:
         batch_size = int(prepared_actions.shape[0])
         if batch_size <= 0 or action_mask.shape[0] != batch_size:
@@ -507,47 +508,75 @@ class PpoTrainer:
                     "Packed PPO batch act requires legal actions for every sample"
                 )
 
+        def timed(stage: str, operation: Callable[[], Any]) -> Any:
+            if profile_stage is None:
+                return operation()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                profile_stage(stage, time.perf_counter() - started)
+
         self.model.eval()
         with torch.no_grad():
-            logits, values, _, _, returned_mask = (
-                self._act_forward_hot_cuda_graph(
+            logits, values, _, _, returned_mask = timed(
+                "trainer_forward",
+                lambda: self._act_forward_hot_cuda_graph(
                     prepared_observations,
                     prepared_actions,
                     action_mask,
-                )
+                ),
             )
-            finite_flag = _ppo_batch_outputs_finite(
-                logits,
-                values,
-                returned_mask,
+            finite_flag = timed(
+                "trainer_finite_guard",
+                lambda: _ppo_batch_outputs_finite(
+                    logits,
+                    values,
+                    returned_mask,
+                ),
             )
             if not bool(finite_flag):
                 raise FloatingPointError("Packed PPO batch action calculation contains NaN or Inf")
-            if manual_categorical_mode:
-                normalized_logits = logits - logits.logsumexp(
-                    dim=-1,
-                    keepdim=True,
-                )
-                probabilities = normalized_logits.softmax(dim=-1)
-                selected = torch.multinomial(
-                    probabilities,
-                    1,
-                    replacement=True,
-                ).squeeze(-1)
-                log_probabilities = normalized_logits.gather(
-                    -1,
-                    selected.unsqueeze(-1),
-                ).squeeze(-1)
-            else:
+
+            def sample_outputs():
+                if manual_categorical_mode:
+                    normalized_logits = logits - logits.logsumexp(
+                        dim=-1,
+                        keepdim=True,
+                    )
+                    probabilities = normalized_logits.softmax(dim=-1)
+                    selected = torch.multinomial(
+                        probabilities,
+                        1,
+                        replacement=True,
+                    ).squeeze(-1)
+                    log_probabilities = normalized_logits.gather(
+                        -1,
+                        selected.unsqueeze(-1),
+                    ).squeeze(-1)
+                    return selected, log_probabilities
                 distribution = torch.distributions.Categorical(logits=logits)
                 selected = distribution.sample()
                 log_probabilities = distribution.log_prob(selected)
+                return selected, log_probabilities
 
-        return {
-            "actionIndices": [int(value) for value in selected.tolist()],
-            "logProbabilities": [float(value) for value in log_probabilities.tolist()],
-            "values": [float(value) for value in values.tolist()],
-        }
+            selected, log_probabilities = timed(
+                "trainer_sample_logprob",
+                sample_outputs,
+            )
+
+        return timed(
+            "trainer_host_extract",
+            lambda: {
+                "actionIndices": [int(value) for value in selected.tolist()],
+                "logProbabilities": [float(value) for value in log_probabilities.tolist()],
+                "values": [float(value) for value in values.tolist()],
+            },
+        )
 
     def act_prepared_stream_batch(
         self,
