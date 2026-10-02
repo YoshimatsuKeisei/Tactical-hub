@@ -25,6 +25,7 @@ import type {
 import type { PpoHyperparameters } from "./pythonPpoClient";
 import { packPpoActBatchInput } from "./rlPpoPackedBatch";
 import { toTransferablePackedBcBatch } from "./rlPpoWorkerPackedV7";
+import { createPpoRolloutEnvironmentDiagnosticV8 } from "./rlPpoRolloutDiagnosticsV8";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -45,6 +46,7 @@ type WorkerSlot = {
   environment: RlEnvironmentV2;
   encoderCache: ReturnType<typeof createRlObservationEncoderCache>;
   trajectory: PpoTrajectoryStep[];
+  generation: number;
   finished: boolean;
   reason?: string;
   pending?: PendingDecision;
@@ -214,6 +216,7 @@ async function finalizeSlot(
     slot.environment.reset(slot.seed, 4);
     slot.encoderCache = createRlObservationEncoderCache();
     slot.trajectory = [];
+    slot.generation += 1;
     slot.finished = false;
     slot.reason = undefined;
     slot.pending = undefined;
@@ -249,6 +252,7 @@ async function handleInit(
       environment,
       encoderCache: createRlObservationEncoderCache(),
       trajectory: [],
+      generation: 0,
       finished: false,
     };
   });
@@ -523,6 +527,28 @@ async function handle(message: PpoRolloutWorkerV7Request) {
       requestId: message.requestId,
       workerId,
       enabled: autoRecycle,
+    } satisfies PpoRolloutWorkerV7Response);
+    return;
+  }
+  if (message.type === "getDiagnostics") {
+    if (workerId < 0) {
+      throw new Error("PPO rollout worker is not initialized");
+    }
+    parentPort!.postMessage({
+      type: "diagnostics",
+      requestId: message.requestId,
+      workerId,
+      environments: slots.map((slot) =>
+        createPpoRolloutEnvironmentDiagnosticV8({
+          environmentIndex: slot.environmentIndex,
+          currentEpisodeSeed: slot.seed,
+          generation: slot.generation,
+          episodeDecisionCount: slot.trajectory.length,
+          currentActorTeamId:
+            slot.environment.getCurrentActorTeamId(),
+          state: slot.environment.getStateForValidation(),
+          result: slot.environment.getResult(),
+        })),
     } satisfies PpoRolloutWorkerV7Response);
     return;
   }

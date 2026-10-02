@@ -32,6 +32,9 @@ const positiveInteger = (
 };
 
 const python = value("--python") ?? "python";
+const naturalRecycleDiagnostic = args.includes(
+  "--natural-recycle-diagnostic",
+);
 
 const result = await runPpoAsyncRolloutProbeV8({
   seed: positiveInteger("--seed", 7),
@@ -39,8 +42,11 @@ const result = await runPpoAsyncRolloutProbeV8({
     positiveInteger("--environments", 8),
   rolloutWorkerCount:
     positiveInteger("--rollout-workers", 4),
-  continuousRecycle: args.includes("--continuous-recycle"),
+  continuousRecycle:
+    args.includes("--continuous-recycle")
+    || naturalRecycleDiagnostic,
   naturalRecycleProbe: args.includes("--natural-recycle-probe"),
+  naturalRecycleDiagnostic,
   targetDecisions: value("--target-decisions") === undefined
     ? undefined
     : positiveInteger("--target-decisions", 1),
@@ -81,4 +87,11 @@ const result = await runPpoAsyncRolloutProbeV8({
   }),
 });
 
-console.log(JSON.stringify(result, null, 2));
+if (naturalRecycleDiagnostic) {
+  console.log(
+    "ASYNC_V8_NATURAL_TERMINATION_DIAGNOSTIC_RESULT="
+    + JSON.stringify(result),
+  );
+} else {
+  console.log(JSON.stringify(result, null, 2));
+}

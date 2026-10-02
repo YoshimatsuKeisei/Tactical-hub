@@ -56,6 +56,18 @@ try {
   assert.equal(recycled.finalized.length, 1);
   assert.equal(recycled.finalized[0].summary.seed, initialSeed);
   assert.ok(recycled.group);
+  const diagnostics = await pool.getWorkerDiagnostics(0);
+  assert.deepEqual(diagnostics.map((entry) => ({
+    environmentIndex: entry.environmentIndex,
+    currentEpisodeSeed: entry.currentEpisodeSeed,
+    generation: entry.generation,
+    episodeDecisionCount: entry.episodeDecisionCount,
+  })), [{
+    environmentIndex: 0,
+    currentEpisodeSeed: initialSeed + recycleSeedStride,
+    generation: 1,
+    episodeDecisionCount: 0,
+  }]);
 
   await pool.setWorkerAutoRecycle(0, false);
 
@@ -81,6 +93,7 @@ try {
     recycleSeedStride,
     recycledSeed: initialSeed + recycleSeedStride,
     disabledGenerationStayedFinished: true,
+    diagnosticsRequestVerified: true,
   }));
 } finally {
   await pool.close();

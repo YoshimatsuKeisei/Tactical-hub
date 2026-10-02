@@ -4,6 +4,7 @@ import type { PpoHyperparameters } from "./pythonPpoClient";
 import type { PpoReplayRollout } from "./rlPpoSelfPlay";
 import type { TransferablePackedBcBatch } from "./rlPpoWorkerPackedV7";
 import type { PpoTeamAdjudication, PpoTimeLimitReason } from "./rlPpoAdjudication";
+import type { PpoRolloutEnvironmentDiagnosticV8 } from "./rlPpoRolloutDiagnosticsV8";
 
 export type PpoRolloutWorkerV7EpisodeSummary = {
   environmentIndex: number;
@@ -38,6 +39,7 @@ export type PpoRolloutWorkerV7Timing = {
 export type PpoRolloutWorkerV7Request =
   | { type: "init"; requestId: number; workerId: number; environments: Array<{environmentIndex:number; seed:number}>; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; safetyMaxTurns: number; safetyMaxActions: number; autoRecycle?: boolean; recycleSeedStride?: number }
   | { type: "setAutoRecycle"; requestId: number; enabled: boolean }
+  | { type: "getDiagnostics"; requestId: number }
   | { type: "prepare"; requestId: number; round: number }
   | { type: "apply"; requestId: number; round: number; actions: Array<{environmentIndex:number; actionIndex:number; actionKey:string; logProbability:number; value:number}> }
   | { type: "advance"; requestId: number; round: number; actions: Array<{environmentIndex:number; actionIndex:number; actionKey:string; logProbability:number; value:number}> }
@@ -45,6 +47,7 @@ export type PpoRolloutWorkerV7Request =
 export type PpoRolloutWorkerV7Response =
   | { type: "ready"; requestId: number; workerId: number; environmentIndices: number[] }
   | { type: "autoRecycleSet"; requestId: number; workerId: number; enabled: boolean }
+  | { type: "diagnostics"; requestId: number; workerId: number; environments: PpoRolloutEnvironmentDiagnosticV8[] }
   | { type: "prepared"; requestId: number; workerId: number; round: number; group?: PpoRolloutWorkerV7PreparedGroup; finalized: PpoRolloutWorkerV7Finalized[]; mergeLegalActionCount: number; timing: PpoRolloutWorkerV7Timing }
   | { type: "applied"; requestId: number; workerId: number; round: number; finalized: PpoRolloutWorkerV7Finalized[]; timing: PpoRolloutWorkerV7Timing }
   | { type: "advanced"; requestId: number; workerId: number; round: number; group?: PpoRolloutWorkerV7PreparedGroup; finalized: PpoRolloutWorkerV7Finalized[]; mergeLegalActionCount: number; timing: PpoRolloutWorkerV7Timing }

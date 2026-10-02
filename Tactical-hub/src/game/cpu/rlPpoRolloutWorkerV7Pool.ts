@@ -11,6 +11,7 @@ import type {
   PpoRolloutWorkerV7Response,
   PpoRolloutWorkerV7Timing,
 } from "./rlPpoRolloutWorkerV7Messages";
+import type { PpoRolloutEnvironmentDiagnosticV8 } from "./rlPpoRolloutDiagnosticsV8";
 
 type RequestWithoutId =
   PpoRolloutWorkerV7Request extends infer Request
@@ -352,6 +353,28 @@ export class PpoRolloutWorkerV7Pool {
         `Unexpected PPO rollout auto-recycle response from worker ${workerId}`,
       );
     }
+  }
+
+  async getWorkerDiagnostics(
+    workerId: number,
+  ): Promise<PpoRolloutEnvironmentDiagnosticV8[]> {
+    const handle = this.handleFor(workerId);
+    const response = await this.request(
+      handle,
+      { type: "getDiagnostics" },
+    );
+    if (
+      response.type !== "diagnostics"
+      || response.workerId !== workerId
+    ) {
+      throw new Error(
+        `Unexpected PPO rollout diagnostics response from worker ${workerId}`,
+      );
+    }
+    return [...response.environments].sort(
+      (left, right) =>
+        left.environmentIndex - right.environmentIndex,
+    );
   }
 
   async prepareWorker(

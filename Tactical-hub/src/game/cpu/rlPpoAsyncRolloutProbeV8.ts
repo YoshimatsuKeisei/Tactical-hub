@@ -17,6 +17,10 @@ import type {
   PpoRolloutWorkerV7Timing,
 } from "./rlPpoRolloutWorkerV7Messages";
 import { PpoDynamicInferenceBrokerV8 } from "./rlPpoDynamicInferenceBrokerV8";
+import {
+  PPO_PHASE_12B1_STANDARD_SAFETY_LIMITS,
+  type PpoRolloutEnvironmentDiagnosticV8,
+} from "./rlPpoRolloutDiagnosticsV8";
 
 export type PpoAsyncRolloutProbeV8Input = {
   seed: number;
@@ -31,7 +35,14 @@ export type PpoAsyncRolloutProbeV8Input = {
   continuousRecycle?: boolean;
   targetDecisions?: number;
   naturalRecycleProbe?: boolean;
+  naturalRecycleDiagnostic?: boolean;
   client?: PythonPpoClient;
+};
+
+export type PpoAsyncRolloutDiagnosticSnapshotV8 = {
+  decisionThreshold: number;
+  capturedAtTotalDecisions: number;
+  environments: PpoRolloutEnvironmentDiagnosticV8[];
 };
 
 function createFeatureSpecEnvironment() {
@@ -101,6 +112,10 @@ export async function runPpoAsyncRolloutProbeV8(
   const continuousRecycle = input.continuousRecycle ?? false;
   const targetDecisions = input.targetDecisions;
   const naturalRecycleProbe = input.naturalRecycleProbe ?? false;
+  const naturalRecycleDiagnostic =
+    input.naturalRecycleDiagnostic ?? false;
+  const naturalTerminationProbe =
+    naturalRecycleProbe || naturalRecycleDiagnostic;
   const safetyMaxTurns = input.safetyMaxTurns ?? 1_000;
   const safetyMaxActions = input.safetyMaxActions ?? 100_000;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
@@ -131,6 +146,16 @@ export async function runPpoAsyncRolloutProbeV8(
   if (naturalRecycleProbe && !continuousRecycle) {
     throw new Error(
       "naturalRecycleProbe requires continuousRecycle",
+    );
+  }
+  if (naturalRecycleDiagnostic && !continuousRecycle) {
+    throw new Error(
+      "naturalRecycleDiagnostic requires continuousRecycle",
+    );
+  }
+  if (naturalRecycleProbe && naturalRecycleDiagnostic) {
+    throw new Error(
+      "naturalRecycleProbe and naturalRecycleDiagnostic are mutually exclusive",
     );
   }
 
@@ -192,6 +217,15 @@ export async function runPpoAsyncRolloutProbeV8(
   let mergeLegalActionCount = 0;
   let initialPrepareMs = 0;
   let initialPrepareOperationMsSum = 0;
+  const diagnosticSnapshots:
+    PpoAsyncRolloutDiagnosticSnapshotV8[] = [];
+  const pendingDiagnosticSnapshots = new Map<
+    number,
+    Map<number, PpoRolloutEnvironmentDiagnosticV8[]>
+  >();
+  let nextDiagnosticDecisionThreshold = 50_000;
+  let finalEnvironmentDiagnostics:
+    PpoRolloutEnvironmentDiagnosticV8[] = [];
 
   const recordFinalized = (
     finalized: PpoRolloutWorkerV7Finalized[],
@@ -254,7 +288,7 @@ export async function runPpoAsyncRolloutProbeV8(
 
     broker = new PpoDynamicInferenceBrokerV8(
       async (packed, actionKeys, flush) => {
-        const selected = naturalRecycleProbe
+        const selected = naturalTerminationProbe
           ? await client.actPackedBatch(
               packed,
               actionKeys,
@@ -282,6 +316,59 @@ export async function runPpoAsyncRolloutProbeV8(
       { length: rolloutPool.workerCount },
       (_, workerId) => workerId,
     );
+
+    const publishDiagnosticSnapshot = (
+      decisionThreshold: number,
+    ) => {
+      const byWorker = pendingDiagnosticSnapshots.get(
+        decisionThreshold,
+      );
+      if (!byWorker || byWorker.size !== workerIds.length) return;
+      const snapshot: PpoAsyncRolloutDiagnosticSnapshotV8 = {
+        decisionThreshold,
+        capturedAtTotalDecisions: totalDecisions,
+        environments: [...byWorker.values()]
+          .flat()
+          .sort((left, right) =>
+            left.environmentIndex - right.environmentIndex),
+      };
+      diagnosticSnapshots.push(snapshot);
+      pendingDiagnosticSnapshots.delete(decisionThreshold);
+      process.stderr.write(
+        "[PPO async rollout V8 diagnostic] "
+        + JSON.stringify(snapshot)
+        + "\n",
+      );
+    };
+
+    const scheduleDiagnosticSnapshots = () => {
+      if (!naturalRecycleDiagnostic) return;
+      while (
+        totalDecisions >= nextDiagnosticDecisionThreshold
+      ) {
+        pendingDiagnosticSnapshots.set(
+          nextDiagnosticDecisionThreshold,
+          new Map(),
+        );
+        nextDiagnosticDecisionThreshold += 50_000;
+      }
+    };
+
+    const capturePendingDiagnosticsForWorker = async (
+      workerId: number,
+    ) => {
+      const missingThresholds = [
+        ...pendingDiagnosticSnapshots.entries(),
+      ].filter(([, byWorker]) => !byWorker.has(workerId));
+      if (!missingThresholds.length) return;
+      const environments =
+        await rolloutPool!.getWorkerDiagnostics(workerId);
+      for (const [decisionThreshold, byWorker] of
+        missingThresholds) {
+        byWorker.set(workerId, environments);
+        publishDiagnosticSnapshot(decisionThreshold);
+      }
+    };
 
     const rolloutStarted = performance.now();
     const prepareStarted = performance.now();
@@ -318,7 +405,7 @@ export async function runPpoAsyncRolloutProbeV8(
       let round = 0;
 
       while (
-        naturalRecycleProbe
+        naturalTerminationProbe
           ? !stopRequested
           : continuousRecycle
             ? (
@@ -347,7 +434,7 @@ export async function runPpoAsyncRolloutProbeV8(
         const selected = await broker!.submit(group);
         totalDecisions += selected.length;
         if (
-          naturalRecycleProbe
+          naturalTerminationProbe
           && totalDecisions >= (targetDecisions ?? Number.POSITIVE_INFINITY)
         ) {
           hardDecisionCapReached = true;
@@ -359,9 +446,11 @@ export async function runPpoAsyncRolloutProbeV8(
         ) {
           draining = true;
         }
+        scheduleDiagnosticSnapshots();
 
         if (
-          totalDecisions % memoryLogInterval < selected.length
+          !naturalRecycleDiagnostic
+          && totalDecisions % memoryLogInterval < selected.length
         ) {
           process.stderr.write(
             "[PPO async rollout V8] "
@@ -392,7 +481,7 @@ export async function runPpoAsyncRolloutProbeV8(
 
         if (
           continuousRecycle
-          && !naturalRecycleProbe
+          && !naturalTerminationProbe
           && draining
           && !recycleDisabled
         ) {
@@ -404,7 +493,7 @@ export async function runPpoAsyncRolloutProbeV8(
         }
 
         const naturalProofCandidates =
-          naturalRecycleProbe
+          naturalTerminationProbe
             ? group.environmentIndices.filter(
                 (environmentIndex) =>
                   naturalVictoryPendingProof.has(
@@ -441,7 +530,7 @@ export async function runPpoAsyncRolloutProbeV8(
           for (const item of advanced.finalized) {
             if (item.summary.outcomeKind === "victory") {
               naturalVictoryRecycledBeforeDrainCount += 1;
-              if (naturalRecycleProbe) {
+              if (naturalTerminationProbe) {
                 naturalVictoryPendingProof.set(
                   item.environmentIndex,
                   {
@@ -456,7 +545,7 @@ export async function runPpoAsyncRolloutProbeV8(
         }
         recordFinalized(advanced.finalized);
         if (
-          naturalRecycleProbe
+          naturalTerminationProbe
           && naturalProofCandidates.length
         ) {
           for (const environmentIndex of naturalProofCandidates) {
@@ -479,6 +568,9 @@ export async function runPpoAsyncRolloutProbeV8(
           if (naturalVictoryRecycleConfirmed) {
             stopRequested = true;
           }
+        }
+        if (naturalRecycleDiagnostic) {
+          await capturePendingDiagnosticsForWorker(workerId);
         }
         if (recycleDisabled) {
           for (const item of advanced.finalized) {
@@ -508,6 +600,30 @@ export async function runPpoAsyncRolloutProbeV8(
         outcome.status === "rejected",
     );
     if (failed) throw failed.reason;
+
+    if (naturalRecycleDiagnostic) {
+      const finalByWorker = await Promise.all(
+        workerIds.map((workerId) =>
+          rolloutPool!.getWorkerDiagnostics(workerId)),
+      );
+      finalEnvironmentDiagnostics = finalByWorker
+        .flat()
+        .sort((left, right) =>
+          left.environmentIndex - right.environmentIndex);
+      for (const [decisionThreshold, byWorker] of
+        pendingDiagnosticSnapshots) {
+        for (
+          let workerId = 0;
+          workerId < finalByWorker.length;
+          workerId += 1
+        ) {
+          if (!byWorker.has(workerId)) {
+            byWorker.set(workerId, finalByWorker[workerId]);
+          }
+        }
+        publishDiagnosticSnapshot(decisionThreshold);
+      }
+    }
 
     const rolloutMs = performance.now() - rolloutStarted;
     if (
@@ -603,6 +719,9 @@ export async function runPpoAsyncRolloutProbeV8(
       seeds,
       continuousRecycle,
       naturalRecycleProbe,
+      ...(naturalRecycleDiagnostic
+        ? { naturalRecycleDiagnostic: true }
+        : {}),
       targetDecisions: continuousRecycle
         ? targetDecisions
         : undefined,
@@ -629,7 +748,7 @@ export async function runPpoAsyncRolloutProbeV8(
       },
       totalDecisions,
       finalizedEnvironments:
-        naturalRecycleProbe
+        naturalTerminationProbe
           ? new Set(
               summaries.map(
                 (summary) => summary.environmentIndex,
@@ -639,6 +758,17 @@ export async function runPpoAsyncRolloutProbeV8(
             ? environmentCount
             : summaries.length,
       summaries,
+      ...(naturalRecycleDiagnostic
+        ? {
+            naturalVictorySeen: summaries.some(
+              (summary) => summary.outcomeKind === "victory",
+            ),
+            diagnosticSnapshots,
+            finalEnvironmentDiagnostics,
+            standardSafetyLimits:
+              PPO_PHASE_12B1_STANDARD_SAFETY_LIMITS,
+          }
+        : {}),
       mergeLegalActionCount,
       workerRounds,
       timings: {
