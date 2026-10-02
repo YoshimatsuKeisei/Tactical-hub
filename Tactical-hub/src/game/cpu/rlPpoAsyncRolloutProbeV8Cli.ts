@@ -40,6 +40,7 @@ const result = await runPpoAsyncRolloutProbeV8({
   rolloutWorkerCount:
     positiveInteger("--rollout-workers", 4),
   continuousRecycle: args.includes("--continuous-recycle"),
+  naturalRecycleProbe: args.includes("--natural-recycle-probe"),
   targetDecisions: value("--target-decisions") === undefined
     ? undefined
     : positiveInteger("--target-decisions", 1),

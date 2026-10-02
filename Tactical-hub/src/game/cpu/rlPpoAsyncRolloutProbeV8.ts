@@ -30,6 +30,7 @@ export type PpoAsyncRolloutProbeV8Input = {
   rolloutWorkerCount?: number;
   continuousRecycle?: boolean;
   targetDecisions?: number;
+  naturalRecycleProbe?: boolean;
   client?: PythonPpoClient;
 };
 
@@ -99,6 +100,7 @@ export async function runPpoAsyncRolloutProbeV8(
   const rolloutWorkerCount = input.rolloutWorkerCount ?? 4;
   const continuousRecycle = input.continuousRecycle ?? false;
   const targetDecisions = input.targetDecisions;
+  const naturalRecycleProbe = input.naturalRecycleProbe ?? false;
   const safetyMaxTurns = input.safetyMaxTurns ?? 1_000;
   const safetyMaxActions = input.safetyMaxActions ?? 100_000;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
@@ -124,6 +126,11 @@ export async function runPpoAsyncRolloutProbeV8(
   if (continuousRecycle && targetDecisions === undefined) {
     throw new Error(
       "targetDecisions is required in continuous recycle mode",
+    );
+  }
+  if (naturalRecycleProbe && !continuousRecycle) {
+    throw new Error(
+      "naturalRecycleProbe requires continuousRecycle",
     );
   }
 
@@ -170,8 +177,18 @@ export async function runPpoAsyncRolloutProbeV8(
 
   let totalDecisions = 0;
   let draining = false;
+  let hardDecisionCapReached = false;
+  let stopRequested = false;
   let recycledBeforeDrainEpisodeCount = 0;
   let naturalVictoryRecycledBeforeDrainCount = 0;
+  const naturalVictoryPendingProof = new Map<
+    number,
+    { sourceSeed: number; nextSeed: number }
+  >();
+  let naturalVictoryRecycleConfirmed = false;
+  let naturalVictoryRecycleEnvironmentIndex: number | undefined;
+  let naturalVictoryRecycleSourceSeed: number | undefined;
+  let naturalVictoryRecycleNextSeed: number | undefined;
   let mergeLegalActionCount = 0;
   let initialPrepareMs = 0;
   let initialPrepareOperationMsSum = 0;
@@ -237,14 +254,21 @@ export async function runPpoAsyncRolloutProbeV8(
 
     broker = new PpoDynamicInferenceBrokerV8(
       async (packed, actionKeys, flush) => {
-        const retentionId =
-          `async-v8-flush-${flush.flushIndex}`;
-        outstandingRetentionIds.add(retentionId);
-        const selected = await client.actPackedBatch(
-          packed,
-          actionKeys,
-          { retentionBatchId: retentionId },
-        );
+        const selected = naturalRecycleProbe
+          ? await client.actPackedBatch(
+              packed,
+              actionKeys,
+            )
+          : await (async () => {
+              const retentionId =
+                `async-v8-flush-${flush.flushIndex}`;
+              outstandingRetentionIds.add(retentionId);
+              return client.actPackedBatch(
+                packed,
+                actionKeys,
+                { retentionBatchId: retentionId },
+              );
+            })();
         return selected.map((action) => ({
           actionIndex: action.actionIndex,
           actionKey: action.actionKey,
@@ -294,12 +318,14 @@ export async function runPpoAsyncRolloutProbeV8(
       let round = 0;
 
       while (
-        continuousRecycle
-          ? (
-              !recycleDisabled
-              || finalizedAfterRecycleDisabled.size < assigned.length
-            )
-          : finalizedAssigned() < assigned.length
+        naturalRecycleProbe
+          ? !stopRequested
+          : continuousRecycle
+            ? (
+                !recycleDisabled
+                || finalizedAfterRecycleDisabled.size < assigned.length
+              )
+            : finalizedAssigned() < assigned.length
       ) {
         const group = prepared.group;
         if (!group) {
@@ -321,6 +347,12 @@ export async function runPpoAsyncRolloutProbeV8(
         const selected = await broker!.submit(group);
         totalDecisions += selected.length;
         if (
+          naturalRecycleProbe
+          && totalDecisions >= (targetDecisions ?? Number.POSITIVE_INFINITY)
+        ) {
+          hardDecisionCapReached = true;
+          stopRequested = true;
+        } else if (
           continuousRecycle
           && !draining
           && totalDecisions >= (targetDecisions ?? Number.POSITIVE_INFINITY)
@@ -339,6 +371,14 @@ export async function runPpoAsyncRolloutProbeV8(
                 ? {
                     completedEpisodes:
                       completedSummaries.length,
+                    ...(naturalRecycleProbe
+                      ? {
+                          hardDecisionCapReached,
+                          naturalVictoryRecycleConfirmed,
+                          naturalVictoryPendingProofCount:
+                            naturalVictoryPendingProof.size,
+                        }
+                      : {}),
                   }
                 : {
                     finalizedEnvironments:
@@ -352,6 +392,7 @@ export async function runPpoAsyncRolloutProbeV8(
 
         if (
           continuousRecycle
+          && !naturalRecycleProbe
           && draining
           && !recycleDisabled
         ) {
@@ -361,6 +402,16 @@ export async function runPpoAsyncRolloutProbeV8(
           );
           recycleDisabled = true;
         }
+
+        const naturalProofCandidates =
+          naturalRecycleProbe
+            ? group.environmentIndices.filter(
+                (environmentIndex) =>
+                  naturalVictoryPendingProof.has(
+                    environmentIndex,
+                  ),
+              )
+            : [];
 
         const advanced = await rolloutPool!.advanceWorker(
           workerId,
@@ -387,13 +438,48 @@ export async function runPpoAsyncRolloutProbeV8(
         if (continuousRecycle && !recycleDisabled) {
           recycledBeforeDrainEpisodeCount +=
             advanced.finalized.length;
-          naturalVictoryRecycledBeforeDrainCount +=
-            advanced.finalized.filter(
-              (item) =>
-                item.summary.outcomeKind === "victory",
-            ).length;
+          for (const item of advanced.finalized) {
+            if (item.summary.outcomeKind === "victory") {
+              naturalVictoryRecycledBeforeDrainCount += 1;
+              if (naturalRecycleProbe) {
+                naturalVictoryPendingProof.set(
+                  item.environmentIndex,
+                  {
+                    sourceSeed: item.summary.seed,
+                    nextSeed:
+                      item.summary.seed + environmentCount,
+                  },
+                );
+              }
+            }
+          }
         }
         recordFinalized(advanced.finalized);
+        if (
+          naturalRecycleProbe
+          && naturalProofCandidates.length
+        ) {
+          for (const environmentIndex of naturalProofCandidates) {
+            const proof =
+              naturalVictoryPendingProof.get(
+                environmentIndex,
+              );
+            if (!proof) continue;
+            naturalVictoryRecycleConfirmed = true;
+            naturalVictoryRecycleEnvironmentIndex ??=
+              environmentIndex;
+            naturalVictoryRecycleSourceSeed ??=
+              proof.sourceSeed;
+            naturalVictoryRecycleNextSeed ??=
+              proof.nextSeed;
+            naturalVictoryPendingProof.delete(
+              environmentIndex,
+            );
+          }
+          if (naturalVictoryRecycleConfirmed) {
+            stopRequested = true;
+          }
+        }
         if (recycleDisabled) {
           for (const item of advanced.finalized) {
             if (assignedSet.has(item.environmentIndex)) {
@@ -516,17 +602,26 @@ export async function runPpoAsyncRolloutProbeV8(
       rolloutWorkerCount: workerIds.length,
       seeds,
       continuousRecycle,
+      naturalRecycleProbe,
       targetDecisions: continuousRecycle
         ? targetDecisions
         : undefined,
       collectedDecisions: totalDecisions,
       decisionOvershoot: continuousRecycle
-        ? totalDecisions - (targetDecisions ?? 0)
+        ? Math.max(
+            0,
+            totalDecisions - (targetDecisions ?? 0),
+          )
         : 0,
       completedEpisodes: summaries.length,
       drainingTriggered: draining,
+      hardDecisionCapReached,
       recycledBeforeDrainEpisodeCount,
       naturalVictoryRecycledBeforeDrainCount,
+      naturalVictoryRecycleConfirmed,
+      naturalVictoryRecycleEnvironmentIndex,
+      naturalVictoryRecycleSourceSeed,
+      naturalVictoryRecycleNextSeed,
       episodeSeeds: summaries.map((summary) => summary.seed),
       checkpointStart: {
         updateCount: initialized.updateCount,
@@ -534,9 +629,15 @@ export async function runPpoAsyncRolloutProbeV8(
       },
       totalDecisions,
       finalizedEnvironments:
-        continuousRecycle
-          ? environmentCount
-          : summaries.length,
+        naturalRecycleProbe
+          ? new Set(
+              summaries.map(
+                (summary) => summary.environmentIndex,
+              ),
+            ).size
+          : continuousRecycle
+            ? environmentCount
+            : summaries.length,
       summaries,
       mergeLegalActionCount,
       workerRounds,
