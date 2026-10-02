@@ -87,11 +87,4 @@ const result = await runPpoAsyncRolloutProbeV8({
   }),
 });
 
-if (naturalRecycleDiagnostic) {
-  console.log(
-    "ASYNC_V8_NATURAL_TERMINATION_DIAGNOSTIC_RESULT="
-    + JSON.stringify(result),
-  );
-} else {
-  console.log(JSON.stringify(result, null, 2));
-}
+console.log(JSON.stringify(result, null, 2));
