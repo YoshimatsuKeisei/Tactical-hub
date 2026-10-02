@@ -26,6 +26,13 @@ import type { PpoHyperparameters } from "./pythonPpoClient";
 import { packPpoActBatchInput } from "./rlPpoPackedBatch";
 import { toTransferablePackedBcBatch } from "./rlPpoWorkerPackedV7";
 import { createPpoRolloutEnvironmentDiagnosticV8 } from "./rlPpoRolloutDiagnosticsV8";
+import {
+  createPpoDefeatDiagnosticTrackerV8,
+  createPpoDefeatEnvironmentSnapshotV8,
+  observePpoDefeatDiagnosticV8,
+  type PpoDefeatDiagnosticEventV8,
+  type PpoDefeatDiagnosticTrackerV8,
+} from "./rlPpoDefeatDiagnosticsV8";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -47,6 +54,7 @@ type WorkerSlot = {
   encoderCache: ReturnType<typeof createRlObservationEncoderCache>;
   trajectory: PpoTrajectoryStep[];
   generation: number;
+  defeatDiagnosticTracker?: PpoDefeatDiagnosticTrackerV8;
   finished: boolean;
   reason?: string;
   pending?: PendingDecision;
@@ -59,7 +67,9 @@ let safetyMaxTurns = 0;
 let safetyMaxActions = 0;
 let autoRecycle = false;
 let recycleSeedStride = 1;
+let defeatDiagnostics = false;
 let slots: WorkerSlot[] = [];
+let pendingDefeatDiagnosticEvents: PpoDefeatDiagnosticEventV8[] = [];
 
 function timing(): PpoRolloutWorkerV7Timing {
   return {
@@ -97,6 +107,33 @@ function createEnvironment() {
       },
     },
   );
+}
+
+function createDefeatSnapshot(slot: WorkerSlot) {
+  return createPpoDefeatEnvironmentSnapshotV8({
+    environmentIndex: slot.environmentIndex,
+    currentEpisodeSeed: slot.seed,
+    generation: slot.generation,
+    episodeDecisionCount: slot.trajectory.length,
+    state: slot.environment.getStateForValidation(),
+    result: slot.environment.getResult(),
+  });
+}
+
+function observeDefeatDiagnostics(slot: WorkerSlot) {
+  if (!slot.defeatDiagnosticTracker) return;
+  const event = observePpoDefeatDiagnosticV8(
+    slot.defeatDiagnosticTracker,
+    createDefeatSnapshot(slot),
+  );
+  if (event) pendingDefeatDiagnosticEvents.push(event);
+}
+
+function drainDefeatDiagnosticEvents() {
+  if (!defeatDiagnostics) return undefined;
+  const events = pendingDefeatDiagnosticEvents;
+  pendingDefeatDiagnosticEvents = [];
+  return events;
 }
 
 async function finalizeSlot(
@@ -217,6 +254,12 @@ async function finalizeSlot(
     slot.encoderCache = createRlObservationEncoderCache();
     slot.trajectory = [];
     slot.generation += 1;
+    if (defeatDiagnostics) {
+      slot.defeatDiagnosticTracker =
+        createPpoDefeatDiagnosticTrackerV8(
+          createDefeatSnapshot(slot),
+        );
+    }
     slot.finished = false;
     slot.reason = undefined;
     slot.pending = undefined;
@@ -238,6 +281,7 @@ async function handleInit(
   safetyMaxActions = message.safetyMaxActions;
   autoRecycle = message.autoRecycle ?? false;
   recycleSeedStride = message.recycleSeedStride ?? 1;
+  defeatDiagnostics = message.defeatDiagnostics ?? false;
   if (!Number.isInteger(recycleSeedStride) || recycleSeedStride <= 0) {
     throw new Error(
       "PPO V7 rollout recycleSeedStride must be a positive integer",
@@ -246,7 +290,7 @@ async function handleInit(
   slots = message.environments.map((entry) => {
     const environment = createEnvironment();
     environment.reset(entry.seed, 4);
-    return {
+    const slot: WorkerSlot = {
       environmentIndex: entry.environmentIndex,
       seed: entry.seed,
       environment,
@@ -255,6 +299,13 @@ async function handleInit(
       generation: 0,
       finished: false,
     };
+    if (defeatDiagnostics) {
+      slot.defeatDiagnosticTracker =
+        createPpoDefeatDiagnosticTrackerV8(
+          createDefeatSnapshot(slot),
+        );
+    }
+    return slot;
   });
 
   parentPort!.postMessage({
@@ -427,6 +478,7 @@ async function applyRound(
       reward: 0,
       done: false,
     });
+    if (defeatDiagnostics) observeDefeatDiagnostics(slot);
     slot.pending = undefined;
 
     if (slot.environment.getProgressHash() === pending.progressHash) {
@@ -480,6 +532,9 @@ async function handleApply(
     round: message.round,
     finalized,
     timing: stageTiming,
+    ...(defeatDiagnostics
+      ? { defeatDiagnosticEvents: drainDefeatDiagnosticEvents() }
+      : {}),
   } satisfies PpoRolloutWorkerV7Response);
 }
 
@@ -499,6 +554,9 @@ async function handleAdvance(
     finalized,
     mergeLegalActionCount: prepared.mergeLegalActionCount,
     timing: stageTiming,
+    ...(defeatDiagnostics
+      ? { defeatDiagnosticEvents: drainDefeatDiagnosticEvents() }
+      : {}),
   } satisfies PpoRolloutWorkerV7Response;
   parentPort!.postMessage(
     response,
@@ -549,6 +607,18 @@ async function handle(message: PpoRolloutWorkerV7Request) {
           state: slot.environment.getStateForValidation(),
           result: slot.environment.getResult(),
         })),
+    } satisfies PpoRolloutWorkerV7Response);
+    return;
+  }
+  if (message.type === "getDefeatDiagnostics") {
+    if (workerId < 0) {
+      throw new Error("PPO rollout worker is not initialized");
+    }
+    parentPort!.postMessage({
+      type: "defeatDiagnostics",
+      requestId: message.requestId,
+      workerId,
+      environments: slots.map(createDefeatSnapshot),
     } satisfies PpoRolloutWorkerV7Response);
     return;
   }

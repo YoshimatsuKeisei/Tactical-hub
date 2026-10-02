@@ -12,6 +12,10 @@ import type {
   PpoRolloutWorkerV7Timing,
 } from "./rlPpoRolloutWorkerV7Messages";
 import type { PpoRolloutEnvironmentDiagnosticV8 } from "./rlPpoRolloutDiagnosticsV8";
+import type {
+  PpoDefeatDiagnosticEventV8,
+  PpoDefeatEnvironmentSnapshotV8,
+} from "./rlPpoDefeatDiagnosticsV8";
 
 type RequestWithoutId =
   PpoRolloutWorkerV7Request extends infer Request
@@ -87,7 +91,9 @@ export type PpoRolloutWorkerV7WorkerPrepareResult = {
 };
 
 export type PpoRolloutWorkerV7WorkerAdvanceResult =
-  PpoRolloutWorkerV7WorkerPrepareResult;
+  PpoRolloutWorkerV7WorkerPrepareResult & {
+    defeatDiagnosticEvents: PpoDefeatDiagnosticEventV8[];
+  };
 
 export class PpoRolloutWorkerV7Pool {
   private constructor(
@@ -105,6 +111,7 @@ export class PpoRolloutWorkerV7Pool {
     safetyMaxActions: number;
     autoRecycle?: boolean;
     recycleSeedStride?: number;
+    defeatDiagnostics?: boolean;
   }) {
     if (!Number.isInteger(input.workerCount) || input.workerCount <= 0) {
       throw new Error("PPO V7 rollout workerCount must be a positive integer");
@@ -274,6 +281,9 @@ export class PpoRolloutWorkerV7Pool {
               ...(input.recycleSeedStride === undefined
                 ? {}
                 : { recycleSeedStride: input.recycleSeedStride }),
+              ...(input.defeatDiagnostics === undefined
+                ? {}
+                : { defeatDiagnostics: input.defeatDiagnostics }),
             },
           );
           if (
@@ -377,6 +387,28 @@ export class PpoRolloutWorkerV7Pool {
     );
   }
 
+  async getWorkerDefeatDiagnostics(
+    workerId: number,
+  ): Promise<PpoDefeatEnvironmentSnapshotV8[]> {
+    const handle = this.handleFor(workerId);
+    const response = await this.request(
+      handle,
+      { type: "getDefeatDiagnostics" },
+    );
+    if (
+      response.type !== "defeatDiagnostics"
+      || response.workerId !== workerId
+    ) {
+      throw new Error(
+        `Unexpected PPO rollout defeat diagnostics response from worker ${workerId}`,
+      );
+    }
+    return [...response.environments].sort(
+      (left, right) =>
+        left.environmentIndex - right.environmentIndex,
+    );
+  }
+
   async prepareWorker(
     workerId: number,
     round: number,
@@ -457,6 +489,8 @@ export class PpoRolloutWorkerV7Pool {
       ...(response.group ? { group: response.group } : {}),
       finalized,
       mergeLegalActionCount: response.mergeLegalActionCount,
+      defeatDiagnosticEvents:
+        response.defeatDiagnosticEvents ?? [],
       workerCpuTiming: response.timing,
       operationMs: performance.now() - started,
     };

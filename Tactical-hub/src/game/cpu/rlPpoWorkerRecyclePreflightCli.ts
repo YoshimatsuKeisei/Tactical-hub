@@ -28,6 +28,7 @@ const pool = await PpoRolloutWorkerV7Pool.create({
   safetyMaxActions: 1,
   autoRecycle: true,
   recycleSeedStride,
+  defeatDiagnostics: true,
 });
 
 const actionFor = (group: PpoRolloutWorkerV7PreparedGroup) => {
@@ -68,6 +69,24 @@ try {
     generation: 1,
     episodeDecisionCount: 0,
   }]);
+  const defeatDiagnostics =
+    await pool.getWorkerDefeatDiagnostics(0);
+  assert.deepEqual(defeatDiagnostics.map((entry) => ({
+    environmentIndex: entry.environmentIndex,
+    currentEpisodeSeed: entry.currentEpisodeSeed,
+    generation: entry.generation,
+    activeNonNeutralTeamIds: entry.activeNonNeutralTeamIds,
+  })), [{
+    environmentIndex: 0,
+    currentEpisodeSeed: initialSeed + recycleSeedStride,
+    generation: 1,
+    activeNonNeutralTeamIds: [
+      "team-1",
+      "team-2",
+      "team-3",
+      "team-4",
+    ],
+  }]);
 
   await pool.setWorkerAutoRecycle(0, false);
 
@@ -94,6 +113,7 @@ try {
     recycledSeed: initialSeed + recycleSeedStride,
     disabledGenerationStayedFinished: true,
     diagnosticsRequestVerified: true,
+    defeatDiagnosticsRequestVerified: true,
   }));
 } finally {
   await pool.close();

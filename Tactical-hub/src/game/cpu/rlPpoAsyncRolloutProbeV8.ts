@@ -21,6 +21,13 @@ import {
   PPO_PHASE_12B1_STANDARD_SAFETY_LIMITS,
   type PpoRolloutEnvironmentDiagnosticV8,
 } from "./rlPpoRolloutDiagnosticsV8";
+import {
+  PPO_DEFEAT_DIAGNOSTIC_OBSERVATION_TURNS,
+  PPO_DEFEAT_DIAGNOSTIC_TURN_INTERVAL,
+  updatePpoTwoTeamObservationV8,
+  type PpoDefeatEnvironmentSnapshotV8,
+  type PpoTwoTeamObservationV8,
+} from "./rlPpoDefeatDiagnosticsV8";
 
 export type PpoAsyncRolloutProbeV8Input = {
   seed: number;
@@ -36,6 +43,7 @@ export type PpoAsyncRolloutProbeV8Input = {
   targetDecisions?: number;
   naturalRecycleProbe?: boolean;
   naturalRecycleDiagnostic?: boolean;
+  naturalRecycleDefeatDiagnostic?: boolean;
   client?: PythonPpoClient;
 };
 
@@ -114,8 +122,12 @@ export async function runPpoAsyncRolloutProbeV8(
   const naturalRecycleProbe = input.naturalRecycleProbe ?? false;
   const naturalRecycleDiagnostic =
     input.naturalRecycleDiagnostic ?? false;
+  const naturalRecycleDefeatDiagnostic =
+    input.naturalRecycleDefeatDiagnostic ?? false;
   const naturalTerminationProbe =
-    naturalRecycleProbe || naturalRecycleDiagnostic;
+    naturalRecycleProbe
+    || naturalRecycleDiagnostic
+    || naturalRecycleDefeatDiagnostic;
   const safetyMaxTurns = input.safetyMaxTurns ?? 1_000;
   const safetyMaxActions = input.safetyMaxActions ?? 100_000;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
@@ -153,9 +165,20 @@ export async function runPpoAsyncRolloutProbeV8(
       "naturalRecycleDiagnostic requires continuousRecycle",
     );
   }
-  if (naturalRecycleProbe && naturalRecycleDiagnostic) {
+  if (naturalRecycleDefeatDiagnostic && !continuousRecycle) {
     throw new Error(
-      "naturalRecycleProbe and naturalRecycleDiagnostic are mutually exclusive",
+      "naturalRecycleDefeatDiagnostic requires continuousRecycle",
+    );
+  }
+  if (
+    [
+      naturalRecycleProbe,
+      naturalRecycleDiagnostic,
+      naturalRecycleDefeatDiagnostic,
+    ].filter(Boolean).length > 1
+  ) {
+    throw new Error(
+      "natural recycle probe modes are mutually exclusive",
     );
   }
 
@@ -226,6 +249,15 @@ export async function runPpoAsyncRolloutProbeV8(
   let nextDiagnosticDecisionThreshold = 50_000;
   let finalEnvironmentDiagnostics:
     PpoRolloutEnvironmentDiagnosticV8[] = [];
+  let twoTeamObservation: PpoTwoTeamObservationV8 | undefined;
+  let defeatDiagnosticEventCount = 0;
+  let defeatDiagnosticStopReason:
+    | "two_team_observation_window_completed"
+    | "natural_victory_recycle_confirmed"
+    | "hard_decision_cap_reached"
+    | undefined;
+  let finalDefeatEnvironmentDiagnostics:
+    PpoDefeatEnvironmentSnapshotV8[] = [];
 
   const recordFinalized = (
     finalized: PpoRolloutWorkerV7Finalized[],
@@ -283,6 +315,9 @@ export async function runPpoAsyncRolloutProbeV8(
             autoRecycle: true,
             recycleSeedStride: environmentCount,
           }
+        : {}),
+      ...(naturalRecycleDefeatDiagnostic
+        ? { defeatDiagnostics: true }
         : {}),
     });
 
@@ -439,6 +474,10 @@ export async function runPpoAsyncRolloutProbeV8(
         ) {
           hardDecisionCapReached = true;
           stopRequested = true;
+          if (naturalRecycleDefeatDiagnostic) {
+            defeatDiagnosticStopReason ??=
+              "hard_decision_cap_reached";
+          }
         } else if (
           continuousRecycle
           && !draining
@@ -544,6 +583,27 @@ export async function runPpoAsyncRolloutProbeV8(
           }
         }
         recordFinalized(advanced.finalized);
+        if (naturalRecycleDefeatDiagnostic) {
+          for (const event of advanced.defeatDiagnosticEvents) {
+            defeatDiagnosticEventCount += 1;
+            process.stderr.write(
+              "[PPO async rollout V8 defeat diagnostic] "
+              + JSON.stringify(event)
+              + "\n",
+            );
+            twoTeamObservation = updatePpoTwoTeamObservationV8(
+              twoTeamObservation,
+              event,
+            );
+            if (
+              twoTeamObservation?.observationWindowCompleted
+            ) {
+              defeatDiagnosticStopReason =
+                "two_team_observation_window_completed";
+              stopRequested = true;
+            }
+          }
+        }
         if (
           naturalTerminationProbe
           && naturalProofCandidates.length
@@ -566,6 +626,10 @@ export async function runPpoAsyncRolloutProbeV8(
             );
           }
           if (naturalVictoryRecycleConfirmed) {
+            if (naturalRecycleDefeatDiagnostic) {
+              defeatDiagnosticStopReason =
+                "natural_victory_recycle_confirmed";
+            }
             stopRequested = true;
           }
         }
@@ -622,6 +686,34 @@ export async function runPpoAsyncRolloutProbeV8(
           }
         }
         publishDiagnosticSnapshot(decisionThreshold);
+      }
+    }
+
+    if (naturalRecycleDefeatDiagnostic) {
+      const finalByWorker = await Promise.all(
+        workerIds.map((workerId) =>
+          rolloutPool!.getWorkerDefeatDiagnostics(workerId)),
+      );
+      finalDefeatEnvironmentDiagnostics = finalByWorker
+        .flat()
+        .sort((left, right) =>
+          left.environmentIndex - right.environmentIndex);
+      if (twoTeamObservation) {
+        const sameEpisode = finalDefeatEnvironmentDiagnostics.find(
+          (snapshot) =>
+            snapshot.environmentIndex
+              === twoTeamObservation!.selectedEnvironmentIndex
+            && snapshot.currentEpisodeSeed
+              === twoTeamObservation!.selectedEpisodeSeed
+            && snapshot.generation
+              === twoTeamObservation!.selectedGeneration,
+        );
+        if (sameEpisode) {
+          twoTeamObservation = {
+            ...twoTeamObservation,
+            latestSnapshot: sameEpisode,
+          };
+        }
       }
     }
 
@@ -701,6 +793,9 @@ export async function runPpoAsyncRolloutProbeV8(
     await rolloutPool.close();
     rolloutPool = undefined;
 
+    const finalSelectedDefeatSnapshot =
+      twoTeamObservation?.latestSnapshot;
+
     return {
       mode: "async_rollout_dynamic_broker_v8",
       purpose: "rollout_only_global_round_barrier_removal",
@@ -721,6 +816,9 @@ export async function runPpoAsyncRolloutProbeV8(
       naturalRecycleProbe,
       ...(naturalRecycleDiagnostic
         ? { naturalRecycleDiagnostic: true }
+        : {}),
+      ...(naturalRecycleDefeatDiagnostic
+        ? { naturalRecycleDefeatDiagnostic: true }
         : {}),
       targetDecisions: continuousRecycle
         ? targetDecisions
@@ -767,6 +865,58 @@ export async function runPpoAsyncRolloutProbeV8(
             finalEnvironmentDiagnostics,
             standardSafetyLimits:
               PPO_PHASE_12B1_STANDARD_SAFETY_LIMITS,
+          }
+        : {}),
+      ...(naturalRecycleDefeatDiagnostic
+        ? {
+            selectedEnvironmentIndex:
+              twoTeamObservation?.selectedEnvironmentIndex
+              ?? null,
+            selectedEpisodeSeed:
+              twoTeamObservation?.selectedEpisodeSeed ?? null,
+            selectedGeneration:
+              twoTeamObservation?.selectedGeneration ?? null,
+            twoTeamEntryTurn:
+              twoTeamObservation?.twoTeamEntryTurn ?? null,
+            finalObservedTurn:
+              finalSelectedDefeatSnapshot?.currentTurn ?? null,
+            observedTurnsAfterTwoTeamEntry:
+              twoTeamObservation && finalSelectedDefeatSnapshot
+                ? Math.max(
+                    0,
+                    finalSelectedDefeatSnapshot.currentTurn
+                    - twoTeamObservation.twoTeamEntryTurn,
+                  )
+                : 0,
+            activeTeamIdsAtTwoTeamEntry:
+              twoTeamObservation?.entrySnapshot
+                .activeNonNeutralTeamIds ?? [],
+            finalActiveTeamIds:
+              finalSelectedDefeatSnapshot
+                ?.activeNonNeutralTeamIds ?? [],
+            defeatDiagnosticsAtEntry:
+              twoTeamObservation?.entrySnapshot
+                .defeatDiagnostics ?? [],
+            finalDefeatDiagnostics:
+              finalSelectedDefeatSnapshot
+                ?.defeatDiagnostics ?? [],
+            finalDefeatEnvironmentDiagnostics,
+            naturalVictorySeen: summaries.some(
+              (summary) => summary.outcomeKind === "victory",
+            ),
+            observationWindowCompleted:
+              twoTeamObservation?.observationWindowCompleted
+              ?? false,
+            stopReason:
+              defeatDiagnosticStopReason
+              ?? (hardDecisionCapReached
+                ? "hard_decision_cap_reached"
+                : "stopped_without_two_team_observation"),
+            observationWindowTurns:
+              PPO_DEFEAT_DIAGNOSTIC_OBSERVATION_TURNS,
+            periodicTurnInterval:
+              PPO_DEFEAT_DIAGNOSTIC_TURN_INTERVAL,
+            defeatDiagnosticEventCount,
           }
         : {}),
       mergeLegalActionCount,

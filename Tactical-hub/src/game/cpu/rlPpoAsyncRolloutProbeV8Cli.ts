@@ -35,6 +35,9 @@ const python = value("--python") ?? "python";
 const naturalRecycleDiagnostic = args.includes(
   "--natural-recycle-diagnostic",
 );
+const naturalRecycleDefeatDiagnostic = args.includes(
+  "--natural-recycle-defeat-diagnostic",
+);
 
 const result = await runPpoAsyncRolloutProbeV8({
   seed: positiveInteger("--seed", 7),
@@ -44,9 +47,11 @@ const result = await runPpoAsyncRolloutProbeV8({
     positiveInteger("--rollout-workers", 4),
   continuousRecycle:
     args.includes("--continuous-recycle")
-    || naturalRecycleDiagnostic,
+    || naturalRecycleDiagnostic
+    || naturalRecycleDefeatDiagnostic,
   naturalRecycleProbe: args.includes("--natural-recycle-probe"),
   naturalRecycleDiagnostic,
+  naturalRecycleDefeatDiagnostic,
   targetDecisions: value("--target-decisions") === undefined
     ? undefined
     : positiveInteger("--target-decisions", 1),
