@@ -170,6 +170,8 @@ export async function runPpoAsyncRolloutProbeV8(
 
   let totalDecisions = 0;
   let draining = false;
+  let recycledBeforeDrainEpisodeCount = 0;
+  let naturalVictoryRecycledBeforeDrainCount = 0;
   let mergeLegalActionCount = 0;
   let initialPrepareMs = 0;
   let initialPrepareOperationMsSum = 0;
@@ -382,6 +384,15 @@ export async function runPpoAsyncRolloutProbeV8(
         );
         mergeLegalActionCount +=
           advanced.mergeLegalActionCount;
+        if (continuousRecycle && !recycleDisabled) {
+          recycledBeforeDrainEpisodeCount +=
+            advanced.finalized.length;
+          naturalVictoryRecycledBeforeDrainCount +=
+            advanced.finalized.filter(
+              (item) =>
+                item.summary.outcomeKind === "victory",
+            ).length;
+        }
         recordFinalized(advanced.finalized);
         if (recycleDisabled) {
           for (const item of advanced.finalized) {
@@ -514,6 +525,8 @@ export async function runPpoAsyncRolloutProbeV8(
         : 0,
       completedEpisodes: summaries.length,
       drainingTriggered: draining,
+      recycledBeforeDrainEpisodeCount,
+      naturalVictoryRecycledBeforeDrainCount,
       episodeSeeds: summaries.map((summary) => summary.seed),
       checkpointStart: {
         updateCount: initialized.updateCount,
