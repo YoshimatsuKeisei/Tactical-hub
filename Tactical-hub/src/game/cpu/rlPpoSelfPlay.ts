@@ -26,6 +26,7 @@ import {
   DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA,
   trackPpoBattleAdvantageDecision,
 } from "./rlPpoBattleAdvantageShaping";
+import { createPpoShapingDiagnostics } from "./rlPpoShapingDiagnostics";
 
 export type PpoClientLike =
   Pick<PythonPpoClient, "start" | "act" | "beginUpdate" | "accumulatePacked" | "finishUpdate" | "save" | "close">
@@ -400,6 +401,7 @@ export async function runPpoSelfPlaySmoke(input: {
   fastRlMovement?: boolean;
   fastRlPhaseTransitions?: boolean;
   battleAdvantageShapingBeta?: number;
+  shapingDiagnostics?: boolean;
   client?: PpoClientLike;
 }) {
   const hyperparameters = { ...DEFAULT_PPO_HYPERPARAMETERS, ...input.hyperparameters };
@@ -732,11 +734,34 @@ export async function runPpoSelfPlaySmoke(input: {
           : 0,
       }
       : undefined;
+    const shapingDiagnostics = input.shapingDiagnostics
+      ? createPpoShapingDiagnostics({
+          battleAdvantageShapingBeta,
+          gamma: hyperparameters.gamma,
+          rollouts: learnableRollouts.map((rollout) => {
+            const summary = [...completed, ...adjudicated]
+              .find((candidate) => candidate.seed === rollout.seed);
+            if (!summary) {
+              throw new Error(`Missing PPO diagnostic summary for seed ${rollout.seed}`);
+            }
+            return {
+              seed: rollout.seed,
+              trajectory: rollout.trajectory,
+              baseRewards: summary.outcomeKind === "time_limit_adjudicated"
+                ? Object.fromEntries(
+                    (summary.adjudication ?? []).map((team) => [team.teamId, team.reward]),
+                  )
+                : summary.environmentResult.rewards,
+            };
+          }),
+        })
+      : undefined;
     return {
       featureSpec,
       completed, adjudicated, truncated, ...episodeCounts,
       mergeLegalActionCount, replayedSamples, trajectorySpoolStats, trajectoryRetentionStats, phaseProfile,
       update, saved, bestSaved, selectedDevice: initialized.selectedDevice,
+      ...(shapingDiagnostics ? { shapingDiagnostics } : {}),
     };
   } finally {
     for (const path of spoolPaths) deletePpoTrajectorySpool(path);

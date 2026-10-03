@@ -1,6 +1,8 @@
 import { runPpoFastBatchV7WorkersSmoke } from "./rlPpoFastBatchV7Workers";
 import { PythonPpoClient } from "./pythonPpoClient";
 import { parseBattleAdvantageShapingBeta } from "./rlPpoBattleAdvantageShaping";
+import { isPpoShapingDiagnosticsEnabled } from "./rlPpoShapingDiagnostics";
+import { formatPpoCliJson } from "./rlPpoCliJson";
 
 const args = process.argv.slice(2);
 if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
@@ -71,6 +73,8 @@ const result = await runPpoFastBatchV7WorkersSmoke({
 
   battleAdvantageShapingBeta:
     parseBattleAdvantageShapingBeta(args),
+  shapingDiagnostics:
+    isPpoShapingDiagnosticsEnabled(args),
 
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4),
@@ -100,4 +104,4 @@ const result = await runPpoFastBatchV7WorkersSmoke({
   }),
 });
 
-console.log(JSON.stringify(result, null, 2));
+process.stdout.write(formatPpoCliJson(result));

@@ -4,6 +4,7 @@ import { createRlFeatureSpecV2 } from "../cpu/rlFeatureSpec";
 import { calculatePpoBattleAdvantagePotential } from "../cpu/rlPpoBattleAdvantageShaping";
 import { PpoRolloutWorkerV7Pool } from "../cpu/rlPpoRolloutWorkerV7Pool";
 import { DEFAULT_PPO_HYPERPARAMETERS } from "../cpu/rlPpoSelfPlay";
+import { createPpoFastBatchV7ShapingDiagnostics } from "../cpu/rlPpoFastBatchV7Workers";
 
 describe("PPO V7 worker Battle Advantage shaping", () => {
   it("uses the worker-owned full state and composes terminal shaping with adjudication", async () => {
@@ -54,6 +55,23 @@ describe("PPO V7 worker Battle Advantage shaping", () => {
       expect(step.teamId).toBe(actor);
       expect(step.done).toBe(true);
       expect(step.reward).toBeCloseTo(baseReward - beta * phi);
+      const diagnostics = createPpoFastBatchV7ShapingDiagnostics({
+        battleAdvantageShapingBeta: beta,
+        gamma: DEFAULT_PPO_HYPERPARAMETERS.gamma,
+        finalized: finalized.finalized,
+      });
+      expect(diagnostics).toMatchObject({
+        battleAdvantageShapingBeta: beta,
+        gamma: DEFAULT_PPO_HYPERPARAMETERS.gamma,
+        reward: {
+          baseReward: { count: 1, finiteCount: 1 },
+          shapingReward: { count: 1, nonZeroCount: 1, finiteCount: 1 },
+          trainingReward: { count: 1, finiteCount: 1 },
+        },
+        advantage: { count: 1, finiteCount: 1 },
+        return: { count: 1, finiteCount: 1 },
+      });
+      expect(diagnostics.reward.shapingReward.sum).toBeCloseTo(-beta * phi);
     } finally {
       await pool.close();
     }

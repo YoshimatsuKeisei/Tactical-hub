@@ -138,11 +138,11 @@ describe("Phase 12B PPO self-play", () => {
       safetyMaxActions: 8,
       replayChunkSize: 3,
     };
-    await runPpoSelfPlaySmoke({
+    const omittedResult = await runPpoSelfPlaySmoke({
       ...common,
       client: omitted as unknown as PpoClientLike,
     });
-    await runPpoSelfPlaySmoke({
+    const explicitResult = await runPpoSelfPlaySmoke({
       ...common,
       battleAdvantageShapingBeta: 0,
       client: explicit as unknown as PpoClientLike,
@@ -155,7 +155,52 @@ describe("Phase 12B PPO self-play", () => {
       })));
     expect(scalars(explicit)).toEqual(scalars(omitted));
     expect(calculator).not.toHaveBeenCalled();
+    expect("shapingDiagnostics" in omittedResult).toBe(false);
+    expect("shapingDiagnostics" in explicitResult).toBe(false);
     expect(stderr).toHaveBeenCalled();
+  });
+
+  it("returns opt-in shaping diagnostics for beta zero and nonzero without changing rollout actions", async () => {
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const common = {
+      seed: 7,
+      initialCheckpoint: "unused",
+      outputCheckpoint: "latest",
+      safetyMaxActions: 8,
+      replayChunkSize: 3,
+      shapingDiagnostics: true,
+    };
+    const legacy = await runPpoSelfPlaySmoke({
+      ...common,
+      battleAdvantageShapingBeta: 0,
+      client: fakeClient() as unknown as PpoClientLike,
+    });
+    const shaped = await runPpoSelfPlaySmoke({
+      ...common,
+      battleAdvantageShapingBeta: 0.02,
+      client: fakeClient() as unknown as PpoClientLike,
+    });
+    const legacyDiagnostics = legacy.shapingDiagnostics!;
+    const shapedDiagnostics = shaped.shapingDiagnostics!;
+
+    expect(legacyDiagnostics).toMatchObject({
+      battleAdvantageShapingBeta: 0,
+      gamma: 0.99,
+      reward: { shapingReward: { sum: 0, nonZeroCount: 0 } },
+    });
+    expect(shapedDiagnostics.battleAdvantageShapingBeta).toBe(0.02);
+    expect(shapedDiagnostics.reward.shapingReward.nonZeroCount).toBeGreaterThan(0);
+    expect(shapedDiagnostics.rolloutActionHash)
+      .toBe(legacyDiagnostics.rolloutActionHash);
+    expect(
+      shapedDiagnostics.reward.baseReward.sum
+      + shapedDiagnostics.reward.shapingReward.sum,
+    ).toBeCloseTo(shapedDiagnostics.reward.trainingReward.sum);
+    expect(shapedDiagnostics.advantage.finiteCount)
+      .toBe(shapedDiagnostics.advantage.count);
+    expect(shapedDiagnostics.return.finiteCount)
+      .toBe(shapedDiagnostics.return.count);
+    expect(() => JSON.parse(JSON.stringify(shaped))).not.toThrow();
   });
 
   it("preserves dense shaping and adds the existing natural/Final Duel victory rewards", () => {

@@ -25,6 +25,8 @@ import type {
   PpoRolloutWorkerV7Finalized,
   PpoRolloutWorkerV7Timing,
 } from "./rlPpoRolloutWorkerV7Messages";
+import { DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA } from "./rlPpoBattleAdvantageShaping";
+import { createPpoShapingDiagnostics } from "./rlPpoShapingDiagnostics";
 
 type FastBatchRetentionRecord = {
   retentionId: string;
@@ -43,6 +45,7 @@ export type PpoFastBatchV7WorkersInput = {
   resume?: string;
   hyperparameters?: Partial<PpoHyperparameters>;
   battleAdvantageShapingBeta?: number;
+  shapingDiagnostics?: boolean;
   safetyMaxTurns?: number;
   safetyMaxActions?: number;
   replayChunkSize?: number;
@@ -51,6 +54,29 @@ export type PpoFastBatchV7WorkersInput = {
   rolloutWorkerCount?: number;
   client?: PythonPpoClient;
 };
+
+export function createPpoFastBatchV7ShapingDiagnostics(input: {
+  battleAdvantageShapingBeta: number;
+  gamma: number;
+  finalized: readonly PpoRolloutWorkerV7Finalized[];
+}) {
+  return createPpoShapingDiagnostics({
+    battleAdvantageShapingBeta: input.battleAdvantageShapingBeta,
+    gamma: input.gamma,
+    rollouts: input.finalized.flatMap((item) => item.rollout
+      ? [{
+          seed: item.rollout.seed,
+          environmentIndex: item.environmentIndex,
+          trajectory: item.rollout.trajectory,
+          baseRewards: item.summary.outcomeKind === "time_limit_adjudicated"
+            ? Object.fromEntries(
+                (item.summary.adjudication ?? []).map((team) => [team.teamId, team.reward]),
+              )
+            : item.summary.environmentResult.rewards,
+        }]
+      : []),
+  });
+}
 
 function createFeatureSpecEnvironment() {
   return new RlEnvironmentV2(
@@ -129,6 +155,8 @@ export async function runPpoFastBatchV7WorkersSmoke(
     ...DEFAULT_PPO_HYPERPARAMETERS,
     ...input.hyperparameters,
   };
+  const battleAdvantageShapingBeta = input.battleAdvantageShapingBeta
+    ?? DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA;
 
   const probe = createFeatureSpecEnvironment();
   const first = probe.reset(input.seed, 4);
@@ -236,7 +264,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       firstGameSeed,
       featureSpec,
       hyperparameters,
-      battleAdvantageShapingBeta: input.battleAdvantageShapingBeta,
+      battleAdvantageShapingBeta,
       safetyMaxTurns,
       safetyMaxActions,
     });
@@ -602,6 +630,20 @@ export async function runPpoFastBatchV7WorkersSmoke(
     const finalRetentionStats = await client.retentionStats();
     const diagnostics = await client.diagnostics();
     const totalMs = performance.now() - started;
+    const shapingDiagnostics = input.shapingDiagnostics
+      ? createPpoFastBatchV7ShapingDiagnostics({
+          battleAdvantageShapingBeta,
+          gamma: hyperparameters.gamma,
+          finalized: Array.from(
+            { length: environmentCount },
+            (_, environmentIndex) => ({
+              environmentIndex,
+              summary: summaryByEnvironment.get(environmentIndex)!,
+              rollout: rolloutByEnvironment.get(environmentIndex),
+            }),
+          ),
+        })
+      : undefined;
 
     return {
       mode: "fast_batch_worker_fused_advance",
@@ -649,6 +691,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       retentionBeforeUpdate: retentionSummary(retentionBeforeUpdate),
       retentionAfterReplay: retentionSummary(retentionAfterReplay),
       retentionFinal: retentionSummary(finalRetentionStats),
+      ...(shapingDiagnostics ? { shapingDiagnostics } : {}),
     };
   } finally {
     if (outstandingRetentionIds.size) {
