@@ -115,7 +115,7 @@ export class PythonPpoClient {
     return response;
   }
 
-  async start(input: { seed: number; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; initialCheckpoint: string; resume?: string }) {
+  async start(input: { seed: number; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; initialCheckpoint: string; resume?: string; evaluationCheckpoint?: string }) {
     if (this.process) throw new Error("Python PPO process is already running");
     this.process = spawn(this.options.command ?? "python", this.options.args ?? ["-u", "-m", "rl.ppo_server"], {
       cwd: this.options.cwd ?? process.cwd(), stdio: ["pipe", "pipe", "pipe"],

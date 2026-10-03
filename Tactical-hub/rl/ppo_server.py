@@ -35,6 +35,7 @@ def send(payload):
 
 def main():
     trainer = None
+    evaluation_mode = False
     stream = sys.stdin.buffer
     profile = os.environ.get("PPO_PROFILE") == "1"
     retention_storage_mode = os.environ.get(
@@ -435,7 +436,12 @@ def main():
                     packed_h2d_workspace = PackedH2dWorkspace(device)
                 if persistent_replay_h2d:
                     replay_h2d_workspace = PackedH2dWorkspace(device)
-                if message.get("resume"):
+                if message.get("evaluationCheckpoint"):
+                    if message.get("resume"):
+                        raise ValueError("PPO init cannot combine evaluationCheckpoint and resume")
+                    state = trainer.load_evaluation_checkpoint(message["evaluationCheckpoint"])
+                    evaluation_mode = True
+                elif message.get("resume"):
                     state = trainer.resume(message["resume"])
                 else:
                     trainer.load_initial_model(message["initialCheckpoint"])
@@ -443,6 +449,8 @@ def main():
                 send({"type": "ready", "selectedDevice": device.type, **state})
             elif trainer is None:
                 raise RuntimeError("PPO server is not initialized")
+            elif evaluation_mode and kind not in ("packedAct", "packedActBatch", "act", "diagnostics", "close"):
+                raise RuntimeError(f"PPO evaluation mode rejects non-inference request: {kind}")
             elif kind == "retainPackedChunk":
                 retention_id = str(message.get("retentionId", ""))
                 if not retention_id:

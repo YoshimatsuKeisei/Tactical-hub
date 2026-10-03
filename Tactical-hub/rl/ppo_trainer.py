@@ -88,6 +88,23 @@ class PpoTrainer:
         self.model.load_state_dict(checkpoint.get("modelStateDict"), strict=True)
         self._act_state_branch_cache.clear()
 
+    def load_evaluation_checkpoint(self, path: str) -> dict[str, int]:
+        """Loads PPO policy weights and counters without optimizer or training RNG state."""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        if not isinstance(checkpoint, dict) or checkpoint.get("schemaVersion") != PPO_CHECKPOINT_SCHEMA_VERSION or checkpoint.get("checkpointKind") != "ppo_self_play":
+            raise ValueError("Unsupported PPO evaluation checkpoint")
+        if checkpoint.get("featureSpec") != self.feature_spec:
+            raise ValueError("PPO evaluation checkpoint Feature Spec mismatch")
+        if "modelStateDict" not in checkpoint:
+            raise ValueError("PPO evaluation checkpoint is missing modelStateDict")
+        self.model.load_state_dict(checkpoint["modelStateDict"], strict=True)
+        self._act_state_branch_cache.clear()
+        update_count = int(checkpoint.get("updateCount", -1))
+        episode_count = int(checkpoint.get("episodeCount", -1))
+        if update_count < 0 or episode_count < 0:
+            raise ValueError("PPO evaluation checkpoint counters are invalid")
+        return {"updateCount": update_count, "episodeCount": episode_count}
+
     def act(self, observation: dict[str, Any], actions: list[list[float]]) -> dict[str, float | int]:
         if not actions:
             raise ValueError("PPO cannot act without legal actions")
