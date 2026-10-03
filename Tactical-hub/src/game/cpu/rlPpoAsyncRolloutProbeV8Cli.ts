@@ -1,5 +1,6 @@
 import { runPpoAsyncRolloutProbeV8 } from "./rlPpoAsyncRolloutProbeV8";
 import { PythonPpoClient } from "./pythonPpoClient";
+import { parseBattleAdvantageShapingBeta } from "./rlPpoBattleAdvantageShaping";
 
 const args = process.argv.slice(2);
 if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
@@ -65,6 +66,8 @@ const result = await runPpoAsyncRolloutProbeV8({
     positiveInteger("--safety-max-actions", 100_000),
   memoryLogInterval:
     positiveInteger("--memory-log-interval", 5_000),
+  battleAdvantageShapingBeta:
+    parseBattleAdvantageShapingBeta(args),
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4),
     gamma: numeric("--gamma", 0.99),

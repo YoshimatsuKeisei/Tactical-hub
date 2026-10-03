@@ -33,6 +33,12 @@ import {
   type PpoDefeatDiagnosticEventV8,
   type PpoDefeatDiagnosticTrackerV8,
 } from "./rlPpoDefeatDiagnosticsV8";
+import {
+  beginPpoBattleAdvantageDecision,
+  createPpoBattleAdvantageShapingRuntime,
+  trackPpoBattleAdvantageDecision,
+  type PpoBattleAdvantageShapingRuntime,
+} from "./rlPpoBattleAdvantageShaping";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -43,6 +49,7 @@ type PendingDecision = {
   turnNumber: number;
   phase: PpoTrajectoryStep["phase"];
   teamId: string;
+  shapingReward: number;
   progressHash: string;
   actionKeys: string[];
 };
@@ -53,6 +60,7 @@ type WorkerSlot = {
   environment: RlEnvironmentV2;
   encoderCache: ReturnType<typeof createRlObservationEncoderCache>;
   trajectory: PpoTrajectoryStep[];
+  shapingRuntime?: PpoBattleAdvantageShapingRuntime;
   generation: number;
   defeatDiagnosticTracker?: PpoDefeatDiagnosticTrackerV8;
   finished: boolean;
@@ -63,6 +71,7 @@ type WorkerSlot = {
 let workerId = -1;
 let featureSpec: RlFeatureSpecV2 | undefined;
 let hyperparameters: PpoHyperparameters | undefined;
+let battleAdvantageShapingBeta = 0;
 let safetyMaxTurns = 0;
 let safetyMaxActions = 0;
 let autoRecycle = false;
@@ -195,6 +204,7 @@ async function finalizeSlot(
       slot.trajectory,
       result.rewards,
       hyperparameters,
+      slot.shapingRuntime ? { preserveExistingRewards: true } : undefined,
     );
     summary.outcomeKind = "victory";
   } else if (
@@ -216,6 +226,7 @@ async function finalizeSlot(
         ]),
       ),
       hyperparameters,
+      slot.shapingRuntime ? { preserveExistingRewards: true } : undefined,
     );
   }
 
@@ -253,6 +264,10 @@ async function finalizeSlot(
     slot.environment.reset(slot.seed, 4);
     slot.encoderCache = createRlObservationEncoderCache();
     slot.trajectory = [];
+    slot.shapingRuntime = createPpoBattleAdvantageShapingRuntime(
+      battleAdvantageShapingBeta,
+      hyperparameters.gamma,
+    );
     slot.generation += 1;
     if (defeatDiagnostics) {
       slot.defeatDiagnosticTracker =
@@ -277,6 +292,7 @@ async function handleInit(
   workerId = message.workerId;
   featureSpec = message.featureSpec;
   hyperparameters = message.hyperparameters;
+  battleAdvantageShapingBeta = message.battleAdvantageShapingBeta;
   safetyMaxTurns = message.safetyMaxTurns;
   safetyMaxActions = message.safetyMaxActions;
   autoRecycle = message.autoRecycle ?? false;
@@ -296,6 +312,10 @@ async function handleInit(
       environment,
       encoderCache: createRlObservationEncoderCache(),
       trajectory: [],
+      shapingRuntime: createPpoBattleAdvantageShapingRuntime(
+        battleAdvantageShapingBeta,
+        hyperparameters!.gamma,
+      ),
       generation: 0,
       finished: false,
     };
@@ -388,6 +408,11 @@ async function prepareRound(
         turnNumber: observation.turnNumber,
         phase: observation.phase,
         teamId: actor,
+        shapingReward: beginPpoBattleAdvantageDecision(
+          slot.shapingRuntime,
+          slot.environment.getStateForValidation(),
+          actor,
+        ),
         progressHash: slot.environment.getProgressHash(),
         actionKeys: encodedActions.actionKeys,
       };
@@ -466,7 +491,7 @@ async function applyRound(
       "gameStepMs",
       () => slot.environment.stepWithoutObservation(action.actionKey),
     );
-    slot.trajectory.push({
+    const step: PpoTrajectoryStep = {
       decisionIndex: pending.decisionIndex,
       turnNumber: pending.turnNumber,
       phase: pending.phase,
@@ -475,9 +500,15 @@ async function applyRound(
       selectedActionKey: action.actionKey,
       oldLogProbability: action.logProbability,
       value: action.value,
-      reward: 0,
+      reward: pending.shapingReward,
       done: false,
-    });
+    };
+    slot.trajectory.push(step);
+    trackPpoBattleAdvantageDecision(
+      slot.shapingRuntime,
+      pending.teamId,
+      step,
+    );
     if (defeatDiagnostics) observeDefeatDiagnostics(slot);
     slot.pending = undefined;
 

@@ -1,5 +1,6 @@
 import { runPpoFastBatchV7WorkersSmoke } from "./rlPpoFastBatchV7Workers";
 import { PythonPpoClient } from "./pythonPpoClient";
+import { parseBattleAdvantageShapingBeta } from "./rlPpoBattleAdvantageShaping";
 
 const args = process.argv.slice(2);
 if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
@@ -67,6 +68,9 @@ const result = await runPpoFastBatchV7WorkersSmoke({
     args.includes("--validation-workers")
       ? positiveInteger("--validation-workers", 2)
       : 0,
+
+  battleAdvantageShapingBeta:
+    parseBattleAdvantageShapingBeta(args),
 
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4),

@@ -7,6 +7,7 @@ import { adjudicatePpoTimeLimit } from "../cpu/rlPpoAdjudication";
 import * as headless from "../cpu/headlessSimulation";
 import type { PpoEncodedSample, PpoUpdateScalarSample } from "../cpu/rlPpoPackedBatch";
 import type { PackedBcBatch } from "../cpu/rlBcPackedBatch";
+import * as battleAdvantage from "../engine/battleAdvantage";
 
 const step = (teamId: string, value = 0): PpoTrajectoryStep => ({
   decisionIndex: 0, turnNumber: 1, phase: "movement_input", selectedActionIndex: 0, selectedActionKey: "action",
@@ -115,7 +116,7 @@ afterEach(() => {
 });
 
 describe("Phase 12B PPO self-play", () => {
-  it("computes GAE independently per team and assigns only terminal victory rewards", () => {
+  it("keeps the beta-zero legacy reward, GAE and return path exact", () => {
     const steps = [step("team-1"), step("team-2"), step("team-1")];
     finalizeVictoryTrajectory(steps, { "team-1": 1, "team-2": -1 }, { gamma: 1, gaeLambda: 1 });
     expect(steps.map(({ reward, done }) => ({ reward, done }))).toEqual([
@@ -123,6 +124,74 @@ describe("Phase 12B PPO self-play", () => {
     ]);
     expect(steps.map((candidate) => candidate.advantage)).toEqual([1, -1, 1]);
     expect(steps.map((candidate) => candidate.return)).toEqual([1, -1, 1]);
+  });
+
+  it("keeps omitted and explicit beta zero rollout scalars exact without calling Battle Advantage", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const calculator = vi.spyOn(battleAdvantage, "calculateBattleAdvantage");
+    const omitted = fakeClient();
+    const explicit = fakeClient();
+    const common = {
+      seed: 7,
+      initialCheckpoint: "unused",
+      outputCheckpoint: "latest",
+      safetyMaxActions: 8,
+      replayChunkSize: 3,
+    };
+    await runPpoSelfPlaySmoke({
+      ...common,
+      client: omitted as unknown as PpoClientLike,
+    });
+    await runPpoSelfPlaySmoke({
+      ...common,
+      battleAdvantageShapingBeta: 0,
+      client: explicit as unknown as PpoClientLike,
+    });
+    const scalars = (client: ReturnType<typeof fakeClient>) => client.accumulatePacked.mock.calls
+      .flatMap(([samples]) => samples.map(({ oldLogProbability, advantage, return: value }) => ({
+        oldLogProbability,
+        advantage,
+        return: value,
+      })));
+    expect(scalars(explicit)).toEqual(scalars(omitted));
+    expect(calculator).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalled();
+  });
+
+  it("preserves dense shaping and adds the existing natural/Final Duel victory rewards", () => {
+    const steps = [step("team-1"), step("team-2"), step("team-1")];
+    steps[0].reward = 0.01;
+    steps[1].reward = -0.02;
+    steps[2].reward = -0.03;
+    finalizeVictoryTrajectory(
+      steps,
+      { "team-1": 1, "team-2": -1 },
+      { gamma: 0.99, gaeLambda: 0.95 },
+      { preserveExistingRewards: true },
+    );
+    expect(steps.map(({ reward, done }) => ({ reward, done }))).toEqual([
+      { reward: 0.01, done: false },
+      { reward: -1.02, done: true },
+      { reward: 0.97, done: true },
+    ]);
+  });
+
+  it("preserves dense shaping and adds existing safety placement rewards", () => {
+    const state = headless.createHeadlessInitialState(4);
+    state.bases.find((base) => base.id === "neutral-north")!.ownerTeamId = "team-1";
+    const adjudication = adjudicatePpoTimeLimit(state);
+    const baseRewards = Object.fromEntries(adjudication.map((team) => [team.teamId, team.reward]));
+    const steps = adjudication.map((team) => ({ ...step(team.teamId), reward: -0.01 }));
+    finalizeTerminalTrajectory(
+      steps,
+      baseRewards,
+      { gamma: 0.99, gaeLambda: 0.95 },
+      { preserveExistingRewards: true },
+    );
+    for (const entry of steps) {
+      expect(entry.reward).toBeCloseTo(baseRewards[entry.teamId] - 0.01);
+      expect(entry.done).toBe(true);
+    }
   });
 
   it.each([

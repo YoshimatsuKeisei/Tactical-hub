@@ -1,6 +1,7 @@
 import { runPpoSelfPlaySmoke } from "./rlPpoSelfPlay";
 import { PythonPpoClient } from "./pythonPpoClient";
 import { parseRlTorchDevice } from "./rlTorchDevice";
+import { parseBattleAdvantageShapingBeta } from "./rlPpoBattleAdvantageShaping";
 
 const args = process.argv.slice(2);
 if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
@@ -32,6 +33,7 @@ const result = await runPpoSelfPlaySmoke({
   retainTrajectory: args.includes("--retain-trajectory"),
   fastRlMovement: args.includes("--fast-rl-movement"),
   fastRlPhaseTransitions: args.includes("--fast-rl-phases"),
+  battleAdvantageShapingBeta: parseBattleAdvantageShapingBeta(args),
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4), gamma: numeric("--gamma", 0.99),
     gaeLambda: numeric("--gae-lambda", 0.95), clipEpsilon: numeric("--clip-epsilon", 0.2),

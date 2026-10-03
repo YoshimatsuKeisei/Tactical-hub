@@ -35,6 +35,7 @@ export type PpoAsyncRolloutProbeV8Input = {
   initialCheckpoint: string;
   resume?: string;
   hyperparameters?: Partial<PpoHyperparameters>;
+  battleAdvantageShapingBeta?: number;
   safetyMaxTurns?: number;
   safetyMaxActions?: number;
   memoryLogInterval?: number;
@@ -308,6 +309,7 @@ export async function runPpoAsyncRolloutProbeV8(
       firstGameSeed,
       featureSpec,
       hyperparameters,
+      battleAdvantageShapingBeta: input.battleAdvantageShapingBeta,
       safetyMaxTurns,
       safetyMaxActions,
       ...(continuousRecycle

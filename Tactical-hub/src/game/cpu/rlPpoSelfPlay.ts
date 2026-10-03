@@ -20,6 +20,12 @@ import {
   type PpoTrajectorySpoolStats,
 } from "./rlPpoTrajectorySpool";
 import type { GameState } from "../types";
+import {
+  beginPpoBattleAdvantageDecision,
+  createPpoBattleAdvantageShapingRuntime,
+  DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA,
+  trackPpoBattleAdvantageDecision,
+} from "./rlPpoBattleAdvantageShaping";
 
 export type PpoClientLike =
   Pick<PythonPpoClient, "start" | "act" | "beginUpdate" | "accumulatePacked" | "finishUpdate" | "save" | "close">
@@ -117,22 +123,28 @@ export function calculateTeamGae(steps: PpoTrajectoryStep[], gamma: number, gaeL
   return steps;
 }
 
-export function finalizeVictoryTrajectory(steps: PpoTrajectoryStep[], rewards: Record<string, number>, hyperparameters: Pick<PpoHyperparameters, "gamma" | "gaeLambda">) {
-  return finalizeTerminalTrajectory(steps, rewards, hyperparameters);
+type PpoTerminalFinalizeOptions = {
+  preserveExistingRewards: true;
+};
+
+export function finalizeVictoryTrajectory(steps: PpoTrajectoryStep[], rewards: Record<string, number>, hyperparameters: Pick<PpoHyperparameters, "gamma" | "gaeLambda">, options?: PpoTerminalFinalizeOptions) {
+  return finalizeTerminalTrajectory(steps, rewards, hyperparameters, options);
 }
 
 /** Training terminal only; the environment result remains untouched. */
-export function finalizeTerminalTrajectory(steps: PpoTrajectoryStep[], rewards: Record<string, number>, hyperparameters: Pick<PpoHyperparameters, "gamma" | "gaeLambda">) {
+export function finalizeTerminalTrajectory(steps: PpoTrajectoryStep[], rewards: Record<string, number>, hyperparameters: Pick<PpoHyperparameters, "gamma" | "gaeLambda">, options?: PpoTerminalFinalizeOptions) {
   const byTeam = new Map<string, PpoTrajectoryStep[]>();
   for (const step of steps) {
-    step.reward = 0; step.done = false;
+    if (!options?.preserveExistingRewards) step.reward = 0;
+    step.done = false;
     const teamSteps = byTeam.get(step.teamId) ?? [];
     teamSteps.push(step); byTeam.set(step.teamId, teamSteps);
   }
   for (const [teamId, teamSteps] of byTeam) {
     if (!teamSteps.length) continue;
     const last = teamSteps[teamSteps.length - 1];
-    last.reward = rewards[teamId] ?? 0;
+    if (options?.preserveExistingRewards) last.reward += rewards[teamId] ?? 0;
+    else last.reward = rewards[teamId] ?? 0;
     last.done = true;
     calculateTeamGae(teamSteps, hyperparameters.gamma, hyperparameters.gaeLambda);
   }
@@ -387,9 +399,12 @@ export async function runPpoSelfPlaySmoke(input: {
   retainTrajectory?: boolean;
   fastRlMovement?: boolean;
   fastRlPhaseTransitions?: boolean;
+  battleAdvantageShapingBeta?: number;
   client?: PpoClientLike;
 }) {
   const hyperparameters = { ...DEFAULT_PPO_HYPERPARAMETERS, ...input.hyperparameters };
+  const battleAdvantageShapingBeta = input.battleAdvantageShapingBeta
+    ?? DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA;
   const replayChunkSize = input.replayChunkSize ?? 8;
   const memoryLogInterval = input.memoryLogInterval ?? 500;
   if (!Number.isInteger(replayChunkSize) || replayChunkSize <= 0) throw new Error("replayChunkSize must be a positive integer");
@@ -439,6 +454,10 @@ export async function runPpoSelfPlaySmoke(input: {
       environment.reset(seed, 4);
       const encoderCache = createRlObservationEncoderCache();
       const trajectory: PpoTrajectoryStep[] = [];
+      const shapingRuntime = createPpoBattleAdvantageShapingRuntime(
+        battleAdvantageShapingBeta,
+        hyperparameters.gamma,
+      );
       const spoolPath = input.spoolTrajectory
         ? join(tmpdir(), `tactical-hub-ppo-${process.pid}-${seed}-${episodeIndex}.spool`)
         : undefined;
@@ -466,6 +485,11 @@ export async function runPpoSelfPlaySmoke(input: {
           if (!legal.length) { reason = "no_legal_actions"; break; }
           if (observation.turnNumber > (input.safetyMaxTurns ?? 1_000)) { reason = "safety_turn_limit"; break; }
           if (trajectory.length >= (input.safetyMaxActions ?? 100_000)) { reason = "safety_action_limit"; break; }
+          const shapingReward = beginPpoBattleAdvantageDecision(
+            shapingRuntime,
+            environment.getStateForValidation(),
+            actor,
+          );
           const encodedObservation = profiler.measure("rollout_encode_observation", () => encodeRlObservationV2(observation, encoderCache));
           const encodedActions = profiler.measure("rollout_encode_actions", () => encodeRlLegalActionsV2(observation, legal));
           mergeLegalActionCount += legal.filter((action) => action.actionType === "merge_infantry").length;
@@ -486,11 +510,13 @@ export async function runPpoSelfPlaySmoke(input: {
           }
           const before = environment.getProgressHash();
           profiler.measure("rollout_game_step", () => environment.stepWithoutObservation(selected.actionKey));
-          trajectory.push({
+          const step: PpoTrajectoryStep = {
             decisionIndex: trajectory.length, turnNumber: observation.turnNumber, phase: observation.phase,
             teamId: actor, selectedActionIndex: selected.actionIndex, selectedActionKey: selected.actionKey,
-            oldLogProbability: selected.logProbability, value: selected.value, reward: 0, done: false,
-          });
+            oldLogProbability: selected.logProbability, value: selected.value, reward: shapingReward, done: false,
+          };
+          trajectory.push(step);
+          trackPpoBattleAdvantageDecision(shapingRuntime, actor, step);
           if (spoolWriter) {
             spoolChunk.push({
               observation: encodedObservation,
@@ -537,14 +563,24 @@ export async function runPpoSelfPlaySmoke(input: {
         outcomeKind: "abnormal_truncated", reason: reason ?? result.endReason,
       };
       if (!reason && result.terminal && result.endReason === "victory" && result.winnerTeamId) {
-        finalizeVictoryTrajectory(trajectory, result.rewards, hyperparameters);
+        finalizeVictoryTrajectory(
+          trajectory,
+          result.rewards,
+          hyperparameters,
+          shapingRuntime ? { preserveExistingRewards: true } : undefined,
+        );
         summary.outcomeKind = "victory";
         completed.push({ ...summary, winnerTeamId: result.winnerTeamId });
       } else if (isPpoTimeLimitReason(reason) && !result.terminal && result.endReason === "ongoing") {
         summary.outcomeKind = "time_limit_adjudicated";
         summary.limitReason = reason;
         summary.adjudication = adjudicatePpoTimeLimit(environment.getStateForValidation());
-        finalizeTerminalTrajectory(trajectory, Object.fromEntries(summary.adjudication.map((team) => [team.teamId, team.reward])), hyperparameters);
+        finalizeTerminalTrajectory(
+          trajectory,
+          Object.fromEntries(summary.adjudication.map((team) => [team.teamId, team.reward])),
+          hyperparameters,
+          shapingRuntime ? { preserveExistingRewards: true } : undefined,
+        );
         adjudicated.push(summary);
       } else {
         truncated.push(summary);

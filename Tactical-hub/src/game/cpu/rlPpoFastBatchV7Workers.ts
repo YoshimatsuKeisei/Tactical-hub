@@ -42,6 +42,7 @@ export type PpoFastBatchV7WorkersInput = {
   bestCheckpoint?: string;
   resume?: string;
   hyperparameters?: Partial<PpoHyperparameters>;
+  battleAdvantageShapingBeta?: number;
   safetyMaxTurns?: number;
   safetyMaxActions?: number;
   replayChunkSize?: number;
@@ -235,6 +236,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       firstGameSeed,
       featureSpec,
       hyperparameters,
+      battleAdvantageShapingBeta: input.battleAdvantageShapingBeta,
       safetyMaxTurns,
       safetyMaxActions,
     });

@@ -16,6 +16,10 @@ import type {
   PpoDefeatDiagnosticEventV8,
   PpoDefeatEnvironmentSnapshotV8,
 } from "./rlPpoDefeatDiagnosticsV8";
+import {
+  DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA,
+  validateBattleAdvantageShapingBeta,
+} from "./rlPpoBattleAdvantageShaping";
 
 type RequestWithoutId =
   PpoRolloutWorkerV7Request extends infer Request
@@ -107,6 +111,7 @@ export class PpoRolloutWorkerV7Pool {
     firstGameSeed: number;
     featureSpec: RlFeatureSpecV2;
     hyperparameters: PpoHyperparameters;
+    battleAdvantageShapingBeta?: number;
     safetyMaxTurns: number;
     safetyMaxActions: number;
     autoRecycle?: boolean;
@@ -135,6 +140,10 @@ export class PpoRolloutWorkerV7Pool {
         "PPO V7 rollout recycleSeedStride must be a positive integer",
       );
     }
+    const battleAdvantageShapingBeta = validateBattleAdvantageShapingBeta(
+      input.battleAdvantageShapingBeta
+        ?? DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA,
+    );
 
     const effectiveWorkerCount = Math.min(
       input.workerCount,
@@ -273,6 +282,7 @@ export class PpoRolloutWorkerV7Pool {
               environments: assignments[handle.workerId],
               featureSpec: input.featureSpec,
               hyperparameters: input.hyperparameters,
+              battleAdvantageShapingBeta,
               safetyMaxTurns: input.safetyMaxTurns,
               safetyMaxActions: input.safetyMaxActions,
               ...(input.autoRecycle === undefined
