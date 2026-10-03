@@ -27,6 +27,10 @@ import type {
 } from "./rlPpoRolloutWorkerV7Messages";
 import { DEFAULT_BATTLE_ADVANTAGE_SHAPING_BETA } from "./rlPpoBattleAdvantageShaping";
 import { createPpoShapingDiagnostics } from "./rlPpoShapingDiagnostics";
+import {
+  countPpoEpisodeOutcomes,
+  isPpoLearnableOutcomeKind,
+} from "./rlPpoTerminalOutcome";
 
 type FastBatchRetentionRecord = {
   retentionId: string;
@@ -35,6 +39,22 @@ type FastBatchRetentionRecord = {
     decisionIndex: number;
   }>;
 };
+
+export function assertPpoFastBatchV7FinalizedConsistency(
+  item: PpoRolloutWorkerV7Finalized,
+) {
+  const learnable = isPpoLearnableOutcomeKind(item.summary.outcomeKind);
+  if (item.rollout && !learnable) {
+    throw new Error(
+      `PPO fast_batch_v7_workers received rollout for non-learnable env=${item.environmentIndex}`,
+    );
+  }
+  if (!item.rollout && learnable) {
+    throw new Error(
+      `PPO fast_batch_v7_workers missing learnable rollout env=${item.environmentIndex} outcome=${item.summary.outcomeKind}`,
+    );
+  }
+}
 
 export type PpoFastBatchV7WorkersInput = {
   seed: number;
@@ -68,11 +88,14 @@ export function createPpoFastBatchV7ShapingDiagnostics(input: {
           seed: item.rollout.seed,
           environmentIndex: item.environmentIndex,
           trajectory: item.rollout.trajectory,
-          baseRewards: item.summary.outcomeKind === "time_limit_adjudicated"
-            ? Object.fromEntries(
-                (item.summary.adjudication ?? []).map((team) => [team.teamId, team.reward]),
-              )
-            : item.summary.environmentResult.rewards,
+          baseRewards: item.baseRewards
+            ?? (item.summary.outcomeKind === "time_limit_adjudicated"
+              ? Object.fromEntries(
+                  (item.summary.adjudication ?? []).map(
+                    (team) => [team.teamId, team.reward],
+                  ),
+                )
+              : item.summary.environmentResult.rewards),
         }]
       : []),
   });
@@ -206,6 +229,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
     number,
     PpoReplayRollout
   >();
+  const baseRewardsByEnvironment = new Map<number, Record<string, number>>();
   let rolloutPool: PpoRolloutWorkerV7Pool | undefined;
 
   let totalDecisions = 0;
@@ -248,11 +272,15 @@ export async function runPpoFastBatchV7WorkersSmoke(
         item.environmentIndex,
         item.summary,
       );
+      assertPpoFastBatchV7FinalizedConsistency(item);
       if (item.rollout) {
         rolloutByEnvironment.set(
           item.environmentIndex,
           item.rollout,
         );
+        if (item.baseRewards) {
+          baseRewardsByEnvironment.set(item.environmentIndex, item.baseRewards);
+        }
       }
     }
   };
@@ -412,7 +440,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
     ) {
       throw new Error(
         "PPO fast_batch_v7_workers requires all 8 environments "
-        + "to produce learnable completed/adjudicated trajectories",
+        + "to produce learnable victory/draw/adjudicated trajectories",
       );
     }
 
@@ -584,15 +612,14 @@ export async function runPpoFastBatchV7WorkersSmoke(
       () => client.finishUpdate(learnableRollouts.length),
     );
 
-    const victoryEpisodeCount = summaries.filter(
-      (summary) => summary.outcomeKind === "victory",
-    ).length;
-    const adjudicatedEpisodeCount = summaries.filter(
-      (summary) => summary.outcomeKind === "time_limit_adjudicated",
-    ).length;
-    const truncatedEpisodeCount = summaries.filter(
-      (summary) => summary.outcomeKind === "abnormal_truncated",
-    ).length;
+    const {
+      victoryEpisodeCount,
+      adjudicatedEpisodeCount,
+      drawEpisodeCount,
+      truncatedEpisodeCount,
+    } = countPpoEpisodeOutcomes(
+      summaries.map((summary) => summary.outcomeKind),
+    );
 
     const metadata = {
       purpose: "phase_12b_worker_fused_advance",
@@ -607,6 +634,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       retentionRecordMode: "inference_batch",
       victoryEpisodeCount,
       adjudicatedEpisodeCount,
+      drawEpisodeCount,
       truncatedEpisodeCount,
       replayedSamples,
       validationWorkerCount,
@@ -640,6 +668,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
               environmentIndex,
               summary: summaryByEnvironment.get(environmentIndex)!,
               rollout: rolloutByEnvironment.get(environmentIndex),
+              baseRewards: baseRewardsByEnvironment.get(environmentIndex),
             }),
           ),
         })
@@ -660,6 +689,10 @@ export async function runPpoFastBatchV7WorkersSmoke(
       totalDecisions,
       totalSamples,
       summaries,
+      victoryEpisodeCount,
+      adjudicatedEpisodeCount,
+      drawEpisodeCount,
+      truncatedEpisodeCount,
       replayedSamples,
       validatedSamples,
       validationWorkerCount,

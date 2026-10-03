@@ -203,6 +203,72 @@ describe("Phase 12B PPO self-play", () => {
     expect(() => JSON.parse(JSON.stringify(shaped))).not.toThrow();
   });
 
+  it("learns, replays, updates, and counts an explicit Final Duel terminal draw", async () => {
+    const client = fakeClient();
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const apply = RlEnvironmentV2.prototype.stepWithoutObservation;
+    vi.spyOn(RlEnvironmentV2.prototype, "stepWithoutObservation")
+      .mockImplementation(function (this: RlEnvironmentV2, actionKey: string) {
+        apply.call(this, actionKey);
+        const state = this.getStateForValidation();
+        for (const team of state.teams) {
+          if (team.id === "team-3" || team.id === "team-4") {
+            team.status = "defeated";
+          }
+        }
+        state.finalDuel = {
+          active: false,
+          teamIds: ["team-1", "team-2"],
+          entryTurn: 120,
+          lastEvaluatedTurn: 169,
+          consecutiveAdvantageTurns: { "team-1": 0, "team-2": 0 },
+        };
+        state.gameResult = { reason: "final_duel_timeout_draw" };
+        return this.getResult();
+      });
+
+    const result = await runPpoSelfPlaySmoke({
+      seed: 7,
+      initialCheckpoint: "unused",
+      outputCheckpoint: "latest",
+      shapingDiagnostics: true,
+      client: client as unknown as PpoClientLike,
+    });
+
+    expect(result.completed).toEqual([]);
+    expect(result.adjudicated).toEqual([]);
+    expect(result.truncated).toEqual([]);
+    expect(result.draws).toHaveLength(1);
+    expect(result.draws[0]).toMatchObject({
+      outcomeKind: "terminal_draw",
+      environmentResult: {
+        terminal: true,
+        resultReason: "final_duel_timeout_draw",
+        winnerTeamId: undefined,
+      },
+    });
+    expect(result.drawEpisodeCount).toBe(1);
+    expect(client.beginUpdate).toHaveBeenCalledWith(1);
+    expect(client.accumulatePacked).toHaveBeenCalled();
+    expect(client.finishUpdate).toHaveBeenCalledWith(1);
+    expect(client.save).toHaveBeenCalledWith("latest", expect.objectContaining({
+      victoryEpisodeCount: 0,
+      adjudicatedEpisodeCount: 0,
+      drawEpisodeCount: 1,
+      truncatedEpisodeCount: 0,
+      replayedSamples: 1,
+    }));
+    expect(result.shapingDiagnostics).toMatchObject({
+      reward: {
+        baseReward: { sum: 0, finiteCount: 1 },
+        shapingReward: { sum: 0, finiteCount: 1 },
+        trainingReward: { sum: 0, finiteCount: 1 },
+      },
+      advantage: { count: 1, finiteCount: 1 },
+      return: { count: 1, finiteCount: 1 },
+    });
+  });
+
   it("preserves dense shaping and adds the existing natural/Final Duel victory rewards", () => {
     const steps = [step("team-1"), step("team-2"), step("team-1")];
     steps[0].reward = 0.01;

@@ -27,6 +27,13 @@ import {
   trackPpoBattleAdvantageDecision,
 } from "./rlPpoBattleAdvantageShaping";
 import { createPpoShapingDiagnostics } from "./rlPpoShapingDiagnostics";
+import {
+  classifyPpoGameTerminalOutcome,
+  countPpoEpisodeOutcomes,
+  createFinalDuelDrawPpoRewards,
+  type PpoEpisodeOutcomeKind,
+  type PpoLearnableOutcomeKind,
+} from "./rlPpoTerminalOutcome";
 
 export type PpoClientLike =
   Pick<PythonPpoClient, "start" | "act" | "beginUpdate" | "accumulatePacked" | "finishUpdate" | "save" | "close">
@@ -62,7 +69,7 @@ export type PpoTrajectoryStep = {
 
 export type PpoReplayRollout = {
   seed: number;
-  outcomeKind: "victory" | "time_limit_adjudicated";
+  outcomeKind: PpoLearnableOutcomeKind;
   limitReason?: PpoTimeLimitReason;
   adjudication?: PpoTeamAdjudication[];
   terminal: boolean;
@@ -103,7 +110,7 @@ type PpoEpisodeSummary = {
   decisionCount: number;
   environmentResult: RlResult;
   finalStateHash: string;
-  outcomeKind: PpoReplayRollout["outcomeKind"] | "abnormal_truncated";
+  outcomeKind: PpoEpisodeOutcomeKind;
   reason: string;
   limitReason?: PpoTimeLimitReason;
   adjudication?: PpoTeamAdjudication[];
@@ -440,7 +447,11 @@ export async function runPpoSelfPlaySmoke(input: {
   const learnableRollouts: PpoReplayRollout[] = [];
   const completed: Array<PpoEpisodeSummary & { winnerTeamId: string }> = [];
   const adjudicated: PpoEpisodeSummary[] = [];
+  const draws: PpoEpisodeSummary[] = [];
   const truncated: PpoEpisodeSummary[] = [];
+  const terminalBaseRewardsBySeed = input.shapingDiagnostics
+    ? new Map<number, Record<string, number>>()
+    : undefined;
   let mergeLegalActionCount = 0;
   try {
     const rolloutPhaseStart = phaseNow();
@@ -564,7 +575,8 @@ export async function runPpoSelfPlaySmoke(input: {
         seed, decisionCount: trajectory.length, environmentResult: result, finalStateHash,
         outcomeKind: "abnormal_truncated", reason: reason ?? result.endReason,
       };
-      if (!reason && result.terminal && result.endReason === "victory" && result.winnerTeamId) {
+      const terminalOutcome = classifyPpoGameTerminalOutcome(result, reason);
+      if (terminalOutcome === "victory") {
         finalizeVictoryTrajectory(
           trajectory,
           result.rewards,
@@ -572,7 +584,21 @@ export async function runPpoSelfPlaySmoke(input: {
           shapingRuntime ? { preserveExistingRewards: true } : undefined,
         );
         summary.outcomeKind = "victory";
-        completed.push({ ...summary, winnerTeamId: result.winnerTeamId });
+        terminalBaseRewardsBySeed?.set(seed, result.rewards);
+        completed.push({ ...summary, winnerTeamId: result.winnerTeamId! });
+      } else if (terminalOutcome === "terminal_draw") {
+        const drawRewards = createFinalDuelDrawPpoRewards(
+          environment.getStateForValidation(),
+        );
+        finalizeTerminalTrajectory(
+          trajectory,
+          drawRewards,
+          hyperparameters,
+          shapingRuntime ? { preserveExistingRewards: true } : undefined,
+        );
+        summary.outcomeKind = "terminal_draw";
+        terminalBaseRewardsBySeed?.set(seed, drawRewards);
+        draws.push(summary);
       } else if (isPpoTimeLimitReason(reason) && !result.terminal && result.endReason === "ongoing") {
         summary.outcomeKind = "time_limit_adjudicated";
         summary.limitReason = reason;
@@ -582,6 +608,10 @@ export async function runPpoSelfPlaySmoke(input: {
           Object.fromEntries(summary.adjudication.map((team) => [team.teamId, team.reward])),
           hyperparameters,
           shapingRuntime ? { preserveExistingRewards: true } : undefined,
+        );
+        terminalBaseRewardsBySeed?.set(
+          seed,
+          Object.fromEntries(summary.adjudication.map((team) => [team.teamId, team.reward])),
         );
         adjudicated.push(summary);
       } else {
@@ -616,7 +646,7 @@ export async function runPpoSelfPlaySmoke(input: {
     }
     phaseRecord("rolloutMs", rolloutPhaseStart);
     const totalSamples = learnableRollouts.reduce((sum, rollout) => sum + rollout.trajectory.length, 0);
-    if (!learnableRollouts.length || !totalSamples) throw new Error("PPO Smoke produced no learnable trajectory; victory or time-limit adjudication with samples is required; abnormal truncated episodes are excluded from replay and updates");
+    if (!learnableRollouts.length || !totalSamples) throw new Error("PPO Smoke produced no learnable trajectory; victory, terminal draw, or time-limit adjudication with samples is required; abnormal truncated episodes are excluded from replay and updates");
     const beginUpdatePhaseStart = phaseNow();
     await profiler.measureAsync("begin_update", () => client.beginUpdate(totalSamples));
     phaseRecord("beginUpdateMs", beginUpdatePhaseStart);
@@ -673,7 +703,12 @@ export async function runPpoSelfPlaySmoke(input: {
     const update = await profiler.measureAsync("finish_update", () => client.finishUpdate(learnableRollouts.length));
     phaseRecord("finishUpdateMs", finishUpdatePhaseStart);
     memorySnapshot("ppo_update_end", replayedSamples);
-    const episodeCounts = { victoryEpisodeCount: completed.length, adjudicatedEpisodeCount: adjudicated.length, truncatedEpisodeCount: truncated.length };
+    const episodeCounts = countPpoEpisodeOutcomes([
+      ...completed,
+      ...adjudicated,
+      ...draws,
+      ...truncated,
+    ].map((summary) => summary.outcomeKind));
     const metadata = { purpose: "phase_12b_smoke", ...episodeCounts, replayedSamples };
     const checkpointSavePhaseStart = phaseNow();
     const saved = await profiler.measureAsync("checkpoint_save", () => client.save(input.outputCheckpoint, metadata));
@@ -739,7 +774,7 @@ export async function runPpoSelfPlaySmoke(input: {
           battleAdvantageShapingBeta,
           gamma: hyperparameters.gamma,
           rollouts: learnableRollouts.map((rollout) => {
-            const summary = [...completed, ...adjudicated]
+            const summary = [...completed, ...adjudicated, ...draws]
               .find((candidate) => candidate.seed === rollout.seed);
             if (!summary) {
               throw new Error(`Missing PPO diagnostic summary for seed ${rollout.seed}`);
@@ -747,18 +782,15 @@ export async function runPpoSelfPlaySmoke(input: {
             return {
               seed: rollout.seed,
               trajectory: rollout.trajectory,
-              baseRewards: summary.outcomeKind === "time_limit_adjudicated"
-                ? Object.fromEntries(
-                    (summary.adjudication ?? []).map((team) => [team.teamId, team.reward]),
-                  )
-                : summary.environmentResult.rewards,
+              baseRewards: terminalBaseRewardsBySeed?.get(rollout.seed)
+                ?? summary.environmentResult.rewards,
             };
           }),
         })
       : undefined;
     return {
       featureSpec,
-      completed, adjudicated, truncated, ...episodeCounts,
+      completed, adjudicated, draws, truncated, ...episodeCounts,
       mergeLegalActionCount, replayedSamples, trajectorySpoolStats, trajectoryRetentionStats, phaseProfile,
       update, saved, bestSaved, selectedDevice: initialized.selectedDevice,
       ...(shapingDiagnostics ? { shapingDiagnostics } : {}),

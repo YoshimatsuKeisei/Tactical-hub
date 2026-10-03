@@ -9,6 +9,10 @@ import type {
   PpoDefeatDiagnosticEventV8,
   PpoDefeatEnvironmentSnapshotV8,
 } from "./rlPpoDefeatDiagnosticsV8";
+import {
+  isPpoLearnableOutcomeKind,
+  type PpoEpisodeOutcomeKind,
+} from "./rlPpoTerminalOutcome";
 
 export type PpoRolloutWorkerV7EpisodeSummary = {
   environmentIndex: number;
@@ -16,7 +20,7 @@ export type PpoRolloutWorkerV7EpisodeSummary = {
   decisionCount: number;
   environmentResult: RlResult;
   finalStateHash: string;
-  outcomeKind: PpoReplayRollout["outcomeKind"] | "abnormal_truncated";
+  outcomeKind: PpoEpisodeOutcomeKind;
   reason: string;
   limitReason?: PpoTimeLimitReason;
   adjudication?: PpoTeamAdjudication[];
@@ -25,7 +29,29 @@ export type PpoRolloutWorkerV7Finalized = {
   environmentIndex: number;
   summary: PpoRolloutWorkerV7EpisodeSummary;
   rollout?: PpoReplayRollout;
+  /** Runtime-only terminal reward separation for optional diagnostics. */
+  baseRewards?: Record<string, number>;
 };
+
+export function createPpoRolloutWorkerV7ReplayRollout(input: {
+  summary: PpoRolloutWorkerV7EpisodeSummary;
+  trajectory: PpoReplayRollout["trajectory"];
+}): PpoReplayRollout | undefined {
+  if (!isPpoLearnableOutcomeKind(input.summary.outcomeKind)) return undefined;
+  const result = input.summary.environmentResult;
+  return {
+    seed: input.summary.seed,
+    outcomeKind: input.summary.outcomeKind,
+    limitReason: input.summary.limitReason,
+    adjudication: input.summary.adjudication,
+    terminal: result.terminal,
+    endReason: result.endReason,
+    winnerTeamId: result.winnerTeamId,
+    loserTeamIds: result.loserTeamIds,
+    finalStateHash: input.summary.finalStateHash,
+    trajectory: input.trajectory,
+  };
+}
 export type PpoRolloutWorkerV7PreparedGroup = {
   environmentIndices: number[];
   decisionIndices: number[];

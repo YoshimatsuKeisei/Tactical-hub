@@ -22,6 +22,7 @@ import type {
   PpoRolloutWorkerV7Response,
   PpoRolloutWorkerV7Timing,
 } from "./rlPpoRolloutWorkerV7Messages";
+import { createPpoRolloutWorkerV7ReplayRollout } from "./rlPpoRolloutWorkerV7Messages";
 import type { PpoHyperparameters } from "./pythonPpoClient";
 import { packPpoActBatchInput } from "./rlPpoPackedBatch";
 import { toTransferablePackedBcBatch } from "./rlPpoWorkerPackedV7";
@@ -39,6 +40,10 @@ import {
   trackPpoBattleAdvantageDecision,
   type PpoBattleAdvantageShapingRuntime,
 } from "./rlPpoBattleAdvantageShaping";
+import {
+  classifyPpoGameTerminalOutcome,
+  createFinalDuelDrawPpoRewards,
+} from "./rlPpoTerminalOutcome";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -193,13 +198,11 @@ async function finalizeSlot(
     outcomeKind: "abnormal_truncated",
     reason: reason ?? result.endReason,
   };
+  let baseRewards: Record<string, number> | undefined;
+  const terminalOutcome = classifyPpoGameTerminalOutcome(result, reason);
 
-  if (
-    !reason
-    && result.terminal
-    && result.endReason === "victory"
-    && result.winnerTeamId
-  ) {
+  if (terminalOutcome === "victory") {
+    baseRewards = result.rewards;
     finalizeVictoryTrajectory(
       slot.trajectory,
       result.rewards,
@@ -207,6 +210,17 @@ async function finalizeSlot(
       slot.shapingRuntime ? { preserveExistingRewards: true } : undefined,
     );
     summary.outcomeKind = "victory";
+  } else if (terminalOutcome === "terminal_draw") {
+    baseRewards = createFinalDuelDrawPpoRewards(
+      slot.environment.getStateForValidation(),
+    );
+    finalizeTerminalTrajectory(
+      slot.trajectory,
+      baseRewards,
+      hyperparameters,
+      slot.shapingRuntime ? { preserveExistingRewards: true } : undefined,
+    );
+    summary.outcomeKind = "terminal_draw";
   } else if (
     isPpoTimeLimitReason(reason)
     && !result.terminal
@@ -217,14 +231,12 @@ async function finalizeSlot(
     summary.adjudication = adjudicatePpoTimeLimit(
       slot.environment.getStateForValidation(),
     );
+    baseRewards = Object.fromEntries(
+      summary.adjudication.map((team) => [team.teamId, team.reward]),
+    );
     finalizeTerminalTrajectory(
       slot.trajectory,
-      Object.fromEntries(
-        summary.adjudication.map((team) => [
-          team.teamId,
-          team.reward,
-        ]),
-      ),
+      baseRewards,
       hyperparameters,
       slot.shapingRuntime ? { preserveExistingRewards: true } : undefined,
     );
@@ -233,20 +245,13 @@ async function finalizeSlot(
   const finalized: PpoRolloutWorkerV7Finalized = {
     environmentIndex: slot.environmentIndex,
     summary,
-    rollout: summary.outcomeKind === "abnormal_truncated"
-      ? undefined
-      : {
-          seed: slot.seed,
-          outcomeKind: summary.outcomeKind,
-          limitReason: summary.limitReason,
-          adjudication: summary.adjudication,
-          terminal: result.terminal,
-          endReason: result.endReason,
-          winnerTeamId: result.winnerTeamId,
-          loserTeamIds: result.loserTeamIds,
-          finalStateHash,
-          trajectory: slot.trajectory,
-        },
+    baseRewards: summary.outcomeKind === "terminal_draw"
+      ? baseRewards
+      : undefined,
+    rollout: createPpoRolloutWorkerV7ReplayRollout({
+      summary,
+      trajectory: slot.trajectory,
+    }),
   };
 
   if (autoRecycle && slot.pending) {
