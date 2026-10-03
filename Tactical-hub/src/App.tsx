@@ -15,6 +15,7 @@ import { createVisualCpuPolicyRouter, isCpuController } from "./game/cpu/cpuPoli
 import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
 import { HttpBrowserBcInferenceClient } from "./game/cpu/browserBcClient";
 import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
+import { BattleAdvantageGauge } from "./components/BattleAdvantageGauge";
 
 export default function App() {
   const [state, setState] = useState(createInitialGameState);
@@ -181,6 +182,7 @@ export default function App() {
             <span>フェーズ <strong>{state.phase}</strong></span>
             {state.currentMovementTeamId ? <span>移動担当 <strong>{state.currentMovementTeamId}</strong></span> : null}
           </div>
+          <BattleAdvantageGauge state={visibleState} />
         </header>
         <div className="board-scroll">
           <BoardView

@@ -321,6 +321,7 @@ p {
 
 .turn-phase-banner {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 24px;
   padding: 10px 14px;
@@ -329,6 +330,81 @@ p {
   border-radius: 10px;
   background: #f8fafb;
   font-size: 16px;
+}
+
+.battle-advantage {
+  padding: 9px 12px 11px;
+  margin-top: 8px;
+  border: 1px solid #c9d0d6;
+  border-radius: 10px;
+  background: #f8fafb;
+}
+
+.battle-advantage-summary {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 7px;
+}
+
+.battle-advantage-summary h2 {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.battle-advantage-legend {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.battle-advantage-legend-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.battle-advantage-swatch {
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(27, 29, 34, .28);
+  border-radius: 2px;
+}
+
+.battle-advantage-team-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.battle-advantage-bar {
+  display: flex;
+  width: 100%;
+  height: 16px;
+  overflow: hidden;
+  border: 1px solid #aeb8c2;
+  border-radius: 5px;
+  background: #e3e8ec;
+}
+
+.battle-advantage-segment {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.battle-advantage-segment + .battle-advantage-segment {
+  border-left: 1px solid rgba(255, 255, 255, .75);
+}
+
+.battle-advantage-empty {
+  margin: 0;
+  color: #596574;
+  font-size: 12px;
 }
 
 .status-grid {
@@ -501,6 +577,22 @@ pre {
   .debug-panel {
     border-left: 0;
     border-top: 1px solid #c9d0d6;
+  }
+}
+
+@media (max-width: 600px) {
+  .turn-phase-banner {
+    gap: 5px 14px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .battle-advantage-summary {
+    align-items: start;
+  }
+
+  .battle-advantage-legend {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 .tile.construction-preview::after {
