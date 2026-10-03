@@ -6,6 +6,7 @@ import { getKingCampaign, recordKingDamage } from "./kingCampaign";
 import { resolveKingDefeats, type DefeatedKingPlan } from "./defeat";
 import { beginMovementPhase, beginMovementPhaseInPlaceForRl } from "./movement";
 import { isHeavyInfantry } from "./heavyInfantry";
+import { syncBattleRoyaleFinalDuel } from "./finalDuel";
 
 const ORTHOGONAL = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 const key = (cell: BoardCoord) => tileKey(cell.x, cell.y);
@@ -471,6 +472,7 @@ function resolveStrategistActionsInternal(
     next.logs.push({ id: `log-construction-reset-${next.logs.length}`, turnNumber: next.turnNumber, type: "construction", message: `${intent.teamId} ${intent.strategistUnitId} reset ${construction.kind}; available turn ${next.turnNumber + 5}.`, relatedIds: [construction.id, intent.strategistUnitId] });
   }
   resolveBridgeFloods(next, bridgeResets, rng);
+  syncBattleRoyaleFinalDuel(next);
   const placements = intents.filter((entry) => entry.action.startsWith("place_"));
   const conflicts = conflictGroups(placements);
   for (const intent of placements) {

@@ -281,6 +281,25 @@ export type GameConfig = {
   mapId: string;
 };
 
+export type BattleRoyaleFinalDuelState = {
+  active: boolean;
+  teamIds: [string, string];
+  entryTurn: number;
+  consecutiveAdvantageTurns: Record<string, number>;
+  lastEvaluatedTurn?: number;
+};
+
+export type GameResultReason =
+  | "natural_victory"
+  | "final_duel_consecutive_advantage"
+  | "final_duel_timeout_advantage"
+  | "final_duel_timeout_draw";
+
+export type StoredGameResult = {
+  reason: Exclude<GameResultReason, "natural_victory">;
+  winnerTeamId?: string;
+};
+
 export type GameState = {
   config: GameConfig;
   map: BoardMap;
@@ -312,4 +331,8 @@ export type GameState = {
   /** Present only while the current immediate-movement team is acting. */
   movementDefendedBaseIdsAtTeamStart?: string[];
   ninjaRevealStates?: NinjaRevealState[];
+  /** Current battle-royale final duel, once the field has narrowed to two teams. */
+  finalDuel?: BattleRoyaleFinalDuelState;
+  /** Stored only for terminal results that are not represented by team defeat status. */
+  gameResult?: StoredGameResult;
 };

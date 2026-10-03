@@ -31,6 +31,7 @@ import { defeatTeamsWithoutBases } from "./defeat";
 import { resolveTeamTeleports } from "./teleport";
 import { isTeamProductionPending } from "./productionSchedule";
 import { createTeamVisibleState, isUnitVisibleToTeam, isWaterNinja, revealNinjasToEachOther } from "../visibility";
+import { resolveBattleRoyaleFinalDuelTurnEnd, syncBattleRoyaleFinalDuel } from "./finalDuel";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -717,6 +718,7 @@ function resolveCurrentTeamMovement(
     }
   }
   defeatTeamsWithoutBases(next);
+  syncBattleRoyaleFinalDuel(next);
   clearInvalidRetreatTargets(next);
   delete next.movementDefendedBaseIdsAtTeamStart;
   next.movementCompletedTeamIds = [...new Set([...next.movementCompletedTeamIds, teamId])];
@@ -736,6 +738,7 @@ function resolveCurrentTeamMovement(
   }
 
   next.currentMovementTeamId = undefined;
+  const completedTurn = next.turnNumber;
   next.unitTurnFlags = [];
   next.turnNumber += 1;
   next.turnState.turnNumber = next.turnNumber;
@@ -750,6 +753,7 @@ function resolveCurrentTeamMovement(
     next.phase = "reward_placement";
   } else next.phase = "attack_input";
   next.turnState.phase = next.phase;
+  resolveBattleRoyaleFinalDuelTurnEnd(next, completedTurn);
   return next;
 }
 

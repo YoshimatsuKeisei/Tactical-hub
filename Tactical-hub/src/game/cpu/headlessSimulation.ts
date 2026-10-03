@@ -8,6 +8,8 @@ import { withLegalProfileSink } from "./legalEnumerationProfile";
 import { createProfiledRandomCpuPolicy, getRandomCpuDecision } from "./randomCpuPolicy";
 import { getCpuDecisionActionKey } from "./rlEnvironment";
 import { createCpuRuntime, type CpuActionLog, type CpuDecision, type CpuPolicy, type CpuRuntime, type CpuTeamSettings } from "./types";
+import { getGameTerminalResult } from "../engine/finalDuel";
+import type { GameResultReason } from "../types";
 
 export type HeadlessEndReason = "victory" | "turn_limit" | "exception" | "invariant_violation" | "phase_stall" | "action_limit";
 export type HeadlessMode = "debug" | "sweep" | "training";
@@ -38,6 +40,7 @@ export type HeadlessMatchResult = {
   participantCount: number;
   endReason: HeadlessEndReason;
   winnerTeamId?: string;
+  resultReason?: GameResultReason;
   endTurn: number;
   phase: GameState["phase"];
   currentMovementTeamId?: string;
@@ -262,11 +265,11 @@ function updateActionHash(hash: number, decision: CpuDecision) {
 }
 
 function result(options: HeadlessMatchOptions, state: GameState, runtime: CpuRuntime, endReason: HeadlessEndReason, actionHash: number, invariantCheckCount: number, profile: HeadlessProfile | undefined, legalEnumerationBreakdown: LegalEnumerationBreakdown | undefined, profiling: HeadlessProfiling | undefined, trace: HeadlessTraceEntry[] | undefined, violations: string[] = [], error?: string): HeadlessMatchResult {
-  const active = state.teams.filter((team) => !team.isNeutral && team.status === "active");
+  const terminalResult = getGameTerminalResult(state);
   const mode = options.mode ?? "debug";
   const failed = !["victory", "turn_limit"].includes(endReason);
   const recentActions = mode === "debug" || (mode === "sweep" && failed) ? runtime.logs.slice(-(options.historyLimit ?? 50)) : undefined;
-  return { seed: options.seed, participantCount: options.participantCount, endReason, winnerTeamId: active.length === 1 ? active[0].id : undefined, endTurn: state.turnNumber, phase: state.phase, currentMovementTeamId: state.currentMovementTeamId, actionCount: runtime.appliedStepCount, actionSequenceHash: actionHash.toString(16).padStart(8, "0"), violations, error, recentActions, invariantCheckCount, profile, legalEnumerationBreakdown, profiling, trace, finalState: state };
+  return { seed: options.seed, participantCount: options.participantCount, endReason, winnerTeamId: endReason === "victory" ? terminalResult.winnerTeamId : undefined, resultReason: endReason === "victory" ? terminalResult.resultReason : undefined, endTurn: state.turnNumber, phase: state.phase, currentMovementTeamId: state.currentMovementTeamId, actionCount: runtime.appliedStepCount, actionSequenceHash: actionHash.toString(16).padStart(8, "0"), violations, error, recentActions, invariantCheckCount, profile, legalEnumerationBreakdown, profiling, trace, finalState: state };
 }
 
 export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchResult {
@@ -325,14 +328,13 @@ export function runHeadlessMatch(options: HeadlessMatchOptions): HeadlessMatchRe
     return built;
   };
   try {
-    if (state.teams.filter((team) => !team.isNeutral && team.status === "active").length <= 1) return finish("victory");
+    if (getGameTerminalResult(state).terminal) return finish("victory");
     if (mode !== "training") {
       const initialViolations = inspect();
       if (initialViolations.length) return finish("invariant_violation", initialViolations);
     }
     while (true) {
-      const active = state.teams.filter((team) => !team.isNeutral && team.status === "active");
-      if (active.length <= 1) return finish("victory");
+      if (getGameTerminalResult(state).terminal) return finish("victory");
       if (state.turnNumber > options.maxTurns) return finish("turn_limit");
       if (runtime.appliedStepCount >= (options.maxActions ?? 100_000)) return finish("action_limit", [], `match action limit reached`);
       const phaseKey = `${state.turnNumber}:${state.phase}:${state.currentMovementTeamId ?? "-"}`;

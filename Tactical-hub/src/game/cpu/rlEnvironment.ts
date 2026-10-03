@@ -14,6 +14,8 @@ import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings } from "./type
 import { createTeamVisibleState } from "../visibility";
 import { createCpuRuntime } from "./types";
 import { getHeavyInfantryMergeCandidates } from "../engine/heavyInfantry";
+import { getGameTerminalResult } from "../engine/finalDuel";
+import type { GameResultReason } from "../types";
 
 export type RlActionType = CpuDecision["kind"];
 export type RlLegalAction = {
@@ -72,6 +74,7 @@ export type RlResult = {
   winnerTeamId?: string;
   loserTeamIds: string[];
   endReason: "ongoing" | "victory" | "stopped";
+  resultReason?: GameResultReason;
   actionCount: number;
   rewards: Record<string, number>;
 };
@@ -402,15 +405,19 @@ export class RlEnvironment {
     };
   }
 
-  isTerminal() { return activeTeamIds(this.state).length <= 1 || Boolean(this.runtime.stoppedReason); }
+  isTerminal() { return getGameTerminalResult(this.state).terminal || Boolean(this.runtime.stoppedReason); }
 
   getResult(): RlResult {
-    const active = activeTeamIds(this.state);
+    const terminalResult = getGameTerminalResult(this.state);
+    const finalDuelLosers = terminalResult.winnerTeamId && terminalResult.resultReason?.startsWith("final_duel_")
+      ? this.state.teams.filter((team) => !team.isNeutral && team.id !== terminalResult.winnerTeamId).map((team) => team.id)
+      : undefined;
     const basic = {
       terminal: this.isTerminal(),
-      winnerTeamId: active.length === 1 ? active[0] : undefined,
-      loserTeamIds: this.state.teams.filter((team) => !team.isNeutral && team.status !== "active").map((team) => team.id),
-      endReason: (this.runtime.stoppedReason ? "stopped" : active.length <= 1 ? "victory" : "ongoing") as RlResult["endReason"],
+      winnerTeamId: terminalResult.winnerTeamId,
+      loserTeamIds: finalDuelLosers ?? this.state.teams.filter((team) => !team.isNeutral && team.status !== "active").map((team) => team.id),
+      endReason: (this.runtime.stoppedReason ? "stopped" : terminalResult.terminal ? "victory" : "ongoing") as RlResult["endReason"],
+      resultReason: this.runtime.stoppedReason ? undefined : terminalResult.resultReason,
       actionCount: this.runtime.appliedStepCount,
     };
     return { ...basic, rewards: this.rewardFunction(this.state, basic) };

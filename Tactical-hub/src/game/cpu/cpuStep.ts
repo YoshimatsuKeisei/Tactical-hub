@@ -55,6 +55,7 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
   const cloneStarted = instrumentation?.onRuntimeClone ? performance.now() : 0;
   const runtime = structuredClone(sourceRuntime) as CpuRuntime;
   instrumentation?.onRuntimeClone?.(performance.now() - cloneStarted);
+  if (state.gameResult) return { state, runtime, applied: false };
   syncCpuContext(runtime, state);
   if (runtime.stoppedReason) return { state, runtime, applied: false };
   if (runtime.appliedStepCount >= runtime.maxAppliedSteps) {

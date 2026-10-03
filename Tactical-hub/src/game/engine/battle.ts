@@ -21,6 +21,7 @@ import { isLegalProfilingEnabled, measureLegalSegment } from "../cpu/legalEnumer
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "./defeat";
 import { isHeavyInfantry } from "./heavyInfantry";
 import { isUnitVisibleToTeam } from "../visibility";
+import { syncBattleRoyaleFinalDuel } from "./finalDuel";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -780,6 +781,7 @@ function resolveBattleInternal(
     captured = completeSiegeCapture(next, fallen.siege, fallen.candidateTeamIds, "annihilation", rng) || captured;
   }
   defeatTeamsWithoutBases(next, kingDefeatedTeamIds);
+  syncBattleRoyaleFinalDuel(next);
   next.unitTurnFlags = next.unitTurnFlags.map((flag) => {
     if (!flag.retreatEligible) return flag;
     const unit = next.units.find((candidate) => candidate.id === flag.unitId);
