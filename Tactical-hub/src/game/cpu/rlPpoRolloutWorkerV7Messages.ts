@@ -13,6 +13,7 @@ import {
   isPpoLearnableOutcomeKind,
   type PpoEpisodeOutcomeKind,
 } from "./rlPpoTerminalOutcome";
+import type { PpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
 
 export type PpoRolloutWorkerV7EpisodeSummary = {
   environmentIndex: number;
@@ -20,6 +21,7 @@ export type PpoRolloutWorkerV7EpisodeSummary = {
   decisionCount: number;
   environmentResult: RlResult;
   finalStateHash: string;
+  turnDiagnostics: PpoTurnDiagnostics;
   outcomeKind: PpoEpisodeOutcomeKind;
   reason: string;
   limitReason?: PpoTimeLimitReason;

@@ -44,6 +44,7 @@ import {
   classifyPpoGameTerminalOutcome,
   createFinalDuelDrawPpoRewards,
 } from "./rlPpoTerminalOutcome";
+import { createPpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -189,12 +190,16 @@ async function finalizeSlot(
   }
 
   const finalStateHash = slot.environment.getStateHash();
+  const turnDiagnostics = createPpoTurnDiagnostics(
+    slot.environment.getStateForValidation(),
+  );
   const summary: PpoRolloutWorkerV7Finalized["summary"] = {
     environmentIndex: slot.environmentIndex,
     seed: slot.seed,
     decisionCount: slot.trajectory.length,
     environmentResult: result,
     finalStateHash,
+    turnDiagnostics,
     outcomeKind: "abnormal_truncated",
     reason: reason ?? result.endReason,
   };

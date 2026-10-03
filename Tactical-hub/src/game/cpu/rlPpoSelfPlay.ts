@@ -34,6 +34,10 @@ import {
   type PpoEpisodeOutcomeKind,
   type PpoLearnableOutcomeKind,
 } from "./rlPpoTerminalOutcome";
+import {
+  createPpoTurnDiagnostics,
+  type PpoTurnDiagnostics,
+} from "./rlPpoTurnDiagnostics";
 
 export type PpoClientLike =
   Pick<PythonPpoClient, "start" | "act" | "beginUpdate" | "accumulatePacked" | "finishUpdate" | "save" | "close">
@@ -110,6 +114,7 @@ type PpoEpisodeSummary = {
   decisionCount: number;
   environmentResult: RlResult;
   finalStateHash: string;
+  turnDiagnostics: PpoTurnDiagnostics;
   outcomeKind: PpoEpisodeOutcomeKind;
   reason: string;
   limitReason?: PpoTimeLimitReason;
@@ -571,8 +576,12 @@ export async function runPpoSelfPlaySmoke(input: {
       }
       memorySnapshot("rollout_end", trajectory.length);
       const finalStateHash = environment.getStateHash();
+      const turnDiagnostics = createPpoTurnDiagnostics(
+        environment.getStateForValidation(),
+      );
       const summary: PpoEpisodeSummary = {
         seed, decisionCount: trajectory.length, environmentResult: result, finalStateHash,
+        turnDiagnostics,
         outcomeKind: "abnormal_truncated", reason: reason ?? result.endReason,
       };
       const terminalOutcome = classifyPpoGameTerminalOutcome(result, reason);

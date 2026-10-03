@@ -83,6 +83,10 @@ function workerSummary(
     decisionCount: 1,
     environmentResult: result(),
     finalStateHash: "draw-state",
+    turnDiagnostics: {
+      finalStateTurnNumber: 170,
+      defeatedTeamTurns: {},
+    },
     outcomeKind,
     reason: "victory",
   };
