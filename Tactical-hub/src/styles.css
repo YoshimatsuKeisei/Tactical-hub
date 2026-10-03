@@ -13,8 +13,121 @@ body {
   margin: 0;
 }
 
-button {
+button,
+select {
   font: inherit;
+}
+
+.menu-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: #e9edf0;
+}
+
+.menu-card {
+  width: min(100%, 520px);
+  padding: 28px;
+  border: 1px solid #c7d0d8;
+  border-radius: 14px;
+  background: #f8fafb;
+  box-shadow: 0 16px 40px rgba(37, 51, 66, .1);
+}
+
+.menu-card h1 {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.menu-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.home-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.menu-button {
+  min-height: 48px;
+  padding: 10px 16px;
+  border: 1px solid #aeb8c2;
+  border-radius: 8px;
+  background: white;
+  color: #1b1d22;
+  cursor: pointer;
+}
+
+.menu-button:hover:not(:disabled) {
+  border-color: #253342;
+}
+
+.menu-button:focus-visible,
+.cpu-setting-row select:focus-visible {
+  outline: 3px solid #85a9cd;
+  outline-offset: 2px;
+}
+
+.menu-button-primary {
+  background: #253342;
+  color: white;
+}
+
+.menu-button-back {
+  width: 100%;
+  margin-top: 20px;
+}
+
+.menu-button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.screen-note,
+.availability-note {
+  margin-bottom: 16px;
+  color: #596574;
+  text-align: center;
+}
+
+.availability-note {
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+
+.placeholder-panel {
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  border: 1px dashed #aeb8c2;
+  border-radius: 8px;
+  color: #596574;
+  text-align: center;
+}
+
+.cpu-settings {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.cpu-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 12px;
+  border: 1px solid #d6dde3;
+  border-radius: 8px;
+  background: white;
+}
+
+.cpu-setting-row select {
+  width: 100%;
+  min-height: 36px;
 }
 
 .app-shell {
@@ -501,6 +614,22 @@ pre {
   .debug-panel {
     border-left: 0;
     border-top: 1px solid #c9d0d6;
+  }
+}
+
+@media (max-width: 520px) {
+  .menu-shell {
+    align-items: start;
+    padding: 16px;
+  }
+
+  .menu-card {
+    padding: 22px 16px;
+  }
+
+  .home-actions,
+  .cpu-setting-row {
+    grid-template-columns: 1fr;
   }
 }
 .tile.construction-preview::after {

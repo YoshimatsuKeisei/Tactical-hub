@@ -15,13 +15,36 @@ import { createVisualCpuPolicyRouter, isCpuController } from "./game/cpu/cpuPoli
 import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
 import { HttpBrowserBcInferenceClient } from "./game/cpu/browserBcClient";
 import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
+import { AppNavigation, type AppScreen } from "./components/AppNavigation";
+
+const initialTeams = createInitialGameState().teams;
+
+function createDefaultLocalCpuSettings(): CpuTeamSettings {
+  return Object.fromEntries(initialTeams.filter((team) => !team.isNeutral).map((team, index) => [team.id, index === 0 ? "human" : "random_cpu"]));
+}
 
 export default function App() {
+  const [screen, setScreen] = useState<AppScreen>("home");
+  const [localCpuSettings, setLocalCpuSettings] = useState<CpuTeamSettings>(createDefaultLocalCpuSettings);
+
+  if (screen === "play") return <PlayScreen initialCpuSettings={localCpuSettings} />;
+
+  return <AppNavigation
+    screen={screen}
+    teams={initialTeams}
+    localCpuSettings={localCpuSettings}
+    onNavigate={setScreen}
+    onLocalCpuChange={(teamId, controller) => setLocalCpuSettings((current) => ({ ...current, [teamId]: controller }))}
+    onStartLocal={() => setScreen("play")}
+  />;
+}
+
+function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSettings }) {
   const [state, setState] = useState(createInitialGameState);
   const [selectedUnitId, setSelectedUnitId] = useState<string>();
   const [manualTeamId, setManualTeamId] = useState("team-1");
   const [constructionMode, setConstructionMode] = useState<"bridge" | "obstacle">();
-  const [cpuSettings, setCpuSettings] = useState<CpuTeamSettings>(() => Object.fromEntries(createInitialGameState().teams.filter((team) => !team.isNeutral).map((team) => [team.id, "human"])));
+  const [cpuSettings, setCpuSettings] = useState<CpuTeamSettings>(() => ({ ...initialCpuSettings }));
   const [cpuRuntime, setCpuRuntime] = useState<CpuRuntime>(() => createCpuRuntime(1));
   const [cpuRunning, setCpuRunning] = useState(false);
   const [cpuPaused, setCpuPaused] = useState(false);
