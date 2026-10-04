@@ -432,4 +432,18 @@ describe("LocalGameSession autosave and resume orchestration", () => {
     visibility.visibilityState = "hidden"; visibility.dispatchEvent(new Event("visibilitychange")); await session.flush();
     expect(repository.putCalls).toHaveLength(2); detach();
   });
+
+  it("publishes autosave status updates to UI subscribers and supports unsubscribe", async () => {
+    const repository = new MemoryRepository();
+    const session = new LocalGameSession(fixedOptions(repository));
+    const statuses: string[] = [];
+    const unsubscribe = session.subscribeStatus((status) => statuses.push(status.status));
+    session.commit(parts(1), { immediate: false });
+    await session.flush();
+    expect(statuses).toEqual(["saved", "pending", "saving", "saved"]);
+    unsubscribe();
+    session.commit(parts(2), { immediate: false });
+    expect(statuses).toEqual(["saved", "pending", "saving", "saved"]);
+    session.dispose();
+  });
 });

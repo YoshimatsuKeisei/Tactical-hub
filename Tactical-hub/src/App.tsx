@@ -34,16 +34,26 @@ export default function App() {
   const [screen, setScreen] = useState<AppScreen>("home");
   const [localCpuSettings, setLocalCpuSettings] = useState<CpuTeamSettings>(createDefaultLocalCpuSettings);
   const [localSaveRepository] = useState<LocalGameSaveRepository>(() => new IndexedDbLocalGameSaveRepository());
+  const [resumedSession, setResumedSession] = useState<ResumedLocalGameSession>();
 
-  if (screen === "play") return <PlayScreen initialCpuSettings={localCpuSettings} repository={localSaveRepository} />;
+  if (screen === "play") return <PlayScreen initialCpuSettings={localCpuSettings} repository={localSaveRepository} resumedSession={resumedSession} />;
 
   return <AppNavigation
     screen={screen}
     teams={initialTeams}
     localCpuSettings={localCpuSettings}
+    localSaveRepository={localSaveRepository}
     onNavigate={setScreen}
     onLocalCpuChange={(teamId, controller) => setLocalCpuSettings((current) => ({ ...current, [teamId]: controller }))}
-    onStartLocal={() => setScreen("play")}
+    onResumeLocal={(session) => {
+      setResumedSession(session);
+      setLocalCpuSettings(session.cpuSettings);
+      setScreen("play");
+    }}
+    onStartLocal={() => {
+      setResumedSession(undefined);
+      setScreen("play");
+    }}
   />;
 }
 
@@ -88,6 +98,7 @@ export function PlayScreen({ initialCpuSettings, repository, resumedSession }: P
   const [cpuSpeed, setCpuSpeed] = useState<CpuRunnerSpeed>("normal");
   const [visualCpuPolicy] = useState(() => initial.policy);
   const [localGameSession] = useState(() => initial.session);
+  const [autosaveState, setAutosaveState] = useState(() => localGameSession.getStatus());
   const [bcInferenceClient] = useState(() => new HttpBrowserBcInferenceClient());
   const cpuAdvancePendingRef = useRef(false);
   const stateRef = useRef(state);
@@ -122,11 +133,18 @@ export function PlayScreen({ initialCpuSettings, repository, resumedSession }: P
       commitStableLocalState(stateRef.current, runtimeRef.current, settingsRef.current);
     }
     const detachLifecycle = installLocalGameSessionLifecycle(localGameSession);
+    const unsubscribeStatus = localGameSession.subscribeStatus(setAutosaveState);
     return () => {
+      unsubscribeStatus();
       detachLifecycle();
       localGameSession.dispose();
     };
   }, [commitStableLocalState, initial.resumed, localGameSession]);
+  useEffect(() => {
+    if (!initial.resumed) return;
+    setCpuPaused(false);
+    setCpuRunning(true);
+  }, [initial.resumed]);
   const selectedUnit = useMemo(
     () => state.units.find((unit) => unit.id === selectedUnitId),
     [selectedUnitId, state.units],
@@ -261,6 +279,15 @@ export function PlayScreen({ initialCpuSettings, repository, resumedSession }: P
         <header>
           <h1>Tactical Hub Phase 1</h1>
           <p>Local logic sandbox for map, base slots, production intents, and simultaneous movement resolution.</p>
+          <div className={`autosave-status autosave-status-${autosaveState.status}`} role="status">
+            {autosaveState.status === "saved" ? "保存済み" : null}
+            {autosaveState.status === "pending" || autosaveState.status === "saving" ? "保存中…" : null}
+            {autosaveState.status === "error" ? "自動保存に失敗しました。ゲームは続けられますが、現在の進行が保存されていない可能性があります。" : null}
+            {autosaveState.status === "disabled" ? "このCPU構成では自動保存・再開は利用できません。" : null}
+          </div>
+          {initial.resumed && resumedSession?.recoverySource === "previous" ? <div className="resume-recovery-notice" role="status">
+            最新の自動保存を読み込めなかったため、直前の正常な保存から復帰しました。
+          </div> : null}
           <div className="turn-phase-banner">
             <span>ターン <strong>{state.turnNumber}</strong></span>
             <span>フェーズ <strong>{state.phase}</strong></span>

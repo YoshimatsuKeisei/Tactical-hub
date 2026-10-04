@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import type { CpuTeamSettings, TeamController } from "../game/cpu/types";
+import type { ResumedLocalGameSession } from "../game/save/localGameSession";
+import type { LocalGameSaveRepository } from "../game/save/localGameSaveStorageTypes";
 import type { Team } from "../game/types";
+import { MoreGameScreen } from "./MoreGameScreen";
 import { RulesScreen } from "./RulesScreen";
 
 export type MenuScreen =
@@ -21,8 +24,10 @@ type Props = {
   screen: MenuScreen;
   teams: Team[];
   localCpuSettings: CpuTeamSettings;
+  localSaveRepository: LocalGameSaveRepository;
   onNavigate: (screen: MenuScreen) => void;
   onLocalCpuChange: (teamId: string, controller: TeamController) => void;
+  onResumeLocal: (session: ResumedLocalGameSession) => void;
   onStartLocal: () => void;
 };
 
@@ -68,7 +73,7 @@ function NetworkMatchScreen({ title, onBack }: { title: "ONLINE" | "FRIEND MATCH
   </ScreenLayout>;
 }
 
-export function AppNavigation({ screen, teams, localCpuSettings, onNavigate, onLocalCpuChange, onStartLocal }: Props) {
+export function AppNavigation({ screen, teams, localCpuSettings, localSaveRepository, onNavigate, onLocalCpuChange, onResumeLocal, onStartLocal }: Props) {
   const backScreen = getBackScreen(screen);
   const onBack = backScreen ? () => onNavigate(backScreen) : undefined;
 
@@ -110,14 +115,15 @@ export function AppNavigation({ screen, teams, localCpuSettings, onNavigate, onL
             </select>}
       </label>)}
     </div>
+    {Object.values(localCpuSettings).includes("bc_cpu") ? <p className="availability-note autosave-unavailable-note" role="status">
+      BC CPUを含む試合では自動保存・再開は現在利用できません。
+    </p> : null}
     <button className="menu-button menu-button-primary" type="button" onClick={onStartLocal}>始める</button>
   </ScreenLayout>;
 
-  if (screen === "more-game") return <PlaceholderScreen
-    title="MORE GAME"
-    description="中断試合一覧を今後ここに表示します。"
-    onBack={onBack!}
-  />;
+  if (screen === "more-game") return <ScreenLayout title="MORE GAME" onBack={onBack} wide>
+    <MoreGameScreen repository={localSaveRepository} onResume={onResumeLocal} />
+  </ScreenLayout>;
   if (screen === "settings") return <PlaceholderScreen
     title="SETTINGS"
     description="設定項目は今後追加予定です。"

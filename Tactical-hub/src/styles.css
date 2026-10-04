@@ -96,6 +96,142 @@ select {
   font-size: 13px;
 }
 
+.autosave-unavailable-note {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #d8bb75;
+  border-radius: 8px;
+  background: #fff8e7;
+  color: #6b5118;
+}
+
+.more-game-list {
+  display: grid;
+  gap: 14px;
+}
+
+.more-game-state {
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  border: 1px dashed #aeb8c2;
+  border-radius: 8px;
+  color: #596574;
+  text-align: center;
+}
+
+.more-game-error,
+.more-game-inline-error {
+  color: #922f2f;
+}
+
+.more-game-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #c7d0d8;
+  border-radius: 10px;
+  background: white;
+}
+
+.more-game-card-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.more-game-card-heading h2,
+.more-game-card-heading p {
+  margin: 0;
+}
+
+.more-game-card-heading time {
+  color: #596574;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.more-game-kind {
+  color: #596574;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+
+.more-game-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 16px 0;
+}
+
+.more-game-details > div {
+  min-width: 0;
+}
+
+.more-game-details-wide {
+  grid-column: 1 / -1;
+}
+
+.more-game-details dt {
+  color: #596574;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.more-game-details dd {
+  overflow-wrap: anywhere;
+  margin: 2px 0 0;
+}
+
+.more-game-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.menu-button-danger {
+  border-color: #b76565;
+  color: #922f2f;
+}
+
+.delete-confirmation {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d8bb75;
+  border-radius: 8px;
+  background: #fff8e7;
+}
+
+.delete-confirmation p,
+.more-game-inline-error {
+  margin-bottom: 10px;
+}
+
+.autosave-status,
+.resume-recovery-notice {
+  width: fit-content;
+  max-width: 100%;
+  margin: 8px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #e8eef3;
+  color: #3e4b58;
+  font-size: 13px;
+}
+
+.autosave-status-error {
+  background: #fbeaea;
+  color: #922f2f;
+}
+
+.autosave-status-disabled,
+.resume-recovery-notice {
+  background: #fff8e7;
+  color: #6b5118;
+}
+
 .placeholder-panel {
   min-height: 150px;
   display: grid;
@@ -783,8 +919,22 @@ pre {
 
   .home-actions,
   .cpu-setting-row,
-  .rules-columns {
+  .rules-columns,
+  .more-game-details,
+  .more-game-actions {
     grid-template-columns: 1fr;
+  }
+
+  .more-game-card-heading {
+    display: grid;
+  }
+
+  .more-game-card-heading time {
+    white-space: normal;
+  }
+
+  .more-game-details-wide {
+    grid-column: auto;
   }
 
   .rules-card {

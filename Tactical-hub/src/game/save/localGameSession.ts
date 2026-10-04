@@ -129,6 +129,7 @@ export class LocalGameSession {
   private readonly scheduler: LocalGameSessionScheduler;
   private readonly debounceMs: number;
   private readonly onStatusChange?: (status: LocalAutosaveState) => void;
+  private readonly statusListeners = new Set<(status: LocalAutosaveState) => void>();
   private autosaveState: LocalAutosaveState;
   private latestRevision = 0;
   private latestSnapshot?: LocalGameStableSnapshot;
@@ -171,9 +172,16 @@ export class LocalGameSession {
     return { ...this.autosaveState };
   }
 
+  subscribeStatus(listener: (status: LocalAutosaveState) => void) {
+    this.statusListeners.add(listener);
+    listener(this.getStatus());
+    return () => { this.statusListeners.delete(listener); };
+  }
+
   private updateStatus(update: LocalAutosaveState) {
     this.autosaveState = update;
     this.onStatusChange?.({ ...update });
+    for (const listener of this.statusListeners) listener({ ...update });
   }
 
   commit(parts: LocalGameStableSnapshotParts, options: { immediate?: boolean } = {}) {
