@@ -3,13 +3,13 @@ import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
 import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
-import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
+import { commitUnitMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
 import type { AttackTarget, StrategistRole, UnitPosition } from "./game/types";
 import { saveStrategistActionIntent } from "./game/engine/construction";
-import { resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
+import { resolveBattleWithHiddenCpuIntents, resolveLocalMovement, resolveLocalStrategistActions } from "./game/cpu/visualCpuRunner";
 import { createCpuRuntime, type CpuRuntime, type CpuTeamSettings, type TeamController } from "./game/cpu/types";
 import { createVisualCpuPolicyRouter, isCpuController } from "./game/cpu/cpuPolicyRouter";
 import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
@@ -236,13 +236,23 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
             : resolveProduction(state),
         )}
         onResolveMovement={() => {
-          const next = resolveMovement(state);
-          setState(next);
-          if (next.currentMovementTeamId) setManualTeamId(next.currentMovementTeamId);
+          const resolved = resolveLocalMovement(state, cpuRuntime);
+          runtimeRef.current = resolved.runtime;
+          stateRef.current = resolved.state;
+          setCpuRuntime(resolved.runtime);
+          setState(resolved.state);
+          if (resolved.state.currentMovementTeamId) setManualTeamId(resolved.state.currentMovementTeamId);
           setSelectedUnitId(undefined);
         }}
         onResolveBattle={() => {
           resolveBattleAfterCompletingHumanChoices();
+        }}
+        onResolveStrategistActions={() => {
+          const resolved = resolveLocalStrategistActions(state, cpuRuntime);
+          runtimeRef.current = resolved.runtime;
+          stateRef.current = resolved.state;
+          setCpuRuntime(resolved.runtime);
+          setState(resolved.state);
         }}
         battleResolveDisabled={state.phase === "attack_input" && state.teams.some((team) => team.status === "active" && isCpuController(cpuSettings[team.id]) && !cpuRuntime.completedAttackTeamIds.includes(team.id))}
         manualUnitInteractionEnabled={Boolean(selectedUnit && (cpuSettings[selectedUnit.ownerTeamId] ?? "human") === "human")}

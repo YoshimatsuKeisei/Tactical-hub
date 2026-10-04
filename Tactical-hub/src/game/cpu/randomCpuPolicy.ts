@@ -11,11 +11,9 @@ import type { CpuDecision, CpuRuntime, CpuTeamSettings } from "./types";
 import { withLegalProfileSink } from "./legalEnumerationProfile";
 import { createTeamVisibleState } from "../visibility";
 import { getPolicyActorTeamId } from "./policyVisibility";
+import { nextLocalGameRandom } from "./localGameRng";
 
-export function nextCpuRandom(runtime: CpuRuntime) {
-  runtime.rngState = (Math.imul(runtime.rngState, 1664525) + 1013904223) >>> 0;
-  return runtime.rngState / 0x1_0000_0000;
-}
+export const nextCpuRandom = nextLocalGameRandom;
 
 function choose<T>(runtime: CpuRuntime, values: T[]) {
   return values[Math.floor(nextCpuRandom(runtime) * values.length)];

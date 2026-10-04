@@ -16,7 +16,7 @@ import {
 } from "../game/engine/retreat";
 import type { GameState } from "../game/types";
 import { positionKey } from "../game/utils/position";
-import { assignConstructionCapacityBonus, assignConstructionManager, getBuilderUnits, getManagedConstructions, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
+import { assignConstructionCapacityBonus, assignConstructionManager, getBuilderUnits, getManagedConstructions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
 import { cancelTeleportIntent, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates, isTeleportAvailable, saveTeleportIntent } from "../game/engine/teleport";
 import { useState, type ReactNode } from "react";
 import { getHeavyInfantryMergeCandidates, mergeHeavyInfantry } from "../game/engine/heavyInfantry";
@@ -31,6 +31,7 @@ type Props = {
   onResolveMovement: () => void;
   onResolveBattle: () => void;
   onResolveProduction: () => void;
+  onResolveStrategistActions: () => void;
   onStateChange: (state: GameState) => void;
   battleResolveDisabled?: boolean;
   cpuSettingsControls?: ReactNode;
@@ -38,7 +39,7 @@ type Props = {
   manualUnitInteractionEnabled?: boolean;
 };
 
-export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onStateChange, battleResolveDisabled, cpuSettingsControls, cpuLogControls, manualUnitInteractionEnabled = true }: Props) {
+export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTeamChange, constructionMode, onConstructionModeChange, onResolveMovement, onResolveBattle, onResolveProduction, onResolveStrategistActions, onStateChange, battleResolveDisabled, cpuSettingsControls, cpuLogControls, manualUnitInteractionEnabled = true }: Props) {
   const [panelTab, setPanelTab] = useState<"settings" | "phase" | "logs">("settings");
   const [teleportTargets, setTeleportTargets] = useState<Record<string, string>>({});
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
@@ -466,7 +467,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         <h3>Saved intents: {activeTeam.name}</h3>
         {state.strategistActionIntents.filter((intent) => intent.teamId === activeTeam.id).map((intent) => <div className="intent-item" key={intent.strategistUnitId}><strong>{intent.strategistUnitId}</strong><span>{intent.action}</span><span>{intent.tiles?.map((cell) => `${cell.x},${cell.y}`).join(" / ") ?? intent.constructionId ?? "-"}</span></div>)}
         {state.teams.filter((team) => team.status === "active").map((team) => { const submitted = state.strategistSubmittedTeamIds.includes(team.id); return <div className="intent-item" key={team.id}><strong>{team.name}</strong><span>{submitted ? "Submitted" : "Not submitted"}</span><button onClick={() => onStateChange(submitStrategistActions(state, team.id))} disabled={submitted || state.phase !== "strategist_action_input"}>{submitted ? "Submitted" : `Submit ${team.name}`}</button></div>; })}
-        <button onClick={() => onStateChange(resolveStrategistActions(state))} disabled={!state.teams.filter((team) => team.status === "active").every((team) => state.strategistSubmittedTeamIds.includes(team.id)) || state.phase !== "strategist_action_resolution"}>Resolve Strategists</button>
+        <button onClick={onResolveStrategistActions} disabled={!state.teams.filter((team) => team.status === "active").every((team) => state.strategistSubmittedTeamIds.includes(team.id)) || state.phase !== "strategist_action_resolution"}>Resolve Strategists</button>
       </section>
 
       <section hidden={panelTab !== "logs"}>

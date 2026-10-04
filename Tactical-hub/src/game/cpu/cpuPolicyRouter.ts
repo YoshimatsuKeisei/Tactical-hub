@@ -1,5 +1,5 @@
 import type { GameState } from "../types";
-import { createHeuristicCpuPolicy } from "./heuristicCpuPolicy";
+import { createHeuristicCpuPolicy, type HeuristicCpuPolicy, type HeuristicCpuPolicyState } from "./heuristicCpuPolicy";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
 import type { CpuDecision, CpuPolicy, CpuRuntime, CpuTeamSettings, TeamController } from "./types";
 
@@ -15,11 +15,20 @@ export function getVisualCpuActorTeamId(state: GameState, runtime: CpuRuntime, s
   return undefined;
 }
 
-export function createVisualCpuPolicyRouter(overrides: { randomPolicy?: CpuPolicy; heuristicPolicy?: CpuPolicy } = {}): CpuPolicy {
+export type VisualCpuPolicyRouter = CpuPolicy & {
+  snapshotHeuristicState(): HeuristicCpuPolicyState;
+  restoreHeuristicState(state: HeuristicCpuPolicyState): void;
+};
+
+function isStatefulHeuristicPolicy(policy: CpuPolicy): policy is HeuristicCpuPolicy {
+  return "snapshotState" in policy && "restoreState" in policy;
+}
+
+export function createVisualCpuPolicyRouter(overrides: { randomPolicy?: CpuPolicy; heuristicPolicy?: CpuPolicy } = {}): VisualCpuPolicyRouter {
   const randomPolicy = overrides.randomPolicy ?? getRandomCpuDecision;
   const heuristicPolicy = overrides.heuristicPolicy ?? createHeuristicCpuPolicy();
 
-  return (state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings): CpuDecision | undefined => {
+  const router = ((state: GameState, runtime: CpuRuntime, settings: CpuTeamSettings): CpuDecision | undefined => {
     const activeTeamIds = state.teams.filter((team) => team.status === "active").map((team) => team.id);
     let teamId = getVisualCpuActorTeamId(state, runtime, settings);
 
@@ -36,7 +45,12 @@ export function createVisualCpuPolicyRouter(overrides: { randomPolicy?: CpuPolic
     if (settings[teamId] === "heuristic_cpu") return heuristicPolicy(state, runtime, settings);
     if (settings[teamId] === "bc_cpu") return undefined;
     return undefined;
+  }) as VisualCpuPolicyRouter;
+  router.snapshotHeuristicState = () => isStatefulHeuristicPolicy(heuristicPolicy) ? heuristicPolicy.snapshotState() : { matches: [] };
+  router.restoreHeuristicState = (state) => {
+    if (isStatefulHeuristicPolicy(heuristicPolicy)) heuristicPolicy.restoreState(state);
   };
+  return router;
 }
 
 export { isCpuController };

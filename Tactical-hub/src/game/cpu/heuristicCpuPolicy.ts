@@ -12,11 +12,20 @@ import { getPolicyActorTeamId } from "./policyVisibility";
 const PREFERRED_TYPES = new Set<UnitType>(["archer", "cavalry", "infantry"]);
 
 type MatchTargets = { lastTurn: number; byTeamId: Map<string, string> };
+export type HeuristicCpuPolicyState = {
+  matches: Array<{
+    seed: number;
+    lastTurn: number;
+    targetBaseIdByTeamId: Record<string, string>;
+  }>;
+};
 export type HeuristicDecisionDiagnostics = { targetBaseId?: string; legalActionKeys: string[]; selectedActionKey?: string; distanceCache: HeuristicDistanceCacheStats };
 export type HeuristicCpuPolicy = CpuPolicy & {
   getTargetBaseId(teamId: string, seed?: number): string | undefined;
   getLastDecisionDiagnostics(): HeuristicDecisionDiagnostics | undefined;
   setDecisionDiagnosticsEnabled(enabled: boolean): void;
+  snapshotState(): HeuristicCpuPolicyState;
+  restoreState(state: HeuristicCpuPolicyState): void;
 };
 
 function choose<T>(runtime: CpuRuntime, values: readonly T[]) {
@@ -196,6 +205,25 @@ export function createHeuristicCpuPolicy(movementSemantics: MovementSemantics = 
   policy.setDecisionDiagnosticsEnabled = (enabled) => {
     diagnosticsEnabled = enabled;
     if (!enabled) lastDiagnostics = undefined;
+  };
+  policy.snapshotState = () => ({
+    matches: [...matches.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([seed, match]) => ({
+        seed,
+        lastTurn: match.lastTurn,
+        targetBaseIdByTeamId: Object.fromEntries([...match.byTeamId.entries()].sort(([left], [right]) => left.localeCompare(right))),
+      })),
+  });
+  policy.restoreState = (state) => {
+    matches.clear();
+    for (const match of state.matches) {
+      matches.set(match.seed >>> 0, {
+        lastTurn: match.lastTurn,
+        byTeamId: new Map(Object.entries(match.targetBaseIdByTeamId)),
+      });
+    }
+    lastDiagnostics = undefined;
   };
   policy.controller = "heuristic_cpu";
   return policy;
