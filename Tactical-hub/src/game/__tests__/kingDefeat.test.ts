@@ -53,6 +53,23 @@ describe("王攻略と勢力敗北", () => {
     expect(state.kingCampaignStates.some((entry) => entry.kingTeamId === "team-2")).toBe(false);
   });
 
+  it("neutralの王撃破では敗北と拠点移転を行うが攻略褒賞を作らない", () => {
+    const state = createInitialGameState();
+    const neutralCampaign: KingCampaignState = {
+      kingUnitId: "home-2-king",
+      kingTeamId: "team-2",
+      contributions: [{ teamId: "neutral", cumulativeDamage: 1, effectiveAttackTurns: 1 }],
+    };
+    state.kingCampaignStates.push(neutralCampaign);
+
+    expect(resolveKingDefeats(state, [defeatPlan(neutralCampaign, ["neutral"])], [], () => 0)).toBe(true);
+    expect(state.teams.find((team) => team.id === "team-2")?.status).toBe("defeated");
+    expect(state.bases.find((base) => base.id === "home-2")?.ownerTeamId).toBe("neutral");
+    expect(state.rewardPlacementRequests.filter((request) => request.rewardType === "king_conquest_reward")).toEqual([]);
+    expect(state.rewardPlacementRequests).toEqual([]);
+    expect(state.phase).not.toBe("reward_placement");
+  });
+
   it("征服チームより累積ダメージが厳密に多い全チームへ王攻略補償を作る", () => {
     const state = createInitialGameState();
     const value = campaign(); value.contributions.push({ teamId: "team-4", cumulativeDamage: 3, effectiveAttackTurns: 1 });

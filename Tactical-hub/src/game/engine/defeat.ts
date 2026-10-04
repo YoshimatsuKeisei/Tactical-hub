@@ -65,6 +65,7 @@ export function resolveKingDefeats(state: GameState, defeatedKings: DefeatedKing
   const plan = defeatedKings[0];
   const conquestTeamId = selectConquestTeam(plan.campaign, plan.candidateTeamIds, rng);
   if (!conquestTeamId) return false;
+  const conquestTeamIsNeutral = state.teams.find((team) => team.id === conquestTeamId)?.isNeutral === true;
   const bases = ownedBases(state, plan.kingTeamId);
   state.logs.push({ id: `log-conquest-team-${state.logs.length}`, turnNumber: state.turnNumber, type: "battle", message: `征服チーム: ${conquestTeamId} / ${plan.kingUnitId}`, relatedIds: [conquestTeamId, plan.kingUnitId] });
   markTeamDefeated(state, plan.kingTeamId, "王撃破による敗北");
@@ -89,7 +90,7 @@ export function resolveKingDefeats(state: GameState, defeatedKings: DefeatedKing
   }
   for (const base of bases) {
     transferBaseOwnership(state, base.id, conquestTeamId);
-    enqueueRewardRequest(state, { teamId: conquestTeamId, rewardType: "king_conquest_reward", sourceBaseId: base.id, sourceKingUnitId: plan.kingUnitId, fixedBaseId: base.id });
+    if (!conquestTeamIsNeutral) enqueueRewardRequest(state, { teamId: conquestTeamId, rewardType: "king_conquest_reward", sourceBaseId: base.id, sourceKingUnitId: plan.kingUnitId, fixedBaseId: base.id });
   }
   enqueueKingContributionCompensation(state, plan.campaign, conquestTeamId);
   return true;
