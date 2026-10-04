@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { CpuTeamSettings, TeamController } from "../game/cpu/types";
 import type { Team } from "../game/types";
+import { RulesScreen } from "./RulesScreen";
 
 export type MenuScreen =
   | "home"
@@ -37,9 +38,9 @@ export function getBackScreen(screen: MenuScreen): MenuScreen | undefined {
   return "home";
 }
 
-function ScreenLayout({ title, children, onBack }: { title: string; children: ReactNode; onBack?: () => void }) {
-  return <main className="menu-shell">
-    <section className="menu-card" aria-labelledby="screen-title">
+function ScreenLayout({ title, children, onBack, wide = false }: { title: string; children: ReactNode; onBack?: () => void; wide?: boolean }) {
+  return <main className={`menu-shell${wide ? " rules-shell" : ""}`}>
+    <section className={`menu-card${wide ? " rules-card" : ""}`} aria-labelledby="screen-title">
       <h1 id="screen-title">{title}</h1>
       {children}
       {onBack ? <button className="menu-button menu-button-back" type="button" onClick={onBack}>BACK</button> : null}
@@ -122,11 +123,9 @@ export function AppNavigation({ screen, teams, localCpuSettings, onNavigate, onL
     description="設定項目は今後追加予定です。"
     onBack={onBack!}
   />;
-  if (screen === "rules") return <PlaceholderScreen
-    title="RULES"
-    description="ゲームルールの説明を今後ここに配置します。"
-    onBack={onBack!}
-  />;
+  if (screen === "rules") return <ScreenLayout title="RULES" onBack={onBack} wide>
+    <RulesScreen />
+  </ScreenLayout>;
   if (screen === "friend") return <PlaceholderScreen
     title="FRIEND"
     description="フレンド一覧と管理機能を今後ここに追加します。"

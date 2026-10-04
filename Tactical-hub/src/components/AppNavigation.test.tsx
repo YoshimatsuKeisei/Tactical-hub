@@ -39,7 +39,7 @@ describe("AppNavigation", () => {
     expect(renderScreen("local")).toContain("CPU設定領域");
     expect(renderScreen("more-game")).toContain("中断試合一覧");
     expect(renderScreen("settings")).toContain("設定項目は今後追加予定");
-    expect(renderScreen("rules")).toContain("ゲームルールの説明");
+    expect(renderScreen("rules")).toContain("基本ルール");
     expect(renderScreen("friend")).toContain("フレンド一覧");
     expect(renderScreen("my-page")).toContain("プロフィール");
   });
@@ -51,6 +51,7 @@ describe("AppNavigation", () => {
     expect(getBackScreen("friend-match")).toBe("new-game");
     expect(getBackScreen("local")).toBe("new-game");
     expect(getBackScreen("settings")).toBe("home");
+    expect(getBackScreen("rules")).toBe("home");
   });
 
   it("keeps unavailable network actions disabled", () => {
@@ -65,5 +66,29 @@ describe("AppNavigation", () => {
     expect(local).toContain("value=\"heuristic_cpu\"");
     expect(local).toContain("value=\"bc_cpu\"");
     expect(local).toContain("人間（自分）");
+  });
+
+  it("renders the confirmed rules without pending or legacy specifications", () => {
+    const rules = renderScreen("rules");
+
+    expect(rules).toContain("ユニット・特殊能力");
+    expect(rules).toContain("詳細ルール");
+    expect(rules).toContain("移動は即時に確定します");
+    expect(rules).toContain("重歩兵");
+    expect(rules).toContain("湖から隣接する道路へ上陸できます");
+    expect(rules).toContain("中立守備隊への王攻略褒賞は発生しません");
+    expect(rules).toContain("攻撃成功率");
+    expect(rules).toContain("拠点攻略の優先順位");
+    expect(rules).toContain("<th scope=\"row\">工</th>");
+    expect(rules).toContain(">BACK<");
+
+    expect(rules).not.toContain("movement intent");
+    expect(rules).not.toContain("一括移動");
+    expect(rules).not.toContain("忍者見習い");
+    expect(rules).not.toContain("兵種入れ替え");
+    expect(rules).not.toContain("決戦モード");
+    expect(rules).not.toContain("退却");
+    expect(rules).not.toContain("工兵");
+    expect(rules).not.toContain("工作隊");
   });
 });
