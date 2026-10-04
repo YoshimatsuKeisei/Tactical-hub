@@ -16,6 +16,13 @@ import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
 import { HttpBrowserBcInferenceClient } from "./game/cpu/browserBcClient";
 import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
 import { AppNavigation, type AppScreen } from "./components/AppNavigation";
+import { IndexedDbLocalGameSaveRepository } from "./game/save/indexedDbLocalGameSaveRepository";
+import {
+  installLocalGameSessionLifecycle,
+  LocalGameSession,
+  type ResumedLocalGameSession,
+} from "./game/save/localGameSession";
+import type { LocalGameSaveRepository } from "./game/save/localGameSaveStorageTypes";
 
 const initialTeams = createInitialGameState().teams;
 
@@ -26,8 +33,9 @@ function createDefaultLocalCpuSettings(): CpuTeamSettings {
 export default function App() {
   const [screen, setScreen] = useState<AppScreen>("home");
   const [localCpuSettings, setLocalCpuSettings] = useState<CpuTeamSettings>(createDefaultLocalCpuSettings);
+  const [localSaveRepository] = useState<LocalGameSaveRepository>(() => new IndexedDbLocalGameSaveRepository());
 
-  if (screen === "play") return <PlayScreen initialCpuSettings={localCpuSettings} />;
+  if (screen === "play") return <PlayScreen initialCpuSettings={localCpuSettings} repository={localSaveRepository} />;
 
   return <AppNavigation
     screen={screen}
@@ -39,25 +47,86 @@ export default function App() {
   />;
 }
 
-function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSettings }) {
-  const [state, setState] = useState(createInitialGameState);
+type PlayScreenProps = {
+  initialCpuSettings: CpuTeamSettings;
+  repository: LocalGameSaveRepository;
+  resumedSession?: ResumedLocalGameSession;
+};
+
+export function PlayScreen({ initialCpuSettings, repository, resumedSession }: PlayScreenProps) {
+  const [initial] = useState(() => {
+    if (resumedSession) return {
+      state: resumedSession.state,
+      runtime: resumedSession.cpuRuntime,
+      settings: resumedSession.cpuSettings,
+      policy: resumedSession.visualCpuPolicy,
+      session: resumedSession.session,
+      paused: resumedSession.cpuPaused,
+      resumed: true,
+    };
+    const state = createInitialGameState();
+    const runtime = createCpuRuntime(1);
+    const settings = { ...initialCpuSettings };
+    return {
+      state,
+      runtime,
+      settings,
+      policy: createVisualCpuPolicyRouter(),
+      session: new LocalGameSession({ repository, cpuSettings: settings }),
+      paused: false,
+      resumed: false,
+    };
+  });
+  const [state, setState] = useState(initial.state);
   const [selectedUnitId, setSelectedUnitId] = useState<string>();
   const [manualTeamId, setManualTeamId] = useState("team-1");
   const [constructionMode, setConstructionMode] = useState<"bridge" | "obstacle">();
-  const [cpuSettings, setCpuSettings] = useState<CpuTeamSettings>(() => ({ ...initialCpuSettings }));
-  const [cpuRuntime, setCpuRuntime] = useState<CpuRuntime>(() => createCpuRuntime(1));
+  const [cpuSettings, setCpuSettings] = useState<CpuTeamSettings>(initial.settings);
+  const [cpuRuntime, setCpuRuntime] = useState<CpuRuntime>(initial.runtime);
   const [cpuRunning, setCpuRunning] = useState(false);
-  const [cpuPaused, setCpuPaused] = useState(false);
+  const [cpuPaused, setCpuPaused] = useState(initial.paused);
   const [cpuSpeed, setCpuSpeed] = useState<CpuRunnerSpeed>("normal");
-  const [visualCpuPolicy] = useState(createVisualCpuPolicyRouter);
+  const [visualCpuPolicy] = useState(() => initial.policy);
+  const [localGameSession] = useState(() => initial.session);
   const [bcInferenceClient] = useState(() => new HttpBrowserBcInferenceClient());
   const cpuAdvancePendingRef = useRef(false);
   const stateRef = useRef(state);
   const runtimeRef = useRef(cpuRuntime);
   const settingsRef = useRef(cpuSettings);
+  const sessionRevisionRef = useRef(0);
+  const initialAutosaveStartedRef = useRef(false);
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { runtimeRef.current = cpuRuntime; }, [cpuRuntime]);
   useEffect(() => { settingsRef.current = cpuSettings; }, [cpuSettings]);
+
+  const commitStableLocalState = useCallback((nextState: typeof state, nextRuntime: CpuRuntime, nextSettings: CpuTeamSettings) => {
+    const revision = ++sessionRevisionRef.current;
+    stateRef.current = nextState;
+    runtimeRef.current = nextRuntime;
+    settingsRef.current = nextSettings;
+    setState(nextState);
+    setCpuRuntime(nextRuntime);
+    setCpuSettings(nextSettings);
+    localGameSession.commit({
+      gameState: { revision, value: nextState },
+      cpuRuntime: { revision, value: nextRuntime },
+      cpuSettings: { revision, value: nextSettings },
+      heuristicPolicyState: { revision, value: visualCpuPolicy.snapshotHeuristicState() },
+      resumeUi: { viewerTeamId: "team-1" },
+    });
+  }, [localGameSession, visualCpuPolicy]);
+
+  useEffect(() => {
+    if (!initial.resumed && !initialAutosaveStartedRef.current) {
+      initialAutosaveStartedRef.current = true;
+      commitStableLocalState(stateRef.current, runtimeRef.current, settingsRef.current);
+    }
+    const detachLifecycle = installLocalGameSessionLifecycle(localGameSession);
+    return () => {
+      detachLifecycle();
+      localGameSession.dispose();
+    };
+  }, [commitStableLocalState, initial.resumed, localGameSession]);
   const selectedUnit = useMemo(
     () => state.units.find((unit) => unit.id === selectedUnitId),
     [selectedUnitId, state.units],
@@ -102,18 +171,13 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         () => stateRef.current === sourceState && runtimeRef.current === sourceRuntime && settingsRef.current === sourceSettings,
       );
       if (stateRef.current !== sourceState || runtimeRef.current !== sourceRuntime || settingsRef.current !== sourceSettings) return false;
-      runtimeRef.current = result.runtime;
-      setCpuRuntime(result.runtime);
-      if (result.state !== sourceState) {
-        stateRef.current = result.state;
-        setState(result.state);
-      }
+      if (result.state !== sourceState || result.runtime !== sourceRuntime) commitStableLocalState(result.state, result.runtime, sourceSettings);
       if (result.runtime.stoppedReason) setCpuRunning(false);
       return result.applied;
     } finally {
       cpuAdvancePendingRef.current = false;
     }
-  }, [bcInferenceClient, visualCpuPolicy]);
+  }, [bcInferenceClient, commitStableLocalState, visualCpuPolicy]);
 
   useEffect(() => {
     if (!cpuRunning || cpuPaused) return;
@@ -125,14 +189,14 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
   function chooseDestination(position: UnitPosition) {
     if (!selectedUnit) return;
     if ((cpuSettings[selectedUnit.ownerTeamId] ?? "human") !== "human") return;
-    setState(
+    commitStableLocalState(
       commitUnitMovement(state, {
         teamId: selectedUnit.ownerTeamId,
         unitId: selectedUnit.id,
         from: selectedUnit.position,
         to: position,
         stay: false,
-      }),
+      }), runtimeRef.current, settingsRef.current,
     );
   }
 
@@ -141,13 +205,13 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
     if ((cpuSettings[selectedUnit.ownerTeamId] ?? "human") !== "human") return;
     if (isRetreating(selectedUnit)) return;
     if (state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).some((intent) => intent.attackerUnitId === selectedUnit.id)) return;
-    setState(
+    commitStableLocalState(
       saveAttackIntent(state, {
         teamId: selectedUnit.ownerTeamId,
         attackerUnitId: selectedUnit.id,
         target,
         pass: false,
-      }),
+      }), runtimeRef.current, settingsRef.current,
     );
     setSelectedUnitId(undefined);
   }
@@ -161,8 +225,8 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         if (!alreadySaved) next = saveAttackIntent(next, { teamId: team.id, attackerUnitId: attacker.attackerUnitId, target: attacker.targets[0], pass: false });
       }
     }
-    if (next !== state) setState(next);
-  }, [cpuSettings, state]);
+    if (next !== state) commitStableLocalState(next, runtimeRef.current, settingsRef.current);
+  }, [commitStableLocalState, cpuSettings, state]);
 
   function chooseDeterministicAttackTarget(unitId: string, targets: AttackTarget[]) {
     const hash = [...unitId].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0, cpuRuntime.rngState >>> 0);
@@ -178,9 +242,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
       }
     }
     const resolved = resolveBattleWithHiddenCpuIntents(completed, cpuRuntime);
-    runtimeRef.current = resolved.runtime;
-    setCpuRuntime(resolved.runtime);
-    setState(resolved.state);
+    commitStableLocalState(resolved.state, resolved.runtime, settingsRef.current);
     setSelectedUnitId(undefined);
   }
 
@@ -218,7 +280,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
               const unit = state.units.find((candidate) => candidate.id === unitId);
               if (!unit) return;
               if ((cpuSettings[unit.ownerTeamId] ?? "human") !== "human") return;
-              setState(saveStrategistActionIntent(state, { teamId: unit.ownerTeamId, strategistUnitId: unit.id, action: kind === "bridge" ? "place_bridge" : "place_obstacle", tiles }));
+              commitStableLocalState(saveStrategistActionIntent(state, { teamId: unit.ownerTeamId, strategistUnitId: unit.id, action: kind === "bridge" ? "place_bridge" : "place_obstacle", tiles }), runtimeRef.current, settingsRef.current);
             }}
           />
         </div>
@@ -230,17 +292,16 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         onManualTeamChange={setManualTeamId}
         constructionMode={constructionMode}
         onConstructionModeChange={setConstructionMode}
-        onResolveProduction={() => setState(
+        onResolveProduction={() => commitStableLocalState(
           state.phase === "movement_input" && state.currentMovementTeamId
             ? submitTeamProduction(state, state.currentMovementTeamId)
             : resolveProduction(state),
+          runtimeRef.current,
+          settingsRef.current,
         )}
         onResolveMovement={() => {
           const resolved = resolveLocalMovement(state, cpuRuntime);
-          runtimeRef.current = resolved.runtime;
-          stateRef.current = resolved.state;
-          setCpuRuntime(resolved.runtime);
-          setState(resolved.state);
+          commitStableLocalState(resolved.state, resolved.runtime, settingsRef.current);
           if (resolved.state.currentMovementTeamId) setManualTeamId(resolved.state.currentMovementTeamId);
           setSelectedUnitId(undefined);
         }}
@@ -249,33 +310,31 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         }}
         onResolveStrategistActions={() => {
           const resolved = resolveLocalStrategistActions(state, cpuRuntime);
-          runtimeRef.current = resolved.runtime;
-          stateRef.current = resolved.state;
-          setCpuRuntime(resolved.runtime);
-          setState(resolved.state);
+          commitStableLocalState(resolved.state, resolved.runtime, settingsRef.current);
         }}
         battleResolveDisabled={state.phase === "attack_input" && state.teams.some((team) => team.status === "active" && isCpuController(cpuSettings[team.id]) && !cpuRuntime.completedAttackTeamIds.includes(team.id))}
         manualUnitInteractionEnabled={Boolean(selectedUnit && (cpuSettings[selectedUnit.ownerTeamId] ?? "human") === "human")}
-        onStateChange={setState}
+        onStateChange={(nextState) => commitStableLocalState(nextState, runtimeRef.current, settingsRef.current)}
         cpuSettingsControls={<CpuControlPanel
           view="settings"
           teams={state.teams}
           settings={cpuSettings}
           onControllerChange={(teamId: string, controller: TeamController) => {
-            setCpuSettings((current) => ({ ...current, [teamId]: controller }));
+            const nextSettings = { ...settingsRef.current, [teamId]: controller };
+            let nextState = stateRef.current;
             if (isCpuController(controller) && !initialStrategistRolesLocked) {
               const role = seededInitialRole(teamId);
-              setState((current) => ({ ...current, units: current.units.map((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.id.startsWith("home-") ? { ...unit, role } : unit) }));
+              nextState = { ...nextState, units: nextState.units.map((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.id.startsWith("home-") ? { ...unit, role } : unit) };
             }
             const reset = createCpuRuntime(cpuRuntime.seed);
-            runtimeRef.current = reset;
-            setCpuRuntime(reset);
+            commitStableLocalState(nextState, reset, nextSettings);
           }}
           initialStrategistRoles={initialStrategistRoles}
           initialStrategistRolesLocked={initialStrategistRolesLocked}
           onInitialStrategistRoleChange={(unitId, role) => {
             if (initialStrategistRolesLocked) return;
-            setState((current) => ({ ...current, units: current.units.map((unit) => unit.id === unitId ? { ...unit, role } : unit) }));
+            const nextState = { ...stateRef.current, units: stateRef.current.units.map((unit) => unit.id === unitId ? { ...unit, role } : unit) };
+            commitStableLocalState(nextState, runtimeRef.current, settingsRef.current);
           }}
           running={cpuRunning}
           paused={cpuPaused}
@@ -289,8 +348,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
           seed={cpuRuntime.seed}
           onSeedChange={(seed) => {
             const reset = createCpuRuntime(seed);
-            runtimeRef.current = reset;
-            setCpuRuntime(reset);
+            commitStableLocalState(stateRef.current, reset, settingsRef.current);
           }}
           logs={cpuRuntime.logs}
           stoppedReason={cpuRuntime.stoppedReason}
