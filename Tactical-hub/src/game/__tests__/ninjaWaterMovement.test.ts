@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { UNIT_STATS } from "../constants";
 import { getAttackCandidates } from "../engine/battle";
-import { getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
+import { commitUnitMovement, getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
 import { getTeleportDestinationCandidates, saveTeleportIntent } from "../engine/teleport";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit, UnitPosition } from "../types";
@@ -119,27 +119,26 @@ describe("Phase 4-D ninja water movement", () => {
     let state = createInitialGameState();
     const ninja = addUnit(state, "landing-attacker", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
     const enemy = addUnit(state, "landing-target", "team-2", "infantry", { kind: "tile", x: 5, y: 1 });
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: ninja.id, from: ninja.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
-    state = submitMovement(state, "team-1");
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: ninja.id, from: ninja.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
     expect(state.movedUnitIdsThisMovementPhase).toContain(ninja.id);
+    expect(state.units.find((unit) => unit.id === ninja.id)?.position).toEqual({ kind: "tile", x: 4, y: 1 });
+    state = submitMovement(state, "team-1");
     expect(state.currentMovementTeamId).toBe("team-2");
     while (state.phase === "movement_input" && state.currentMovementTeamId) state = submitMovement(state, state.currentMovementTeamId);
     expect(state.phase).toBe("attack_input");
     expect(getAttackCandidates(state, ninja.id).map((target) => target.unitId)).toContain(enemy.id);
   });
 
-  it("shares destination reservations across normal, ninja-water, and teleport movement", () => {
-    let ninjaFirst = createInitialGameState();
-    const ninja = addUnit(ninjaFirst, "reservation-ninja", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
-    const infantry = addUnit(ninjaFirst, "reservation-infantry", "team-1", "infantry", { kind: "tile", x: 3, y: 1 });
-    ninjaFirst = saveMovementIntent(ninjaFirst, { teamId: "team-1", unitId: ninja.id, from: ninja.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
-    expect(keys(ninjaFirst, infantry.id)).not.toContain("4,1");
+  it("ignores saved normal destinations, blocks committed occupancy, and preserves teleport reservations", () => {
+    let normal = createInitialGameState();
+    const ninja = addUnit(normal, "reservation-ninja", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
+    const infantry = addUnit(normal, "reservation-infantry", "team-1", "infantry", { kind: "tile", x: 3, y: 1 });
+    normal = saveMovementIntent(normal, { teamId: "team-1", unitId: infantry.id, from: infantry.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
+    expect(keys(normal, ninja.id)).toContain("4,1");
 
-    let normalFirst = createInitialGameState();
-    const secondNinja = addUnit(normalFirst, "reservation-ninja-2", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
-    const secondInfantry = addUnit(normalFirst, "reservation-infantry-2", "team-1", "infantry", { kind: "tile", x: 3, y: 1 });
-    normalFirst = saveMovementIntent(normalFirst, { teamId: "team-1", unitId: secondInfantry.id, from: secondInfantry.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
-    expect(keys(normalFirst, secondNinja.id)).not.toContain("4,1");
+    normal = commitUnitMovement(normal, { teamId: "team-1", unitId: infantry.id, from: infantry.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
+    expect(normal.units.find((unit) => unit.id === infantry.id)?.position).toEqual({ kind: "tile", x: 4, y: 1 });
+    expect(keys(normal, ninja.id)).not.toContain("4,1");
 
     let teleportFirst = createInitialGameState();
     const thirdNinja = addUnit(teleportFirst, "reservation-ninja-3", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
@@ -154,8 +153,7 @@ describe("Phase 4-D ninja water movement", () => {
     let state = createInitialGameState();
     const ninja = addUnit(state, "retreating-water-ninja", "team-1", "ninja", { kind: "tile", x: 4, y: 1 });
     ninja.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1", remainingTurns: 2, sourceId: "test" });
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: ninja.id, from: ninja.position, to: { kind: "water", x: 4, y: 2 }, stay: false });
-    state = submitMovement(state, "team-1");
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: ninja.id, from: ninja.position, to: { kind: "water", x: 4, y: 2 }, stay: false });
     const resolved = state.units.find((unit) => unit.id === ninja.id)!;
     expect(resolved.position).toEqual({ kind: "water", x: 4, y: 2 });
     expect(resolved.statuses.some((status) => status.kind === "retreating")).toBe(false);

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { UNIT_STATS } from "../constants";
 import { getAttackCandidates, getTeamAttackCandidates, getTeamAttackerUnitIds, saveAttackIntent } from "../engine/battle";
 import { getBuilderUnits, getStrategistActionCandidates, getStrategistActionCandidatesForUnit, saveStrategistActionIntent } from "../engine/construction";
-import { getMovementCandidates, getTeamMovementCandidates, getTeamMovementUnitIds, saveMovementIntent, submitMovement, validateMovementPath } from "../engine/movement";
+import { commitUnitMovement, getMovementCandidates, getTeamMovementCandidates, getTeamMovementUnitIds, saveMovementIntent, validateMovementPath } from "../engine/movement";
 import { getProductionCandidates, getProductionCandidatesForBase, resolveProduction, saveProductionChoice } from "../engine/production";
 import { getRewardPlacementCandidates, placeRewardUnit } from "../engine/reward";
 import { getTeamTeleportCandidates, getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
@@ -73,16 +73,19 @@ describe("Phase 5-A CPU candidate access", () => {
     expect(getStrategistActionCandidates(construction, "team-1")).toEqual([]);
   });
 
-  it("reflects saved friendly reservations and the latest board after sequential movement", () => {
+  it("ignores legacy normal reservations and reflects committed board occupancy", () => {
     let state = createInitialGameState();
     const first = addUnit(state, "cpu-first-mover", "team-1", "infantry", { kind: "tile", x: 3, y: 1 });
     const ninja = addUnit(state, "cpu-reserved-ninja", "team-1", "ninja", { kind: "water", x: 4, y: 2 });
     state = saveMovementIntent(state, { teamId: "team-1", unitId: first.id, from: first.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
+    expect(getTeamMovementCandidates(state, "team-1").find((entry) => entry.unitId === ninja.id)?.destinations.map(positionKey)).toContain("4,1");
+
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: first.id, from: first.position, to: { kind: "tile", x: 4, y: 1 }, stay: false });
+    expect(state.units.find((unit) => unit.id === first.id)?.position).toEqual({ kind: "tile", x: 4, y: 1 });
     expect(getTeamMovementCandidates(state, "team-1").find((entry) => entry.unitId === ninja.id)?.destinations.map(positionKey)).not.toContain("4,1");
 
-    state = submitMovement(state, "team-1");
     const later = addUnit(state, "cpu-later-mover", "team-2", "infantry", { kind: "tile", x: 5, y: 1 });
-    expect(getTeamMovementCandidates(state, "team-2").find((entry) => entry.unitId === later.id)?.destinations.map(positionKey)).not.toContain("4,1");
+    expect(getMovementCandidates(state, later.id).map(positionKey)).not.toContain("4,1");
   });
 
   it("returns candidates accepted by the existing validators and intent entry points", () => {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  commitUnitMovement,
   getMovementCandidates,
   getMovementPaths,
   isLegalDestination,
-  resolveMovement,
   saveMovementIntent,
   validateMovementPath,
 } from "../engine/movement";
@@ -160,40 +160,41 @@ describe("movement", () => {
     expect(planned.turnState.actionIntents[0].movementIntents).toHaveLength(1);
   });
 
-  it("movement resolution applies saved movement intents", () => {
+  it("commits a legal movement immediately and prevents the unit from moving twice", () => {
     const state = createInitialGameState();
     putUnitOnTile(state, "home-1-strategist", { kind: "tile", x: 4, y: 1 });
-    const planned = saveMovementIntent(state, {
+    const moved = commitUnitMovement(state, {
       teamId: "team-1",
       unitId: "home-1-strategist",
       from: { kind: "tile", x: 4, y: 1 },
       to: { kind: "tile", x: 5, y: 1 },
       stay: false,
     });
-    const resolved = resolveMovement(planned);
 
     expect(
-      resolved.units.find((unit) => unit.id === "home-1-strategist")?.position,
+      moved.units.find((unit) => unit.id === "home-1-strategist")?.position,
     ).toEqual({ kind: "tile", x: 5, y: 1 });
+    expect(moved.movedUnitIdsThisMovementPhase).toContain("home-1-strategist");
+    expect(getMovementCandidates(moved, "home-1-strategist")).toEqual([]);
   });
 
-  it("fails movement that becomes illegal at resolution time", () => {
+  it("rejects a destination that is occupied at immediate commit time", () => {
     const state = createInitialGameState();
     putUnitOnTile(state, "home-1-strategist", { kind: "tile", x: 4, y: 1 });
-    const planned = saveMovementIntent(state, {
+    putUnitOnTile(state, "home-1-king", { kind: "tile", x: 5, y: 1 });
+    const rejected = commitUnitMovement(state, {
       teamId: "team-1",
       unitId: "home-1-strategist",
       from: { kind: "tile", x: 4, y: 1 },
       to: { kind: "tile", x: 5, y: 1 },
       stay: false,
     });
-    putUnitOnTile(planned, "home-1-king", { kind: "tile", x: 5, y: 1 });
-    const resolved = resolveMovement(planned);
 
+    expect(rejected).toBe(state);
     expect(
-      resolved.units.find((unit) => unit.id === "home-1-strategist")?.position,
+      rejected.units.find((unit) => unit.id === "home-1-strategist")?.position,
     ).toEqual({ kind: "tile", x: 4, y: 1 });
-    expect(resolved.logs.at(-1)?.message).toContain("failed");
+    expect(rejected.movedUnitIdsThisMovementPhase).not.toContain("home-1-strategist");
   });
 
   it("does not treat units inside bases as normal board coordinates", () => {
@@ -578,7 +579,7 @@ describe("movement", () => {
     ).not.toContain("12,1");
   });
 
-  it("keeps base entry as a base position and validates saved intents with the same path rules", () => {
+  it("keeps immediate base entry as a base position and uses the same path rules", () => {
     const state = createInitialGameState();
     makeBaseFriendly(state, "neutral-north");
     const cavalry = addUnit(state, "team-1-cavalry-test", "team-1", "cavalry", {
@@ -591,22 +592,20 @@ describe("movement", () => {
         candidate.kind === "base" && candidate.baseId === "neutral-north",
     )!;
 
-    const resolved = resolveMovement(
-      saveMovementIntent(state, {
-        teamId: "team-1",
-        unitId: cavalry.id,
-        from: cavalry.position,
-        to: baseDestination,
-        stay: false,
-      }),
-    );
+    const resolved = commitUnitMovement(state, {
+      teamId: "team-1",
+      unitId: cavalry.id,
+      from: cavalry.position,
+      to: baseDestination,
+      stay: false,
+    });
 
     expect(
       resolved.units.find((unit) => unit.id === cavalry.id)?.position,
     ).toEqual(baseDestination);
   });
 
-  it("rejects direct saved movement intents that have no legal path", () => {
+  it("rejects an immediate movement that has no legal path", () => {
     const state = createInitialGameState();
     clearBase(state, "neutral-north");
     const cavalry = addUnit(state, "team-1-cavalry-test", "team-1", "cavalry", {
@@ -622,20 +621,19 @@ describe("movement", () => {
       ),
     ).not.toContain(positionKey(destination));
 
-    const resolved = resolveMovement(
-      saveMovementIntent(state, {
-        teamId: "team-1",
-        unitId: cavalry.id,
-        from: cavalry.position,
-        to: destination,
-        stay: false,
-      }),
-    );
+    const resolved = commitUnitMovement(state, {
+      teamId: "team-1",
+      unitId: cavalry.id,
+      from: cavalry.position,
+      to: destination,
+      stay: false,
+    });
 
+    expect(resolved).toBe(state);
     expect(
       resolved.units.find((unit) => unit.id === cavalry.id)?.position,
     ).toEqual({ kind: "tile", x: 9, y: 1 });
-    expect(resolved.logs.at(-1)?.message).toContain("no legal movement path");
+    expect(resolved.movedUnitIdsThisMovementPhase).not.toContain(cavalry.id);
   });
 
   it("allows cavalry inside a base to leave and use its second movement step", () => {

@@ -5,7 +5,7 @@ import {
   resolveBattle,
   saveAttackIntent,
 } from "../engine/battle";
-import { resolveMovement, saveMovementIntent } from "../engine/movement";
+import { commitUnitMovement } from "../engine/movement";
 import {
   getBaseControllerTeamId,
   clearInvalidRetreatTargets,
@@ -249,6 +249,10 @@ describe("retreat", () => {
       y: 1,
     });
     cavalry.hp = 2;
+    const neutralArcher = state.units.find((unit) => unit.id === "neutral-north-archer")!;
+    clearPreviousSlot(state, neutralArcher.position);
+    neutralArcher.hp = 0;
+    neutralArcher.position = { kind: "removed", reason: "defeated" };
     addUnit(state, "team-2-archer-test", "team-2", "archer", {
       kind: "tile",
       x: 9,
@@ -597,15 +601,13 @@ describe("retreat", () => {
       }),
     ).toBe("start");
 
-    const resolved = resolveMovement(
-      saveMovementIntent(state, {
-        teamId: "team-1",
-        unitId: unit.id,
-        from: unit.position,
-        to: { kind: "tile", x: 7, y: 1 },
-        stay: false,
-      }),
-    );
+    const resolved = commitUnitMovement(state, {
+      teamId: "team-1",
+      unitId: unit.id,
+      from: unit.position,
+      to: { kind: "tile", x: 7, y: 1 },
+      stay: false,
+    });
 
     expect(
       isRetreating(
@@ -652,7 +654,7 @@ describe("retreat", () => {
     expect(resolved.phase).toBe("strategist_action_input");
   });
 
-  it("does not start retreat after a failed movement resolution", () => {
+  it("does not start retreat after a rejected immediate movement", () => {
     const state = createInitialGameState();
     const unit = addUnit(state, "team-1-infantry-test", "team-1", "infantry", {
       kind: "tile",
@@ -666,15 +668,13 @@ describe("retreat", () => {
     });
     markRetreatEligible(state, unit.id);
 
-    const resolved = resolveMovement(
-      saveMovementIntent(state, {
-        teamId: "team-1",
-        unitId: unit.id,
-        from: unit.position,
-        to: { kind: "tile", x: 17, y: 1 },
-        stay: false,
-      }),
-    );
+    const resolved = commitUnitMovement(state, {
+      teamId: "team-1",
+      unitId: unit.id,
+      from: unit.position,
+      to: { kind: "tile", x: 17, y: 1 },
+      stay: false,
+    });
 
     expect(
       isRetreating(
@@ -693,15 +693,13 @@ describe("retreat", () => {
       { kind: "tile", x: 8, y: 1 },
     );
     maintainingUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
-    const maintained = resolveMovement(
-      saveMovementIntent(maintain, {
-        teamId: "team-1",
-        unitId: maintainingUnit.id,
-        from: maintainingUnit.position,
-        to: { kind: "tile", x: 7, y: 1 },
-        stay: false,
-      }),
-    );
+    const maintained = commitUnitMovement(maintain, {
+      teamId: "team-1",
+      unitId: maintainingUnit.id,
+      from: maintainingUnit.position,
+      to: { kind: "tile", x: 7, y: 1 },
+      stay: false,
+    });
     expect(
       isRetreating(
         maintained.units.find((unit) => unit.id === maintainingUnit.id)!,
@@ -717,15 +715,13 @@ describe("retreat", () => {
       { kind: "tile", x: 7, y: 1 },
     );
     releasingUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
-    const released = resolveMovement(
-      saveMovementIntent(release, {
-        teamId: "team-1",
-        unitId: releasingUnit.id,
-        from: releasingUnit.position,
-        to: { kind: "tile", x: 8, y: 1 },
-        stay: false,
-      }),
-    );
+    const released = commitUnitMovement(release, {
+      teamId: "team-1",
+      unitId: releasingUnit.id,
+      from: releasingUnit.position,
+      to: { kind: "tile", x: 8, y: 1 },
+      stay: false,
+    });
     expect(
       isRetreating(
         released.units.find((unit) => unit.id === releasingUnit.id)!,
@@ -743,15 +739,13 @@ describe("retreat", () => {
       { kind: "tile", x: 17, y: 1 },
     );
     stayingUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
-    const stayed = resolveMovement(
-      saveMovementIntent(stay, {
-        teamId: "team-1",
-        unitId: stayingUnit.id,
-        from: stayingUnit.position,
-        to: stayingUnit.position,
-        stay: true,
-      }),
-    );
+    const stayed = commitUnitMovement(stay, {
+      teamId: "team-1",
+      unitId: stayingUnit.id,
+      from: stayingUnit.position,
+      to: stayingUnit.position,
+      stay: true,
+    });
     expect(
       isRetreating(stayed.units.find((unit) => unit.id === stayingUnit.id)!),
     ).toBe(false);
@@ -765,15 +759,13 @@ describe("retreat", () => {
       { kind: "tile", x: 3, y: 1 },
     );
     enteringUnit.statuses.push({ kind: "retreating", retreatTargetBaseId: "home-1" });
-    const entered = resolveMovement(
-      saveMovementIntent(baseEntry, {
-        teamId: "team-1",
-        unitId: enteringUnit.id,
-        from: enteringUnit.position,
-        to: { kind: "base", baseId: "home-1", slotId: "slot_1_0" },
-        stay: false,
-      }),
-    );
+    const entered = commitUnitMovement(baseEntry, {
+      teamId: "team-1",
+      unitId: enteringUnit.id,
+      from: enteringUnit.position,
+      to: { kind: "base", baseId: "home-1", slotId: "slot_1_0" },
+      stay: false,
+    });
     expect(
       isRetreating(entered.units.find((unit) => unit.id === enteringUnit.id)!),
     ).toBe(false);
@@ -871,15 +863,13 @@ describe("retreat", () => {
       y: 1,
     });
 
-    const afterStay = resolveMovement(
-      saveMovementIntent(state, {
-        teamId: "team-1",
-        unitId: retreating.id,
-        from: retreating.position,
-        to: retreating.position,
-        stay: true,
-      }),
-    );
+    const afterStay = commitUnitMovement(state, {
+      teamId: "team-1",
+      unitId: retreating.id,
+      from: retreating.position,
+      to: retreating.position,
+      stay: true,
+    });
 
     expect(
       isRetreating(afterStay.units.find((unit) => unit.id === retreating.id)!),

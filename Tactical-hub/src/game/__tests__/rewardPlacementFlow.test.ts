@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveBattle } from "../engine/battle";
-import { getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
+import { commitUnitMovement, getMovementCandidates, submitMovement } from "../engine/movement";
 import { submitTeamProduction } from "../engine/production";
 import { getRewardPlacementCandidates, placeRewardUnit } from "../engine/reward";
 import { createInitialGameState } from "../initialState";
@@ -67,7 +67,8 @@ describe("mandatory reward and compensation placement flow", () => {
     for (const unit of state.units.filter((entry) => entry.ownerTeamId === "team-2" || entry.ownerTeamId === "team-3")) unit.position = tiedPosition;
     const destination = getMovementCandidates(state, mover.id).find((candidate) => candidate.kind === "tile");
     expect(destination).toBeDefined();
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: mover.id, from: mover.position, to: destination!, stay: false });
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: mover.id, from: mover.position, to: destination!, stay: false });
+    expect(state.units.find((unit) => unit.id === mover.id)?.position).toEqual(destination);
     let rngCalls = 0;
     const unseededRandom = vi.spyOn(Math, "random").mockImplementation(() => { throw new Error("unseeded Math.random was used"); });
     try {

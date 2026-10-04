@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAvailableProductionTypes, getProductionCandidates, resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
-import { getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
+import { commitUnitMovement, getMovementCandidates, submitMovement } from "../engine/movement";
 import { isProductionTurn } from "../engine/productionSchedule";
 import { createInitialGameState } from "../initialState";
 import { UNIT_STATS } from "../constants";
@@ -78,9 +78,9 @@ describe("production", () => {
     const produced = state.units.find((unit) => !unitIdsBefore.has(unit.id))!;
     const destination = getMovementCandidates(state, produced.id)[0];
     expect(destination).toBeDefined();
-    state = saveMovementIntent(state, { teamId: "team-1", unitId: produced.id, from: produced.position, to: destination, stay: false });
-    state = submitMovement(state, "team-1");
+    state = commitUnitMovement(state, { teamId: "team-1", unitId: produced.id, from: produced.position, to: destination, stay: false });
     expect(state.units.find((unit) => unit.id === produced.id)?.position).toEqual(destination);
+    expect(state.movedUnitIdsThisMovementPhase).toContain(produced.id);
   });
 
   it("allows an explicit production pass before movement", () => {
