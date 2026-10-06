@@ -8,6 +8,7 @@ from PIL import Image
 from gui_controller import (
     PromptState,
     SheetLayout,
+    choose_display_scale,
     display_to_frame,
     extract_row_frames,
     frame_output_names,
@@ -33,9 +34,22 @@ class GuiControllerTests(unittest.TestCase):
         self.assertEqual([np.asarray(frame)[0, 0, 0] for frame in frames], [10, 11])
 
     def test_maps_display_coordinates_to_frame_coordinates(self) -> None:
-        self.assertEqual(display_to_frame(0, 0, (512, 512), (128, 128)), (0, 0))
-        self.assertEqual(display_to_frame(511, 511, (512, 512), (128, 128)), (127, 127))
-        self.assertEqual(display_to_frame(162, 322, (512, 512), (128, 128)), (40, 80))
+        for scale in (3, 4):
+            with self.subTest(scale=scale):
+                display_size = (128 * scale, 128 * scale)
+                self.assertEqual(display_to_frame(0, 0, display_size, (128, 128)), (0, 0))
+                self.assertEqual(
+                    display_to_frame(display_size[0] - 1, display_size[1] - 1, display_size, (128, 128)),
+                    (127, 127),
+                )
+                self.assertEqual(display_to_frame(40 * scale, 80 * scale, display_size, (128, 128)), (40, 80))
+        self.assertEqual(display_to_frame(299, 149, (300, 150), (100, 50)), (99, 49))
+
+    def test_display_scale_prefers_four_but_shrinks_to_fit(self) -> None:
+        self.assertEqual(choose_display_scale((128, 128), (800, 600)), 4)
+        self.assertEqual(choose_display_scale((128, 128), (500, 400)), 3)
+        self.assertEqual(choose_display_scale((256, 128), (700, 400)), 2)
+        self.assertEqual(choose_display_scale((256, 128), (200, 100)), 1)
 
     def test_layout_rejects_invalid_row_and_sheet_size(self) -> None:
         with self.assertRaisesRegex(ValueError, "Target row"):

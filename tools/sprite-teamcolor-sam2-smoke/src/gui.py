@@ -20,6 +20,7 @@ from gui_controller import (
     PromptState,
     Sam2GuiSession,
     SheetLayout,
+    choose_display_scale,
     display_to_frame,
     extract_row_frames,
     frame_output_names,
@@ -36,12 +37,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TeamColorApp:
-    DISPLAY_SCALE = 4
+    PREFERRED_DISPLAY_SCALE = 4
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Sprite Team Color - SAM 2 MVP")
-        self.root.minsize(1080, 820)
+        self.screen_size = (self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        window_width = min(1080, max(1, self.screen_size[0] - 40))
+        window_height = min(900, max(1, self.screen_size[1] - 80))
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(min(640, window_width), min(480, window_height))
 
         self.sprite_path = tk.StringVar()
         self.checkpoint_path = tk.StringVar(value=str(ROOT / "models" / "sam2.1_hiera_tiny.pt"))
@@ -70,6 +75,7 @@ class TeamColorApp:
         self.sam_session: Sam2GuiSession | None = None
         self.session_checkpoint: Path | None = None
         self.session_device_name: str | None = None
+        self._prompt_display_size = (384, 384)
         self._prompt_photo: ImageTk.PhotoImage | None = None
         self._contact_photo: ImageTk.PhotoImage | None = None
         self._busy = False
@@ -80,8 +86,27 @@ class TeamColorApp:
         self.root.after(100, self._poll_events)
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self.root, padding=10)
-        container.pack(fill="both", expand=True)
+        viewport = ttk.Frame(self.root)
+        viewport.pack(fill="both", expand=True)
+        content_canvas = tk.Canvas(viewport, highlightthickness=0)
+        vertical_scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=content_canvas.yview)
+        horizontal_scrollbar = ttk.Scrollbar(viewport, orient="horizontal", command=content_canvas.xview)
+        content_canvas.configure(
+            yscrollcommand=vertical_scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
+        content_canvas.grid(row=0, column=0, sticky="nsew")
+        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+
+        container = ttk.Frame(content_canvas, padding=10)
+        content_canvas.create_window((0, 0), window=container, anchor="nw")
+        container.bind(
+            "<Configure>",
+            lambda _event: content_canvas.configure(scrollregion=content_canvas.bbox("all")),
+        )
 
         input_box = ttk.LabelFrame(container, text="A. Input", padding=8)
         input_box.pack(fill="x")
@@ -116,20 +141,26 @@ class TeamColorApp:
         sam_box.columnconfigure(1, weight=1)
 
         middle = ttk.Frame(container)
-        middle.pack(fill="both", expand=True, pady=(8, 0))
+        middle.pack(fill="x", pady=(8, 0))
         prompt_box = ttk.LabelFrame(middle, text="C/D. Prompt editor and mask preview", padding=8)
-        prompt_box.pack(side="left", fill="both", expand=False)
-        self.prompt_canvas = tk.Canvas(prompt_box, width=512, height=512, background="#202020", highlightthickness=0)
-        self.prompt_canvas.pack()
-        self.prompt_canvas.bind("<Button-1>", self._on_canvas_click)
+        prompt_box.pack(side="left", fill="y", expand=False)
 
         prompt_controls = ttk.Frame(prompt_box)
-        prompt_controls.pack(fill="x", pady=(6, 0))
+        prompt_controls.pack(fill="x")
         ttk.Radiobutton(prompt_controls, text="Positive", variable=self.prompt_mode, value=1).pack(side="left")
         ttk.Radiobutton(prompt_controls, text="Negative", variable=self.prompt_mode, value=0).pack(side="left", padx=(8, 0))
         ttk.Button(prompt_controls, text="Undo last click", command=self._undo_prompt).pack(side="left", padx=(16, 0))
         ttk.Button(prompt_controls, text="Clear clicks", command=self._clear_prompts).pack(side="left", padx=(6, 0))
         ttk.Label(prompt_box, textvariable=self.prompt_info).pack(anchor="w", pady=(4, 0))
+        self.prompt_canvas = tk.Canvas(
+            prompt_box,
+            width=self._prompt_display_size[0],
+            height=self._prompt_display_size[1],
+            background="#202020",
+            highlightthickness=0,
+        )
+        self.prompt_canvas.pack(pady=(6, 0))
+        self.prompt_canvas.bind("<Button-1>", self._on_canvas_click)
 
         action_box = ttk.LabelFrame(middle, text="E/F/H. Process and save", padding=10)
         action_box.pack(side="left", fill="both", expand=True, padx=(8, 0))
@@ -200,6 +231,19 @@ class TeamColorApp:
         self.layout = layout
         self.frames = frames
         self.prompts = PromptState(layout.frame_size)
+        available_size = (
+            max(1, self.screen_size[0] - 480),
+            max(1, self.screen_size[1] - 360),
+        )
+        display_scale = choose_display_scale(
+            layout.frame_size,
+            available_size,
+            preferred_scale=self.PREFERRED_DISPLAY_SCALE,
+        )
+        self._prompt_display_size = (
+            layout.frame_width * display_scale,
+            layout.frame_height * display_scale,
+        )
         self.frame0_mask = None
         self.masks = None
         self.recolored_frames = []
@@ -217,9 +261,8 @@ class TeamColorApp:
     def _on_canvas_click(self, event: tk.Event) -> None:
         if self._busy or not self.frames or self.prompts is None or self.layout is None:
             return
-        display_size = (self.layout.frame_width * self.DISPLAY_SCALE, self.layout.frame_height * self.DISPLAY_SCALE)
         try:
-            x, y = display_to_frame(event.x, event.y, display_size, self.layout.frame_size)
+            x, y = display_to_frame(event.x, event.y, self._prompt_display_size, self.layout.frame_size)
             self.prompts.add(x, y, self.prompt_mode.get())
         except ValueError:
             return
@@ -262,8 +305,7 @@ class TeamColorApp:
         source = self.frames[0]
         if self.frame0_mask is not None:
             source = make_mask_overlay(source, self.frame0_mask)
-        display_size = (self.layout.frame_width * self.DISPLAY_SCALE, self.layout.frame_height * self.DISPLAY_SCALE)
-        display = source.resize(display_size, Image.Resampling.NEAREST)
+        display = source.resize(self._prompt_display_size, Image.Resampling.NEAREST)
         self._prompt_photo = ImageTk.PhotoImage(display)
         self.prompt_canvas.configure(width=display.width, height=display.height)
         self.prompt_canvas.create_image(0, 0, image=self._prompt_photo, anchor="nw")

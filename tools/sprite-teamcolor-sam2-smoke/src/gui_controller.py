@@ -138,6 +138,24 @@ def display_to_frame(
     return x, y
 
 
+def choose_display_scale(
+    frame_size: tuple[int, int],
+    available_size: tuple[int, int],
+    preferred_scale: int = 4,
+) -> int:
+    """Choose the largest whole-number scale that fits, capped at the preference."""
+    frame_width, frame_height = frame_size
+    available_width, available_height = available_size
+    if frame_width <= 0 or frame_height <= 0:
+        raise ValueError("Frame dimensions must be positive")
+    if available_width <= 0 or available_height <= 0:
+        raise ValueError("Available display dimensions must be positive")
+    if preferred_scale <= 0:
+        raise ValueError("Preferred display scale must be positive")
+    fitting_scale = min(available_width // frame_width, available_height // frame_height)
+    return max(1, min(preferred_scale, fitting_scale))
+
+
 def frame_output_names(frame_count: int) -> list[str]:
     if frame_count <= 0:
         raise ValueError("Frame count must be positive")
