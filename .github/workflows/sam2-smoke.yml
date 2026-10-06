@@ -20,7 +20,7 @@ jobs:
       SMOKE_DIR: tools/sprite-teamcolor-sam2-smoke
       SAM2_COMMIT: 2b90b9f5ceec907a1c18123530e92e794ad901a4
       CHECKPOINT_URL: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
-      KNIGHT_DOWNLOAD_GATEWAY: https://smallscaleint.itch.io/hd-8-directional-top-down-character-pack-1/download/eyJleHBpcmVzIjoxNzkxMjgwNjA3LCJpZCI6MjkyMzI1Nn0=.vBTIbsHo4DDvaX7oOUoZi0X8Njs=
+      MELEE_TRANSPORT_SHA256: 6ec1e8a3c666fd29c3109df1482581fb47991c3db2f36d5010d4893e4cd7208b
 
     steps:
       - name: Checkout sam2-smoke
@@ -34,9 +34,7 @@ jobs:
       - name: Install CPU PyTorch
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            torch==2.7.1 torchvision==0.22.1 \
-            --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install             torch==2.7.1 torchvision==0.22.1             --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install official SAM 2
         env:
@@ -50,55 +48,30 @@ jobs:
       - name: Download official SAM 2.1 Hiera Tiny checkpoint
         run: |
           mkdir -p "$SMOKE_DIR/models"
-          curl -L --fail --retry 3 --retry-delay 2 \
-            "$CHECKPOINT_URL" \
-            -o "$SMOKE_DIR/models/sam2.1_hiera_tiny.pt"
+          curl -L --fail --retry 3 --retry-delay 2             "$CHECKPOINT_URL"             -o "$SMOKE_DIR/models/sam2.1_hiera_tiny.pt"
           sha256sum "$SMOKE_DIR/models/sam2.1_hiera_tiny.pt" | tee "$SMOKE_DIR/checkpoint_sha256.txt"
 
-      - name: Download free HD Knight pack and extract Melee.png
+      - name: Reconstruct Melee row-0 fixture
         run: |
-          curl -L --fail --retry 3 --retry-delay 2 \
-            -A "Mozilla/5.0" \
-            "$KNIGHT_DOWNLOAD_GATEWAY" \
-            -o "$RUNNER_TEMP/knight-download"
-          file "$RUNNER_TEMP/knight-download"
-          python - <<'PY'
-          from pathlib import Path
-          import zipfile
-
-          src = Path("/home/runner/work/_temp/knight-download")
-          data = src.read_bytes()
-          print("downloaded bytes:", len(data))
-          print("signature:", data[:16])
-
-          if not zipfile.is_zipfile(src):
-              raise SystemExit("itch.io gateway did not return the Knight ZIP")
-
-          with zipfile.ZipFile(src) as zf:
-              names = zf.namelist()
-              matches = [n for n in names if n.lower().endswith("/melee.png")]
-              if len(matches) != 1:
-                  raise SystemExit(f"Expected exactly one Melee.png, found: {matches}")
-              out = Path("/home/runner/work/_temp/Melee.png")
-              out.write_bytes(zf.read(matches[0]))
-              print("extracted:", matches[0])
-              print("saved:", out, out.stat().st_size)
-          PY
-
-      - name: Verify Melee.png
-        run: |
+          cat .github/fixtures/sam2-melee/part*.b64 | base64 -d > "$RUNNER_TEMP/Melee_row0_smoke.webp"
+          echo "$MELEE_TRANSPORT_SHA256  $RUNNER_TEMP/Melee_row0_smoke.webp" | sha256sum -c -
           python - <<'PY'
           from PIL import Image
           from pathlib import Path
-          p = Path("/home/runner/work/_temp/Melee.png")
-          im = Image.open(p)
+          p = Path("/home/runner/work/_temp/Melee_row0_smoke.webp")
+          im = Image.open(p).convert("RGBA")
           im.load()
           print("size:", im.size)
           print("mode:", im.mode)
           if im.size != (1920, 1024):
               raise SystemExit(f"unexpected size: {im.size}")
-          if im.mode != "RGBA":
-              raise SystemExit(f"unexpected mode: {im.mode}")
+          alpha = im.getchannel("A")
+          if alpha.getbbox() is None:
+              raise SystemExit("fixture has no visible pixels")
+          # Save as RGBA PNG so smoke.py validates mode/alpha exactly.
+          out = Path("/home/runner/work/_temp/Melee.png")
+          im.save(out)
+          print("fixture ready:", out, out.stat().st_size)
           PY
 
       - name: Validate smoke utility
@@ -108,15 +81,7 @@ jobs:
       - name: Run Melee row-0 SAM 2 smoke
         run: |
           rm -rf "$SMOKE_DIR/output-attack" "$SMOKE_DIR/temp-attack"
-          python "$SMOKE_DIR/src/smoke.py" \
-            --input "$RUNNER_TEMP/Melee.png" \
-            --output "$SMOKE_DIR/output-attack" \
-            --temp "$SMOKE_DIR/temp-attack" \
-            --positive 67,51 \
-            --negative 70,54 \
-            --negative 58,61 \
-            --negative 66,69 \
-            --device cpu
+          python "$SMOKE_DIR/src/smoke.py"             --input "$RUNNER_TEMP/Melee.png"             --output "$SMOKE_DIR/output-attack"             --temp "$SMOKE_DIR/temp-attack"             --positive 58,58             --negative 67,51             --negative 52,67             --negative 68,64             --device cpu
 
       - name: Print attack metrics summary
         if: always()
@@ -128,6 +93,7 @@ jobs:
           p = Path("tools/sprite-teamcolor-sam2-smoke/output-attack/metrics.json")
           d = json.loads(p.read_text())
           print("status:", d.get("status"))
+          print("prompts:", d.get("prompts"))
           print("timing_seconds:", d.get("timing_seconds"))
           print("automated_screening:", d.get("automated_screening"))
           for f in d.get("frames", []):
