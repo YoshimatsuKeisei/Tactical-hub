@@ -1,0 +1,98 @@
+name: SAM2 Sprite Tracking Smoke
+
+on:
+  push:
+    branches:
+      - sam2-smoke
+    paths:
+      - ".github/workflows/sam2-smoke.yml"
+      - "tools/sprite-teamcolor-sam2-smoke/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  idle-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      SMOKE_DIR: tools/sprite-teamcolor-sam2-smoke
+      SAM2_COMMIT: 2b90b9f5ceec907a1c18123530e92e794ad901a4
+      CHECKPOINT_URL: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
+
+    steps:
+      - name: Checkout sam2-smoke
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install             torch==2.7.1 torchvision==0.22.1             --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install official SAM 2
+        env:
+          SAM2_BUILD_CUDA: "0"
+        run: |
+          git clone https://github.com/facebookresearch/sam2.git "$RUNNER_TEMP/sam2"
+          git -C "$RUNNER_TEMP/sam2" checkout "$SAM2_COMMIT"
+          python -m pip install -e "$RUNNER_TEMP/sam2"
+          python -m pip install pillow numpy
+
+      - name: Download official SAM 2.1 Hiera Tiny checkpoint
+        run: |
+          mkdir -p "$SMOKE_DIR/models"
+          curl -L --fail --retry 3 --retry-delay 2             "$CHECKPOINT_URL"             -o "$SMOKE_DIR/models/sam2.1_hiera_tiny.pt"
+          ls -lh "$SMOKE_DIR/models/sam2.1_hiera_tiny.pt"
+          sha256sum "$SMOKE_DIR/models/sam2.1_hiera_tiny.pt" | tee "$SMOKE_DIR/checkpoint_sha256.txt"
+
+      - name: Validate smoke utility
+        run: |
+          python "$SMOKE_DIR/src/test_smoke.py"
+
+      - name: Run Idle row-0 SAM 2 smoke
+        run: |
+          python "$SMOKE_DIR/src/smoke.py"             --positive 67,51             --negative 70,54             --negative 58,61             --negative 66,69             --device cpu
+
+      - name: Print metrics summary
+        if: always()
+        run: |
+          if [ -f "$SMOKE_DIR/output/metrics.json" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("tools/sprite-teamcolor-sam2-smoke/output/metrics.json")
+          d = json.loads(p.read_text())
+          print("status:", d.get("status"))
+          print("timing_seconds:", d.get("timing_seconds"))
+          print("automated_screening:", d.get("automated_screening"))
+          for f in d.get("frames", []):
+              print(
+                  f"frame={f['frame']:02d} "
+                  f"area={f['mask_pixel_area']} "
+                  f"iou={f['previous_frame_mask_iou']} "
+                  f"bbox={f['mask_bounding_box_xyxy']}"
+              )
+          PY
+          else
+            echo "metrics.json not generated"
+          fi
+
+      - name: Upload smoke outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sam2-idle-smoke
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            tools/sprite-teamcolor-sam2-smoke/output/
+            tools/sprite-teamcolor-sam2-smoke/checkpoint_sha256.txt
+            tools/sprite-teamcolor-sam2-smoke/temp/frame_000_prompt.png
