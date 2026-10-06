@@ -123,7 +123,8 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(set(written), set(TEAM_COLORS))
             for path in written.values():
                 self.assertTrue(Path(path).is_file())
-                self.assertEqual(Image.open(path).size, (FRAME_SIZE, FRAME_SIZE))
+                with Image.open(path) as output:
+                    self.assertEqual(output.size, (FRAME_SIZE, FRAME_SIZE))
 
 
 if __name__ == "__main__":
