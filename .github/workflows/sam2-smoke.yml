@@ -6,6 +6,7 @@ on:
       - sam2-smoke
     paths:
       - ".github/workflows/sam2-smoke.yml"
+      - ".github/fixtures/sam2-melee/**"
   workflow_dispatch:
 
 permissions:
