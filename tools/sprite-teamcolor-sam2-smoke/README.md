@@ -9,6 +9,10 @@ utility in this directory can recolor existing mask results without rerunning SA
 2. Neither utility modifies Tactical-hub game, UI, CPU, RL, PPO, or package
 configuration.
 
+The Tkinter GUI MVP described below connects the same frame extraction, official
+SAM 2 predictor, mask propagation, and shading-preserving recolor operations for
+one selected spritesheet row.
+
 ## Scope
 
 - Input: `input/Idle.png` (1920 x 1024 RGBA)
@@ -99,9 +103,9 @@ run SAM 2 inference or generate replacement artwork.
 
 The masked RGB pixels are shifted toward the requested hue while retaining each
 pixel's HSV value. The blend is reduced for near-black pixels to protect outlines.
-Pixels outside the mask and the complete alpha channel remain unchanged. The
-current review target is the built-in `red` preset; `#RRGGBB` and `R,G,B` targets
-are also accepted for later experiments.
+Pixels outside the mask and the complete alpha channel remain unchanged. Built-in
+`red`, `blue`, `green`, and `yellow` presets are available; `#RRGGBB` and `R,G,B`
+targets are also accepted for later experiments.
 
 Required inputs:
 
@@ -135,3 +139,69 @@ Outputs:
 These outputs are for visual review. They do not change the existing smoke verdict;
 Melee remains `REQUIRES_VISUAL_REVIEW` until a person checks mask coverage and the
 recolored result.
+
+## Sprite team-color GUI MVP
+
+`src/gui.py` provides a desktop workflow for processing one row of a PNG
+spritesheet without entering inference or recolor commands manually. It uses
+Tkinter and Pillow, and reuses the existing SAM 2 and recolor implementation.
+It does not alter the source spritesheet.
+
+### Requirements and launch
+
+Use the environment described above, including PyTorch, Pillow, NumPy, the
+official Meta SAM 2 package, and Tkinter. Download the official
+`sam2.1_hiera_tiny.pt` checkpoint to `models/`, or select it from another local
+path in the GUI. No user-specific absolute path is embedded in the tool.
+
+From the repository root on Windows, with the tool virtual environment already
+created, run:
+
+```bat
+tools\sprite-teamcolor-sam2-smoke\.venv\Scripts\python.exe tools\sprite-teamcolor-sam2-smoke\src\gui.py
+```
+
+If the active Python environment already contains the required packages, this is
+also valid:
+
+```bat
+python tools\sprite-teamcolor-sam2-smoke\src\gui.py
+```
+
+The GUI requires a desktop display. The Codex Cloud environment is headless, so
+controller and image-processing tests can run there, but the window itself must
+be visually checked on a local desktop.
+
+### Operation
+
+1. Select the spritesheet PNG with **Browse...**.
+2. Enter the frame width/height and spritesheet columns/rows, then click
+   **Load / Apply**.
+3. Select the single target row and frame count to process.
+4. Select **Positive** or **Negative**, then click the enlarged frame 0 preview;
+   use **Undo last click** or **Clear clicks** as needed.
+5. Select the SAM 2.1 checkpoint and click **Generate Mask**.
+6. Review the mask overlay, adjust prompts, and regenerate until acceptable.
+7. Click **Track Across Frames** and wait for the status to report completion.
+8. Choose Red, Blue, Green, Yellow, or enter a custom color.
+9. Click **Recolor** and review the contact sheet preview.
+10. Click **Save Results...** and select an output directory.
+
+Long-running SAM 2 setup and propagation run on a worker thread. Status updates
+are passed back to the Tkinter main thread, so the interface can continue to
+paint while inference runs.
+
+The selected output directory contains:
+
+- `masks/frame_000.png`, and subsequent masks through the selected frame count
+- `recolored_frames/frame_000.png`, and subsequent RGBA/RGB recolored frames
+- `recolored_contact_sheet.png`
+- `overlay_contact_sheet.png`
+
+Pixels outside each mask are unchanged, and the source alpha channel is retained.
+The existing low-luminance protection and shading-preserving recolor method are
+used for every preset and custom color.
+
+This MVP intentionally processes only one selected row. Processing all eight
+directions at once, batching multiple animations or characters, writing a full
+spritesheet back in place, and integrating output into Tactical-hub are deferred.

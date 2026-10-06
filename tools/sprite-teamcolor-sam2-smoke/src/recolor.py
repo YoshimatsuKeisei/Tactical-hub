@@ -16,7 +16,12 @@ from PIL import Image, ImageDraw
 
 
 FRAME_NAME = re.compile(r"frame_(\d+)\.png")
-DEFAULT_TARGETS = {"red": (210, 48, 48)}
+DEFAULT_TARGETS = {
+    "red": (210, 48, 48),
+    "blue": (48, 92, 210),
+    "green": (48, 170, 78),
+    "yellow": (220, 180, 40),
+}
 
 
 def parse_target_color(value: str) -> tuple[int, int, int]:
@@ -28,11 +33,11 @@ def parse_target_color(value: str) -> tuple[int, int, int]:
         try:
             return tuple(int(normalized[index : index + 2], 16) for index in (1, 3, 5))
         except ValueError as error:
-            raise argparse.ArgumentTypeError("target must be red, #RRGGBB, or R,G,B") from error
+            raise argparse.ArgumentTypeError("target must be a preset, #RRGGBB, or R,G,B") from error
     try:
         channels = tuple(int(channel) for channel in normalized.split(","))
     except ValueError as error:
-        raise argparse.ArgumentTypeError("target must be red, #RRGGBB, or R,G,B") from error
+        raise argparse.ArgumentTypeError("target must be a preset, #RRGGBB, or R,G,B") from error
     if len(channels) != 3 or any(channel < 0 or channel > 255 for channel in channels):
         raise argparse.ArgumentTypeError("target channels must be integers from 0 to 255")
     return channels
@@ -185,39 +190,55 @@ def _checkerboard(size: tuple[int, int], cell: int = 8) -> Image.Image:
     return output
 
 
-def save_contact_sheet(frame_paths: Iterable[Path], destination: Path, columns: int = 5) -> tuple[int, int]:
-    paths = list(frame_paths)
-    if not paths:
+def make_contact_sheet(
+    frames: Sequence[Image.Image],
+    labels: Sequence[str] | None = None,
+    columns: int = 5,
+) -> Image.Image:
+    """Build the same labeled checkerboard contact sheet used by the CLI and GUI."""
+    if not frames:
         raise ValueError("At least one frame is required for a contact sheet")
     if columns <= 0:
         raise ValueError("columns must be positive")
+    if labels is None:
+        labels = [f"frame_{index:03}" for index in range(len(frames))]
+    if len(labels) != len(frames):
+        raise ValueError("labels must match the frame count")
 
-    sizes: list[tuple[int, int]] = []
-    for path in paths:
-        with Image.open(path) as frame:
-            sizes.append(frame.size)
+    sizes = [frame.size for frame in frames]
     cell_width = max(width for width, _ in sizes)
     cell_height = max(height for _, height in sizes)
-    actual_columns = min(columns, len(paths))
-    rows = math.ceil(len(paths) / actual_columns)
+    actual_columns = min(columns, len(frames))
+    rows = math.ceil(len(frames) / actual_columns)
     label_height = 18
     sheet_size = (actual_columns * cell_width, rows * (cell_height + label_height))
     sheet = Image.new("RGB", sheet_size, (24, 24, 24))
     draw = ImageDraw.Draw(sheet)
 
-    for position, path in enumerate(paths):
+    for position, (source, label) in enumerate(zip(frames, labels, strict=True)):
         x = (position % actual_columns) * cell_width
         y = (position // actual_columns) * (cell_height + label_height)
-        with Image.open(path) as source:
-            frame = source.convert("RGBA")
+        frame = source.convert("RGBA")
         background = _checkerboard((cell_width, cell_height))
         background.paste(frame, (0, 0), frame.getchannel("A"))
         sheet.paste(background, (x, y))
-        draw.text((x + 4, y + cell_height + 2), path.stem, fill=(240, 240, 240))
+        draw.text((x + 4, y + cell_height + 2), label, fill=(240, 240, 240))
+
+    return sheet
+
+
+def save_contact_sheet(frame_paths: Iterable[Path], destination: Path, columns: int = 5) -> tuple[int, int]:
+    paths = list(frame_paths)
+    frames: list[Image.Image] = []
+    for path in paths:
+        with Image.open(path) as source:
+            source.load()
+            frames.append(source.copy())
+    sheet = make_contact_sheet(frames, [path.stem for path in paths], columns=columns)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(destination)
-    return sheet_size
+    return sheet.size
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:

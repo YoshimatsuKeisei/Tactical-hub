@@ -93,23 +93,48 @@ def prepare_frames(
 ) -> tuple[list[Image.Image], Path]:
     if work_size < FRAME_SIZE or work_size % FRAME_SIZE != 0:
         raise ValueError("work size must be a multiple of 128 and at least 128")
-    rgba_dir = temp_dir / "rgba_frames"
-    sam_dir = temp_dir / "sam_jpeg_frames"
-    rgba_dir.mkdir(parents=True, exist_ok=True)
-    sam_dir.mkdir(parents=True, exist_ok=True)
-
     frames: list[Image.Image] = []
     for frame_index in range(FRAME_COUNT):
         left = frame_index * FRAME_SIZE
         frame = sprite.crop((left, 0, left + FRAME_SIZE, FRAME_SIZE)).copy()
         frames.append(frame)
-        frame.save(rgba_dir / f"frame_{frame_index:03}.png")
 
+    sam_dir = prepare_frame_sequence(frames, temp_dir, work_size, background)
+
+    preview = frames[0].resize((512, 512), Image.Resampling.NEAREST)
+    preview.save(temp_dir / "frame_000_prompt.png")
+    return frames, sam_dir
+
+
+def prepare_frame_sequence(
+    frames: list[Image.Image],
+    temp_dir: Path,
+    work_size: int,
+    background: tuple[int, int, int] = (0, 0, 0),
+) -> Path:
+    """Prepare arbitrary same-size RGB/RGBA frames for the official video loader."""
+    if not frames:
+        raise ValueError("At least one frame is required")
+    if work_size <= 0:
+        raise ValueError("work size must be positive")
+    if any(frame.mode not in ("RGB", "RGBA") for frame in frames):
+        raise ValueError("SAM 2 frames must be RGB or RGBA")
+    if any(frame.size != frames[0].size for frame in frames):
+        raise ValueError("All SAM 2 frames must have the same dimensions")
+
+    rgba_dir = temp_dir / "rgba_frames"
+    sam_dir = temp_dir / "sam_jpeg_frames"
+    rgba_dir.mkdir(parents=True, exist_ok=True)
+    sam_dir.mkdir(parents=True, exist_ok=True)
+    for frame_index, frame in enumerate(frames):
+        frame.save(rgba_dir / f"frame_{frame_index:03}.png")
         rgb = Image.new("RGB", frame.size, background)
-        rgb.paste(frame.convert("RGB"), mask=frame.getchannel("A"))
-        # SAM 2.1 uses a 1024px image encoder. Creating the work image at that
-        # exact size with nearest-neighbour avoids any interpolating resize in
-        # the official video loader.
+        if frame.mode == "RGBA":
+            rgb.paste(frame.convert("RGB"), mask=frame.getchannel("A"))
+        else:
+            rgb.paste(frame)
+        # SAM 2.1 uses a 1024px image encoder. Nearest-neighbour avoids adding
+        # interpolated sprite pixels before the official video loader runs.
         work = rgb.resize((work_size, work_size), Image.Resampling.NEAREST)
         work.save(
             sam_dir / f"{frame_index:05}.jpg",
@@ -118,10 +143,7 @@ def prepare_frames(
             subsampling=0,
             optimize=False,
         )
-
-    preview = frames[0].resize((512, 512), Image.Resampling.NEAREST)
-    preview.save(temp_dir / "frame_000_prompt.png")
-    return frames, sam_dir
+    return sam_dir
 
 
 def choose_points_gui(frame: Image.Image) -> list[PromptPoint]:
@@ -168,6 +190,87 @@ def choose_points_gui(frame: Image.Image) -> list[PromptPoint]:
         raise RuntimeError("OpenCV GUI is unavailable; use --positive/--negative") from error
     finally:
         cv2.destroyAllWindows()
+
+
+def resolve_device(device_name: str) -> torch.device:
+    if device_name == "auto":
+        device_name = "cuda" if torch.cuda.is_available() else "cpu"
+    if device_name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
+    return torch.device(device_name)
+
+
+def create_sam2_predictor(model_config: str, checkpoint_path: Path, device: torch.device) -> object:
+    try:
+        from sam2.build_sam import build_sam2_video_predictor
+    except ImportError as error:
+        raise RuntimeError("Official SAM 2 is not installed in this Python environment") from error
+    return build_sam2_video_predictor(
+        model_config,
+        str(checkpoint_path),
+        device=device,
+        apply_postprocessing=False,
+    )
+
+
+def initialize_sam2_state(predictor: object, sam_frames_dir: Path, device: torch.device) -> object:
+    return predictor.init_state(
+        video_path=str(sam_frames_dir),
+        offload_video_to_cpu=device.type == "cuda",
+        offload_state_to_cpu=False,
+        async_loading_frames=False,
+    )
+
+
+def _resize_work_mask(mask_logits: object, frame_size: tuple[int, int]) -> np.ndarray:
+    work_mask = mask_logits.detach().cpu().numpy().squeeze() > 0
+    mask_image = Image.fromarray(work_mask.astype(np.uint8) * 255)
+    return np.asarray(mask_image.resize(frame_size, Image.Resampling.NEAREST)) > 0
+
+
+def add_sam2_prompts(
+    predictor: object,
+    inference_state: object,
+    prompt_points: list[PromptPoint],
+    frame_size: tuple[int, int],
+    work_size: int,
+) -> np.ndarray:
+    """Replace frame-0 prompts and return its mask in original-frame coordinates."""
+    if not any(point.label == 1 for point in prompt_points):
+        raise ValueError("At least one positive point is required")
+    frame_width, frame_height = frame_size
+    scale_x = work_size / frame_width
+    scale_y = work_size / frame_height
+    point_array = np.array(
+        [[point.x * scale_x, point.y * scale_y] for point in prompt_points],
+        dtype=np.float32,
+    )
+    label_array = np.array([point.label for point in prompt_points], dtype=np.int32)
+    _frame_index, object_ids, mask_logits = predictor.add_new_points_or_box(
+        inference_state=inference_state,
+        frame_idx=0,
+        obj_id=1,
+        points=point_array,
+        labels=label_array,
+        clear_old_points=True,
+    )
+    object_id_list = [int(object_id) for object_id in object_ids]
+    object_index = object_id_list.index(1)
+    return _resize_work_mask(mask_logits[object_index], frame_size)
+
+
+def propagate_sam2_masks(
+    predictor: object,
+    inference_state: object,
+    frame_size: tuple[int, int],
+) -> dict[int, np.ndarray]:
+    """Propagate object 1 and return masks in original-frame coordinates."""
+    propagated: dict[int, np.ndarray] = {}
+    for frame_index, object_ids, mask_logits in predictor.propagate_in_video(inference_state):
+        object_id_list = [int(object_id) for object_id in object_ids]
+        object_index = object_id_list.index(1)
+        propagated[int(frame_index)] = _resize_work_mask(mask_logits[object_index], frame_size)
+    return propagated
 
 
 def bbox(mask: np.ndarray) -> list[int] | None:
@@ -288,12 +391,7 @@ def run(args: argparse.Namespace) -> dict:
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"SAM 2.1 checkpoint not found: {checkpoint_path}")
 
-    device_name = args.device
-    if device_name == "auto":
-        device_name = "cuda" if torch.cuda.is_available() else "cpu"
-    if device_name == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
-    device = torch.device(device_name)
+    device = resolve_device(args.device)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
@@ -302,45 +400,30 @@ def run(args: argparse.Namespace) -> dict:
     inference_started = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        from sam2.build_sam import build_sam2_video_predictor
-
         started = time.perf_counter()
-        predictor = build_sam2_video_predictor(
-            args.model_config,
-            str(checkpoint_path),
-            device=device,
-            apply_postprocessing=False,
-        )
+        predictor = create_sam2_predictor(args.model_config, checkpoint_path, device)
         timing["model_load"] = time.perf_counter() - started
 
         started = time.perf_counter()
-        inference_state = predictor.init_state(
-            video_path=str(sam_frames_dir),
-            offload_video_to_cpu=device.type == "cuda",
-            offload_state_to_cpu=False,
-            async_loading_frames=False,
-        )
+        inference_state = initialize_sam2_state(predictor, sam_frames_dir, device)
         timing["state_init"] = time.perf_counter() - started
 
-        scale = args.work_size / FRAME_SIZE
-        point_array = np.array([[point.x * scale, point.y * scale] for point in prompt_points], dtype=np.float32)
-        label_array = np.array([point.label for point in prompt_points], dtype=np.int32)
         started = time.perf_counter()
-        predictor.add_new_points_or_box(
-            inference_state=inference_state,
-            frame_idx=0,
-            obj_id=1,
-            points=point_array,
-            labels=label_array,
+        add_sam2_prompts(
+            predictor,
+            inference_state,
+            prompt_points,
+            (FRAME_SIZE, FRAME_SIZE),
+            args.work_size,
         )
         timing["prompt"] = time.perf_counter() - started
 
         started = time.perf_counter()
-        propagated: dict[int, np.ndarray] = {}
-        for frame_index, object_ids, mask_logits in predictor.propagate_in_video(inference_state):
-            object_id_list = [int(object_id) for object_id in object_ids]
-            object_index = object_id_list.index(1)
-            propagated[int(frame_index)] = (mask_logits[object_index].detach().cpu().numpy().squeeze() > 0)
+        propagated = propagate_sam2_masks(
+            predictor,
+            inference_state,
+            (FRAME_SIZE, FRAME_SIZE),
+        )
         timing["propagation"] = time.perf_counter() - started
         recorded_warnings.extend(str(item.message) for item in caught)
 
@@ -357,9 +440,7 @@ def run(args: argparse.Namespace) -> dict:
     spill_frames: list[int] = []
 
     for frame_index, frame in enumerate(frames):
-        raw_work_mask = propagated[frame_index]
-        raw_mask_image = Image.fromarray(raw_work_mask.astype(np.uint8) * 255, mode="L")
-        raw_mask = np.asarray(raw_mask_image.resize((FRAME_SIZE, FRAME_SIZE), Image.Resampling.NEAREST)) > 0
+        raw_mask = propagated[frame_index]
         alpha = np.asarray(frame.getchannel("A")) > 0
         outside_alpha_pixels = int(np.logical_and(raw_mask, ~alpha).sum())
         raw_area = int(raw_mask.sum())
