@@ -4,8 +4,10 @@ This directory is isolated from the Tactical-hub application. It tests whether t
 official Meta SAM 2.1 video predictor can propagate point prompts from frame 0
 through the 15 frames in row 0 of `input/Idle.png`.
 
-The smoke test does not recolor sprites and does not modify Tactical-hub game, UI,
-CPU, RL, PPO, or package configuration.
+The SAM 2 smoke inference does not recolor sprites. A separate post-processing
+utility in this directory can recolor existing mask results without rerunning SAM
+2. Neither utility modifies Tactical-hub game, UI, CPU, RL, PPO, or package
+configuration.
 
 ## Scope
 
@@ -87,3 +89,49 @@ This validates and extracts the 15 frames without loading a model:
 Successful inference writes the requested masks, RGBA overlays, contact sheet,
 `metrics.json`, and `smoke_report.md` under `output/`. The report always requires
 visual review; automated heuristics never declare a PASS.
+
+## Recolor existing masks (Melee visual review)
+
+`src/recolor.py` is a post-processing utility for visually reviewing team-color
+conversion on the 15 frames in the top row of `Melee.png`. It uses the original
+PNG pixels and existing `frame_000.png` through `frame_014.png` masks; it does not
+run SAM 2 inference or generate replacement artwork.
+
+The masked RGB pixels are shifted toward the requested hue while retaining each
+pixel's HSV value. The blend is reduced for near-black pixels to protect outlines.
+Pixels outside the mask and the complete alpha channel remain unchanged. The
+current review target is the built-in `red` preset; `#RRGGBB` and `R,G,B` targets
+are also accepted for later experiments.
+
+Required inputs:
+
+- `--input`: the original sprite sheet PNG, or a directory of matching
+  `frame_*.png` RGBA frames
+- `--masks`: an existing smoke output directory containing grayscale
+  `frame_*.png` masks
+- `--output`: a new output directory
+
+From this directory, apply the existing Melee row-0 masks without rerunning SAM 2:
+
+```bash
+python3 src/recolor.py \
+  --input /path/to/Melee.png \
+  --masks /path/to/melee-smoke/output/masks \
+  --output /path/to/melee-red-review \
+  --target red \
+  --row 0 \
+  --frame-count 15
+```
+
+For pre-extracted frames, pass their directory to `--input`; frame names are
+matched to the mask names. Sprite-sheet frame dimensions default to 128 x 128 and
+can be changed with `--frame-width` and `--frame-height`.
+
+Outputs:
+
+- `melee-red-review/recolored_frames/frame_000.png` through `frame_014.png`
+- `melee-red-review/recolored_contact_sheet.png` (5 columns x 3 rows by default)
+
+These outputs are for visual review. They do not change the existing smoke verdict;
+Melee remains `REQUIRES_VISUAL_REVIEW` until a person checks mask coverage and the
+recolored result.
