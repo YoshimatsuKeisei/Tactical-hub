@@ -7,21 +7,73 @@ from PIL import Image
 
 from gui_controller import (
     LassoSelectionState,
+    MAX_ZOOM,
+    MIN_ZOOM,
     PromptState,
     SheetLayout,
     choose_display_scale,
+    clamp_zoom,
+    cursor_centered_zoom_offset,
     display_to_frame,
     extract_row_frames,
     frame_output_names,
     make_selection_overlay,
     parse_team_color,
+    pan_scroll_offset,
     polygon_to_mask,
     recolor_frame_sequence,
     save_results,
+    viewport_to_frame,
 )
 
 
 class GuiControllerTests(unittest.TestCase):
+    def test_zoom_clamps_to_minimum_and_maximum(self) -> None:
+        self.assertEqual(clamp_zoom(-10), MIN_ZOOM)
+        self.assertEqual(clamp_zoom(7), 7)
+        self.assertEqual(clamp_zoom(100), MAX_ZOOM)
+
+    def test_zoomed_and_scrolled_coordinates_map_to_same_frame_pixel(self) -> None:
+        expected = (40, 80)
+        for zoom in (3, 4, 8):
+            with self.subTest(zoom=zoom):
+                scroll = (17.0, 29.0)
+                viewport = (expected[0] * zoom - scroll[0], expected[1] * zoom - scroll[1])
+                self.assertEqual(viewport_to_frame(*viewport, zoom, scroll, (128, 128)), expected)
+
+    def test_zoomed_coordinates_support_non_square_frames(self) -> None:
+        self.assertEqual(viewport_to_frame(175, 75, 5, (25, 25), (80, 40)), (40, 20))
+
+    def test_cursor_centered_zoom_keeps_source_anchor_stable(self) -> None:
+        cursor = (20.0, 30.0)
+        old_scroll = (100.0, 50.0)
+        new_scroll = cursor_centered_zoom_offset(
+            cursor,
+            old_zoom=4,
+            new_zoom=8,
+            old_scroll=old_scroll,
+            viewport_size=(100, 100),
+            frame_size=(128, 128),
+        )
+
+        old_anchor = ((old_scroll[0] + cursor[0]) / 4, (old_scroll[1] + cursor[1]) / 4)
+        new_anchor = ((new_scroll[0] + cursor[0]) / 8, (new_scroll[1] + cursor[1]) / 8)
+        self.assertEqual(new_anchor, old_anchor)
+
+    def test_arrow_pan_offset_is_clamped_to_content(self) -> None:
+        self.assertEqual(pan_scroll_offset((100, 100), (-30, 40), (1024, 1024), (200, 200)), (70, 140))
+        self.assertEqual(pan_scroll_offset((0, 0), (-50, -50), (1024, 1024), (200, 200)), (0, 0))
+        self.assertEqual(pan_scroll_offset((800, 800), (100, 100), (1024, 1024), (200, 200)), (824, 824))
+
+    def test_main_and_mask_editor_can_share_selection_state(self) -> None:
+        main_selection = LassoSelectionState((16, 16))
+        editor_selection = main_selection
+
+        editor_selection.apply(((2, 2), (10, 2), (10, 10), (2, 10)), "add")
+
+        self.assertTrue(main_selection.mask[5, 5])
+        self.assertIs(main_selection, editor_selection)
+
     def test_polygon_to_mask_selects_inside_not_outside(self) -> None:
         mask = polygon_to_mask(((2, 2), (7, 2), (7, 7), (2, 7)), (10, 10))
 

@@ -17,21 +17,27 @@ from PIL import Image, ImageTk
 
 from gui_controller import (
     LassoSelectionState,
+    MAX_ZOOM,
+    MIN_ZOOM,
+    RecolorPreviewState,
     TEAM_COLOR_NAMES,
     PromptState,
     Sam2GuiSession,
     SheetLayout,
     choose_display_scale,
+    clamp_zoom,
     clip_mask_to_frame,
-    display_to_frame,
+    cursor_centered_zoom_offset,
     extract_row_frames,
     frame_output_names,
     load_sprite_png,
     make_mask_overlay,
     make_selection_overlay,
+    pan_scroll_offset,
     parse_team_color,
     recolor_frame_sequence,
     save_results,
+    viewport_to_frame,
 )
 from recolor import make_contact_sheet
 
@@ -68,6 +74,7 @@ class TeamColorApp:
         self.image_info = tk.StringVar(value="No spritesheet loaded")
         self.selection_info = tk.StringVar(value="Selected: 0 pixels")
         self.prompt_info = tk.StringVar(value="Positive: 0 / Negative: 0")
+        self.prompt_zoom_text = tk.StringVar(value=f"Zoom: {self.PREFERRED_DISPLAY_SCALE}x")
         self.status = tk.StringVar(value="Ready")
 
         self.layout: SheetLayout | None = None
@@ -84,10 +91,15 @@ class TeamColorApp:
         self.session_checkpoint: Path | None = None
         self.session_device_name: str | None = None
         self._prompt_display_size = (384, 384)
+        self._prompt_viewport_size = (384, 384)
+        self._prompt_zoom = self.PREFERRED_DISPLAY_SCALE
         self._lasso_points: list[tuple[int, int]] = []
         self._lasso_display_points: list[tuple[int, int]] = []
         self._prompt_photo: ImageTk.PhotoImage | None = None
         self._contact_photo: ImageTk.PhotoImage | None = None
+        self.review_state = RecolorPreviewState()
+        self.mask_editor: MaskEditorWindow | None = None
+        self.review_window: RecolorReviewWindow | None = None
         self._busy = False
         self._events: queue.Queue[tuple] = queue.Queue()
 
@@ -176,6 +188,19 @@ class TeamColorApp:
         )
         self.selection_mode_buttons[0].pack(side="left", padx=(8, 0))
         self.selection_mode_buttons[1].pack(side="left", padx=(8, 0))
+        self.open_mask_editor_button = ttk.Button(
+            selection_mode_controls,
+            text="Open Mask Editor...",
+            command=self._open_mask_editor,
+        )
+        self.open_mask_editor_button.pack(side="right", padx=(12, 0))
+        ttk.Button(selection_mode_controls, text="+", width=3, command=lambda: self._change_prompt_zoom(1)).pack(
+            side="right", padx=(4, 0)
+        )
+        ttk.Button(selection_mode_controls, text="-", width=3, command=lambda: self._change_prompt_zoom(-1)).pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Label(selection_mode_controls, textvariable=self.prompt_zoom_text).pack(side="right", padx=(8, 0))
 
         editor_controls = ttk.Frame(prompt_box)
         editor_controls.pack(fill="x", pady=(5, 0))
@@ -209,17 +234,37 @@ class TeamColorApp:
         self.selection_info_label.pack(anchor="w", pady=(4, 0))
         self.prompt_info_label = ttk.Label(prompt_box, textvariable=self.prompt_info)
         self.prompt_info_label.pack(anchor="w", pady=(4, 0))
+        self.prompt_viewport = ttk.Frame(prompt_box)
+        self.prompt_viewport.pack(pady=(6, 0))
         self.prompt_canvas = tk.Canvas(
-            prompt_box,
+            self.prompt_viewport,
             width=self._prompt_display_size[0],
             height=self._prompt_display_size[1],
             background="#202020",
             highlightthickness=0,
         )
-        self.prompt_canvas.pack(pady=(6, 0))
+        prompt_vertical = ttk.Scrollbar(self.prompt_viewport, orient="vertical", command=self.prompt_canvas.yview)
+        prompt_horizontal = ttk.Scrollbar(self.prompt_viewport, orient="horizontal", command=self.prompt_canvas.xview)
+        self.prompt_canvas.configure(
+            yscrollcommand=prompt_vertical.set,
+            xscrollcommand=prompt_horizontal.set,
+        )
+        self.prompt_canvas.grid(row=0, column=0, sticky="nsew")
+        prompt_vertical.grid(row=0, column=1, sticky="ns")
+        prompt_horizontal.grid(row=1, column=0, sticky="ew")
+        self.prompt_viewport.rowconfigure(0, weight=1)
+        self.prompt_viewport.columnconfigure(0, weight=1)
         self.prompt_canvas.bind("<ButtonPress-1>", self._on_canvas_press)
         self.prompt_canvas.bind("<B1-Motion>", self._on_canvas_drag)
         self.prompt_canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
+        self.prompt_canvas.bind("<Control-MouseWheel>", self._on_prompt_zoom_wheel)
+        self.prompt_canvas.bind("<MouseWheel>", self._on_prompt_vertical_wheel)
+        self.prompt_canvas.bind("<Shift-MouseWheel>", self._on_prompt_horizontal_wheel)
+        self.prompt_canvas.bind("<KeyPress-plus>", self._on_prompt_zoom_key)
+        self.prompt_canvas.bind("<KeyPress-equal>", self._on_prompt_zoom_key)
+        self.prompt_canvas.bind("<KeyPress-minus>", self._on_prompt_zoom_key)
+        self.prompt_canvas.bind("<KeyPress-KP_Add>", self._on_prompt_zoom_key)
+        self.prompt_canvas.bind("<KeyPress-KP_Subtract>", self._on_prompt_zoom_key)
 
         action_box = ttk.LabelFrame(middle, text="E/F/H. Process and save", padding=10)
         action_box.pack(side="left", fill="both", expand=True, padx=(8, 0))
@@ -239,8 +284,9 @@ class TeamColorApp:
         ttk.Entry(action_box, textvariable=self.custom_color).pack(fill="x", pady=(2, 6))
         self.recolor_button = ttk.Button(action_box, text="Recolor", command=self._recolor)
         self.recolor_button.pack(fill="x", pady=3)
-        self.save_button = ttk.Button(action_box, text="Save Results...", command=self._save)
-        self.save_button.pack(fill="x", pady=3)
+        ttk.Label(action_box, text="Recolor opens a review window before export.", wraplength=340).pack(
+            anchor="w", pady=(4, 0)
+        )
         ttk.Separator(action_box).pack(fill="x", pady=10)
         ttk.Label(action_box, text="Status:").pack(anchor="w")
         ttk.Label(action_box, textvariable=self.status, wraplength=340).pack(anchor="w", fill="x", pady=(3, 0))
@@ -286,6 +332,8 @@ class TeamColorApp:
         except Exception as error:
             messagebox.showerror("Could not load spritesheet", str(error))
             return
+        self._close_mask_editor()
+        self._discard_recolor_preview()
         self._close_session()
         self.sprite = sprite
         self.layout = layout
@@ -301,10 +349,13 @@ class TeamColorApp:
             available_size,
             preferred_scale=self.PREFERRED_DISPLAY_SCALE,
         )
-        self._prompt_display_size = (
+        self._prompt_zoom = display_scale
+        self.prompt_zoom_text.set(f"Zoom: {display_scale}x")
+        self._prompt_viewport_size = (
             layout.frame_width * display_scale,
             layout.frame_height * display_scale,
         )
+        self._prompt_display_size = self._prompt_viewport_size
         self._lasso_points = []
         self._lasso_display_points = []
         self.quick_frame0_mask = None
@@ -322,6 +373,8 @@ class TeamColorApp:
             self.status.set("Spritesheet loaded. Add at least one positive Quick Select click.")
         self._clear_contact_preview()
         self._redraw_prompt()
+        self.prompt_canvas.xview_moveto(0)
+        self.prompt_canvas.yview_moveto(0)
         self._refresh_selection_info()
         self._refresh_prompt_info()
         self._update_buttons()
@@ -330,13 +383,75 @@ class TeamColorApp:
         if self.layout is None:
             return None
         try:
-            return display_to_frame(event.x, event.y, self._prompt_display_size, self.layout.frame_size)
+            return viewport_to_frame(
+                event.x,
+                event.y,
+                self._prompt_zoom,
+                (self.prompt_canvas.canvasx(0), self.prompt_canvas.canvasy(0)),
+                self.layout.frame_size,
+            )
         except ValueError:
             return None
+
+    def _prompt_view_size(self) -> tuple[int, int]:
+        return max(1, self.prompt_canvas.winfo_width()), max(1, self.prompt_canvas.winfo_height())
+
+    def _set_prompt_scroll(self, offset: tuple[float, float]) -> None:
+        content_width, content_height = self._prompt_display_size
+        self.prompt_canvas.xview_moveto(offset[0] / content_width if content_width else 0)
+        self.prompt_canvas.yview_moveto(offset[1] / content_height if content_height else 0)
+
+    def _change_prompt_zoom(self, step: int, cursor: tuple[float, float] | None = None) -> None:
+        if not self.frames or self.layout is None:
+            return
+        old_zoom = self._prompt_zoom
+        new_zoom = clamp_zoom(old_zoom + step)
+        if new_zoom == old_zoom:
+            return
+        viewport_size = self._prompt_view_size()
+        if cursor is None:
+            cursor = (viewport_size[0] / 2, viewport_size[1] / 2)
+        new_scroll = cursor_centered_zoom_offset(
+            cursor,
+            old_zoom,
+            new_zoom,
+            (self.prompt_canvas.canvasx(0), self.prompt_canvas.canvasy(0)),
+            viewport_size,
+            self.layout.frame_size,
+        )
+        self._prompt_zoom = new_zoom
+        self.prompt_zoom_text.set(f"Zoom: {new_zoom}x")
+        self._prompt_display_size = (
+            self.layout.frame_width * new_zoom,
+            self.layout.frame_height * new_zoom,
+        )
+        self._redraw_prompt()
+        self._set_prompt_scroll(new_scroll)
+        self.status.set(f"Mask preview zoom: {new_zoom}x")
+
+    def _on_prompt_zoom_wheel(self, event: tk.Event) -> str:
+        self._change_prompt_zoom(1 if event.delta > 0 else -1, (event.x, event.y))
+        return "break"
+
+    def _on_prompt_zoom_key(self, event: tk.Event) -> str:
+        step = -1 if event.keysym in ("minus", "KP_Subtract") else 1
+        self._change_prompt_zoom(step)
+        return "break"
+
+    def _on_prompt_vertical_wheel(self, event: tk.Event) -> str:
+        units = -max(1, abs(event.delta) // 120) if event.delta > 0 else max(1, abs(event.delta) // 120)
+        self.prompt_canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _on_prompt_horizontal_wheel(self, event: tk.Event) -> str:
+        units = -max(1, abs(event.delta) // 120) if event.delta > 0 else max(1, abs(event.delta) // 120)
+        self.prompt_canvas.xview_scroll(units, "units")
+        return "break"
 
     def _on_canvas_press(self, event: tk.Event) -> None:
         if self._busy or not self.frames or self.prompts is None or self.layout is None:
             return
+        self.prompt_canvas.focus_set()
         point = self._event_frame_point(event)
         if point is None:
             return
@@ -345,7 +460,7 @@ class TeamColorApp:
             self._invalidate_after_prompt_change()
             return
         self._lasso_points = [point]
-        self._lasso_display_points = [(event.x, event.y)]
+        self._lasso_display_points = [(self.prompt_canvas.canvasx(event.x), self.prompt_canvas.canvasy(event.y))]
         self.prompt_canvas.delete("lasso_draft")
 
     def _on_canvas_drag(self, event: tk.Event) -> None:
@@ -354,14 +469,16 @@ class TeamColorApp:
         point = self._event_frame_point(event)
         if point is None or point == self._lasso_points[-1]:
             return
+        canvas_x = self.prompt_canvas.canvasx(event.x)
+        canvas_y = self.prompt_canvas.canvasy(event.y)
         previous_x, previous_y = self._lasso_display_points[-1]
         self._lasso_points.append(point)
-        self._lasso_display_points.append((event.x, event.y))
+        self._lasso_display_points.append((canvas_x, canvas_y))
         self.prompt_canvas.create_line(
             previous_x,
             previous_y,
-            event.x,
-            event.y,
+            canvas_x,
+            canvas_y,
             fill="#ffdc00",
             width=2,
             tags="lasso_draft",
@@ -373,7 +490,9 @@ class TeamColorApp:
         point = self._event_frame_point(event)
         if point is not None and point != self._lasso_points[-1]:
             self._lasso_points.append(point)
-            self._lasso_display_points.append((event.x, event.y))
+            self._lasso_display_points.append(
+                (self.prompt_canvas.canvasx(event.x), self.prompt_canvas.canvasy(event.y))
+            )
         points = tuple(self._lasso_points)
         self._lasso_points = []
         self._lasso_display_points = []
@@ -395,9 +514,7 @@ class TeamColorApp:
         self._lasso_display_points = []
         self.prompt_canvas.delete("lasso_draft")
         self.masks = None
-        self.recolored_frames = []
-        self.recolored_contact = None
-        self._clear_contact_preview()
+        self._discard_recolor_preview()
         if self.selection_mode.get() == "area":
             self._sync_lasso_mask()
             self._refresh_selection_info()
@@ -406,6 +523,7 @@ class TeamColorApp:
             else:
                 self.status.set("Initial Mask Ready. Review it, then Track Across Frames.")
         else:
+            self._close_mask_editor()
             self.frame0_mask = self.quick_frame0_mask.copy() if self.quick_frame0_mask is not None else None
             self.status.set("Quick Select: add clicks, then Generate Mask.")
         self._show_editor_controls()
@@ -417,12 +535,12 @@ class TeamColorApp:
             self.quick_controls.grid_remove()
             self.lasso_controls.grid()
             self.prompt_info_label.pack_forget()
-            self.selection_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_canvas)
+            self.selection_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_viewport)
         else:
             self.lasso_controls.grid_remove()
             self.quick_controls.grid()
             self.selection_info_label.pack_forget()
-            self.prompt_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_canvas)
+            self.prompt_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_viewport)
 
     def _sync_lasso_mask(self) -> None:
         if self.lasso_selection is None or not self.frames or self.lasso_selection.is_empty:
@@ -435,11 +553,10 @@ class TeamColorApp:
     def _invalidate_after_lasso_change(self) -> None:
         self._sync_lasso_mask()
         self.masks = None
-        self.recolored_frames = []
-        self.recolored_contact = None
-        self._clear_contact_preview()
+        self._discard_recolor_preview()
         self._refresh_selection_info()
         self._redraw_prompt()
+        self._refresh_mask_editor()
         if self.frame0_mask is None:
             self.status.set("Selection is empty. Use Add and draw around the target area.")
         else:
@@ -458,6 +575,33 @@ class TeamColorApp:
         self.lasso_selection.clear()
         self._invalidate_after_lasso_change()
 
+    def _open_mask_editor(self) -> None:
+        if not self.frames or self.lasso_selection is None:
+            messagebox.showerror("Spritesheet required", "Load a spritesheet before opening the Mask Editor.")
+            return
+        if self.selection_mode.get() != "area":
+            self.selection_mode.set("area")
+            self._on_selection_mode_change()
+        if self.mask_editor is not None and self.mask_editor.exists():
+            self.mask_editor.focus()
+            return
+        self.mask_editor = MaskEditorWindow(self)
+
+    def _refresh_mask_editor(self) -> None:
+        if self.mask_editor is not None and self.mask_editor.exists():
+            self.mask_editor.redraw()
+            self.mask_editor.update_controls()
+
+    def _close_mask_editor(self) -> None:
+        if self.mask_editor is not None:
+            editor = self.mask_editor
+            self.mask_editor = None
+            editor.destroy()
+
+    def _mask_editor_closed(self, editor: "MaskEditorWindow") -> None:
+        if self.mask_editor is editor:
+            self.mask_editor = None
+
     def _undo_prompt(self) -> None:
         if self._busy:
             return
@@ -475,9 +619,7 @@ class TeamColorApp:
         self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
-        self.recolored_frames = []
-        self.recolored_contact = None
-        self._clear_contact_preview()
+        self._discard_recolor_preview()
         self._refresh_prompt_info()
         self._redraw_prompt()
         self.status.set("Prompts changed. Generate the frame 0 mask again.")
@@ -509,7 +651,11 @@ class TeamColorApp:
                 source = make_mask_overlay(source, self.frame0_mask)
         display = source.resize(self._prompt_display_size, Image.Resampling.NEAREST)
         self._prompt_photo = ImageTk.PhotoImage(display)
-        self.prompt_canvas.configure(width=display.width, height=display.height)
+        self.prompt_canvas.configure(
+            width=self._prompt_viewport_size[0],
+            height=self._prompt_viewport_size[1],
+            scrollregion=(0, 0, display.width, display.height),
+        )
         self.prompt_canvas.create_image(0, 0, image=self._prompt_photo, anchor="nw")
         if self.selection_mode.get() == "quick":
             for click in self.prompts.clicks if self.prompts else ():
@@ -542,6 +688,7 @@ class TeamColorApp:
         if self.frame0_mask is None:
             messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
+        self._discard_recolor_preview()
         if self.selection_mode.get() == "area":
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
             device_name = self.device.get()
@@ -583,6 +730,7 @@ class TeamColorApp:
         except Exception as error:
             messagebox.showerror("Invalid team color", str(error))
             return
+        self._discard_recolor_preview()
 
         def worker() -> object:
             recolored = recolor_frame_sequence(self.frames, self.masks, target)
@@ -592,26 +740,65 @@ class TeamColorApp:
 
         self._start_task("recolor", "Applying team color...", worker)
 
-    def _save(self) -> None:
-        if self.masks is None or not self.recolored_frames or self.layout is None:
-            messagebox.showerror("Nothing to save", "Complete tracking and recoloring first.")
+    def _open_recolor_review(self) -> None:
+        if not self.review_state.has_preview:
             return
-        directory = filedialog.askdirectory(title="Select output directory")
+        self._close_review_window()
+        self.review_window = RecolorReviewWindow(self)
+
+    def _accept_recolor_preview(self) -> None:
+        if not self.review_state.has_preview or self.masks is None or self.layout is None:
+            messagebox.showerror("Nothing to export", "Create and review a recolor preview first.")
+            return
+        directory = filedialog.askdirectory(title="Select export directory")
         if not directory:
             return
         try:
-            outputs = save_results(
-                Path(directory),
-                self.frames,
-                self.masks,
-                self.recolored_frames,
-                columns=min(5, len(self.frames)),
+            outputs = self.review_state.accept(
+                lambda pending_frames: save_results(
+                    Path(directory),
+                    self.frames,
+                    self.masks,
+                    pending_frames,
+                    columns=min(5, len(self.frames)),
+                )
             )
         except Exception as error:
-            messagebox.showerror("Save failed", str(error))
+            messagebox.showerror("Export failed", str(error))
             return
-        self.status.set(f"Saved results to {Path(directory).resolve()}")
-        messagebox.showinfo("Results saved", "Saved masks, recolored frames, and contact sheets.\n" + "\n".join(str(path) for path in outputs.values()))
+        self.recolored_frames = []
+        self.recolored_contact = None
+        self._clear_contact_preview()
+        self._close_review_window()
+        self.status.set(f"Accepted and exported results to {Path(directory).resolve()}")
+        messagebox.showinfo(
+            "Results exported",
+            "Saved masks, recolored frames, and contact sheets.\n"
+            + "\n".join(str(path) for path in outputs.values()),
+        )
+
+    def _reject_recolor_preview(self) -> None:
+        self.review_state.reject()
+        self.recolored_frames = []
+        self.recolored_contact = None
+        self._clear_contact_preview()
+        self._close_review_window()
+        if self.masks is not None:
+            self.status.set("Recolor preview rejected. Tracking masks retained; choose another color and Recolor.")
+        self._update_buttons()
+
+    def _discard_recolor_preview(self) -> None:
+        self.review_state.reject()
+        self.recolored_frames = []
+        self.recolored_contact = None
+        self._clear_contact_preview()
+        self._close_review_window()
+
+    def _close_review_window(self) -> None:
+        if self.review_window is not None:
+            review = self.review_window
+            self.review_window = None
+            review.destroy()
 
     def _start_task(self, name: str, status: str, worker: Callable[[], object]) -> None:
         if self._busy:
@@ -666,8 +853,12 @@ class TeamColorApp:
             self.status.set(f"Tracking complete for {len(self.masks)} frames. Choose a color and Recolor.")
         elif name == "recolor":
             self.recolored_frames, self.recolored_contact = result
-            self.status.set("Recolor complete. Review the contact sheet, then save results.")
+            self.review_state.begin(self.recolored_frames, self.recolored_contact)
+            self.recolored_frames = list(self.review_state.frames)
+            self.recolored_contact = self.review_state.contact_sheet
+            self.status.set("Recolor preview ready. Accept & Export or Reject it.")
             self._show_contact_preview()
+            self._open_recolor_review()
 
     def _show_contact_preview(self) -> None:
         if self.recolored_contact is None:
@@ -688,7 +879,7 @@ class TeamColorApp:
         self.generate_button.configure(state="disabled" if generate_disabled else "normal")
         self.track_button.configure(state="disabled" if disabled or self.frame0_mask is None else "normal")
         self.recolor_button.configure(state="disabled" if disabled or self.masks is None else "normal")
-        self.save_button.configure(state="disabled" if disabled or not self.recolored_frames else "normal")
+        self.open_mask_editor_button.configure(state="disabled" if disabled or not self.frames else "normal")
         mode_state = "disabled" if disabled else "normal"
         for button in self.selection_mode_buttons:
             button.configure(state=mode_state)
@@ -708,6 +899,8 @@ class TeamColorApp:
         self.quick_clear_button.configure(
             state="disabled" if disabled or self.prompts is None or not self.prompts.clicks else "normal"
         )
+        if self.mask_editor is not None and self.mask_editor.exists():
+            self.mask_editor.update_controls()
 
     def _close_session(self) -> None:
         if self.sam_session is not None:
@@ -717,8 +910,299 @@ class TeamColorApp:
         self.session_device_name = None
 
     def _on_close(self) -> None:
+        self._discard_recolor_preview()
+        self._close_mask_editor()
         self._close_session()
         self.root.destroy()
+
+
+class MaskEditorWindow:
+    """Large zoomable editor sharing the main app's LassoSelectionState."""
+
+    def __init__(self, app: TeamColorApp) -> None:
+        self.app = app
+        self.window = tk.Toplevel(app.root)
+        self.window.title("Mask Editor - Select Area")
+        width = min(max(1, app.screen_size[0] - 40), max(480, int(app.screen_size[0] * 0.85)))
+        height = min(max(1, app.screen_size[1] - 80), max(400, int(app.screen_size[1] * 0.85)))
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(640, width), min(480, height))
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.zoom = choose_display_scale(
+            app.frames[0].size,
+            (max(1, width - 100), max(1, height - 170)),
+            preferred_scale=8,
+        )
+        self.zoom_text = tk.StringVar(value=f"Zoom: {self.zoom}x")
+        self._photo: ImageTk.PhotoImage | None = None
+        self._lasso_points: list[tuple[int, int]] = []
+        self._lasso_canvas_points: list[tuple[float, float]] = []
+
+        controls = ttk.Frame(self.window, padding=8)
+        controls.pack(fill="x")
+        ttk.Label(controls, text="Select Area:").pack(side="left")
+        ttk.Radiobutton(controls, text="Add", variable=app.lasso_operation, value="add").pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Radiobutton(controls, text="Subtract", variable=app.lasso_operation, value="subtract").pack(
+            side="left", padx=(8, 0)
+        )
+        self.undo_button = ttk.Button(controls, text="Undo", command=app._undo_lasso)
+        self.undo_button.pack(side="left", padx=(16, 0))
+        self.clear_button = ttk.Button(controls, text="Clear Selection", command=app._clear_lasso)
+        self.clear_button.pack(side="left", padx=(6, 0))
+        ttk.Button(controls, text="Zoom -", command=lambda: self.change_zoom(-1)).pack(side="right")
+        ttk.Button(controls, text="Zoom +", command=lambda: self.change_zoom(1)).pack(side="right", padx=(6, 0))
+        ttk.Label(controls, textvariable=self.zoom_text).pack(side="right", padx=(12, 0))
+        ttk.Label(self.window, textvariable=app.selection_info, padding=(8, 0)).pack(anchor="w")
+
+        viewport = ttk.Frame(self.window, padding=(8, 4, 8, 8))
+        viewport.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(viewport, background="#202020", highlightthickness=0)
+        vertical = ttk.Scrollbar(viewport, orient="vertical", command=self.canvas.yview)
+        horizontal = ttk.Scrollbar(viewport, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<Control-MouseWheel>", self._on_zoom_wheel)
+        self.canvas.bind("<MouseWheel>", self._on_vertical_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self._on_horizontal_wheel)
+        for sequence in ("<KeyPress-plus>", "<KeyPress-equal>", "<KeyPress-KP_Add>"):
+            self.window.bind(sequence, lambda _event: self._zoom_key(1))
+        for sequence in ("<KeyPress-minus>", "<KeyPress-KP_Subtract>"):
+            self.window.bind(sequence, lambda _event: self._zoom_key(-1))
+        self.window.bind("<Left>", lambda _event: self._arrow_pan(-1, 0))
+        self.window.bind("<Right>", lambda _event: self._arrow_pan(1, 0))
+        self.window.bind("<Up>", lambda _event: self._arrow_pan(0, -1))
+        self.window.bind("<Down>", lambda _event: self._arrow_pan(0, 1))
+
+        self.redraw()
+        self.update_controls()
+        self.window.after(50, self.canvas.focus_set)
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def focus(self) -> None:
+        self.window.deiconify()
+        self.window.lift()
+        self.canvas.focus_set()
+
+    def destroy(self) -> None:
+        if self.exists():
+            self.window.destroy()
+
+    def close(self) -> None:
+        self.app._mask_editor_closed(self)
+        self.destroy()
+
+    def _frame_point(self, event: tk.Event) -> tuple[int, int] | None:
+        try:
+            return viewport_to_frame(
+                event.x,
+                event.y,
+                self.zoom,
+                (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+                self.app.frames[0].size,
+            )
+        except ValueError:
+            return None
+
+    def _on_press(self, event: tk.Event) -> None:
+        if self.app._busy:
+            return
+        self.canvas.focus_set()
+        point = self._frame_point(event)
+        if point is None:
+            return
+        self._lasso_points = [point]
+        self._lasso_canvas_points = [(self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))]
+        self.canvas.delete("lasso_draft")
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if self.app._busy or not self._lasso_points:
+            return
+        point = self._frame_point(event)
+        if point is None or point == self._lasso_points[-1]:
+            return
+        canvas_point = (self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))
+        previous = self._lasso_canvas_points[-1]
+        self._lasso_points.append(point)
+        self._lasso_canvas_points.append(canvas_point)
+        self.canvas.create_line(*previous, *canvas_point, fill="#ffdc00", width=2, tags="lasso_draft")
+
+    def _on_release(self, event: tk.Event) -> None:
+        if self.app._busy or not self._lasso_points:
+            return
+        point = self._frame_point(event)
+        if point is not None and point != self._lasso_points[-1]:
+            self._lasso_points.append(point)
+        points = tuple(self._lasso_points)
+        self._lasso_points = []
+        self._lasso_canvas_points = []
+        self.canvas.delete("lasso_draft")
+        if len(points) < 3 or self.app.lasso_selection is None:
+            self.app.status.set("Lasso needs at least three distinct frame pixels.")
+            return
+        try:
+            self.app.lasso_selection.apply(points, self.app.lasso_operation.get())
+        except ValueError as error:
+            self.app.status.set(str(error))
+            return
+        self.app._invalidate_after_lasso_change()
+
+    def _view_size(self) -> tuple[int, int]:
+        return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
+
+    def _content_size(self) -> tuple[int, int]:
+        frame = self.app.frames[0]
+        return frame.width * self.zoom, frame.height * self.zoom
+
+    def _set_scroll(self, offset: tuple[float, float]) -> None:
+        content = self._content_size()
+        self.canvas.xview_moveto(offset[0] / content[0] if content[0] else 0)
+        self.canvas.yview_moveto(offset[1] / content[1] if content[1] else 0)
+
+    def change_zoom(self, step: int, cursor: tuple[float, float] | None = None) -> None:
+        old_zoom = self.zoom
+        new_zoom = clamp_zoom(old_zoom + step, MIN_ZOOM, MAX_ZOOM)
+        if new_zoom == old_zoom:
+            return
+        viewport = self._view_size()
+        if cursor is None:
+            cursor = (viewport[0] / 2, viewport[1] / 2)
+        new_scroll = cursor_centered_zoom_offset(
+            cursor,
+            old_zoom,
+            new_zoom,
+            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+            viewport,
+            self.app.frames[0].size,
+        )
+        self.zoom = new_zoom
+        self.zoom_text.set(f"Zoom: {new_zoom}x")
+        self.redraw()
+        self._set_scroll(new_scroll)
+
+    def _on_zoom_wheel(self, event: tk.Event) -> str:
+        self.change_zoom(1 if event.delta > 0 else -1, (event.x, event.y))
+        return "break"
+
+    def _zoom_key(self, step: int) -> str:
+        self.change_zoom(step)
+        return "break"
+
+    def _wheel_units(self, delta: int) -> int:
+        amount = max(1, abs(delta) // 120)
+        return -amount if delta > 0 else amount
+
+    def _on_vertical_wheel(self, event: tk.Event) -> str:
+        self.canvas.yview_scroll(self._wheel_units(event.delta), "units")
+        return "break"
+
+    def _on_horizontal_wheel(self, event: tk.Event) -> str:
+        self.canvas.xview_scroll(self._wheel_units(event.delta), "units")
+        return "break"
+
+    def _arrow_pan(self, horizontal: int, vertical: int) -> str:
+        step = max(16, self.zoom * 4)
+        offset = pan_scroll_offset(
+            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+            (horizontal * step, vertical * step),
+            self._content_size(),
+            self._view_size(),
+        )
+        self._set_scroll(offset)
+        return "break"
+
+    def redraw(self) -> None:
+        if not self.app.frames:
+            return
+        source = self.app.frames[0]
+        if self.app.frame0_mask is not None:
+            source = make_selection_overlay(source, self.app.frame0_mask)
+        display_size = (source.width * self.zoom, source.height * self.zoom)
+        display = source.resize(display_size, Image.Resampling.NEAREST)
+        self._photo = ImageTk.PhotoImage(display)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+        self.canvas.configure(scrollregion=(0, 0, display.width, display.height))
+
+    def update_controls(self) -> None:
+        selection = self.app.lasso_selection
+        disabled = self.app._busy
+        self.undo_button.configure(
+            state="disabled" if disabled or selection is None or not selection.can_undo else "normal"
+        )
+        self.clear_button.configure(
+            state="disabled" if disabled or selection is None or selection.is_empty else "normal"
+        )
+
+
+class RecolorReviewWindow:
+    """Resizable in-memory preview that exports only after explicit acceptance."""
+
+    def __init__(self, app: TeamColorApp) -> None:
+        self.app = app
+        self.window = tk.Toplevel(app.root)
+        self.window.title("Recolor Preview - Accept or Reject")
+        width = min(max(1, app.screen_size[0] - 40), max(480, int(app.screen_size[0] * 0.8)))
+        height = min(max(1, app.screen_size[1] - 80), max(360, int(app.screen_size[1] * 0.8)))
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(560, width), min(360, height))
+        self.window.protocol("WM_DELETE_WINDOW", app._reject_recolor_preview)
+
+        ttk.Label(
+            self.window,
+            text="Review the recolored contact sheet. No files are written until Accept & Export.",
+            padding=8,
+        ).pack(anchor="w")
+        viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+        viewport.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(viewport, background="#181818", highlightthickness=0)
+        vertical = ttk.Scrollbar(viewport, orient="vertical", command=self.canvas.yview)
+        horizontal = ttk.Scrollbar(viewport, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+
+        actions = ttk.Frame(self.window, padding=8)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Accept & Export...", command=app._accept_recolor_preview).pack(side="right")
+        ttk.Button(actions, text="Reject", command=app._reject_recolor_preview).pack(side="right", padx=(0, 8))
+
+        contact = app.review_state.contact_sheet
+        if contact is None:
+            raise RuntimeError("No recolor contact sheet is available")
+        scale = max(1, min(2, (width - 50) // contact.width, (height - 140) // contact.height))
+        display = contact.resize((contact.width * scale, contact.height * scale), Image.Resampling.NEAREST)
+        self._photo = ImageTk.PhotoImage(display)
+        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+        self.canvas.configure(scrollregion=(0, 0, display.width, display.height))
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def destroy(self) -> None:
+        if self.exists():
+            self.window.destroy()
 
 
 def main() -> int:

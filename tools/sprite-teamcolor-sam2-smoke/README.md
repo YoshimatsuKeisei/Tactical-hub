@@ -190,8 +190,10 @@ be visually checked on a local desktop.
 8. Select the SAM 2.1 checkpoint, click **Track Across Frames**, and wait for
    propagation to finish.
 9. Choose Red, Blue, Green, Yellow, or enter a custom color.
-10. Click **Recolor** and review the contact sheet preview.
-11. Click **Save Results...** and select an output directory.
+10. Click **Recolor** and review the contact sheet in the resizable preview
+    window.
+11. Click **Accept & Export...** to choose an output directory, or **Reject** to
+    discard only the recolor candidate.
 
 **Select Area** is the recommended mode. Its binary lasso mask is registered on
 frame 0 through the official SAM 2 Video Predictor `add_new_mask()` API, then SAM
@@ -205,11 +207,49 @@ identified with a few clicks. Add Positive and optional Negative clicks, use
 overlay, and then click **Track Across Frames**. This retains the existing point
 prompt workflow.
 
+### Zoom and Mask Editor
+
+The main frame-0 canvas supports integer zoom from 1x through 16x while retaining
+nearest-neighbor rendering. Place the pointer over the canvas and use:
+
+- a Windows Precision Touchpad pinch that emits `Control-MouseWheel`
+- **Ctrl + mouse wheel**
+- the **+** and **-** keys (or the visible +/- buttons)
+
+Zoom is centered on the cursor when a wheel event supplies its position. Canvas
+scroll offsets are included when converting every click and lasso point back to
+the original frame coordinates.
+
+Click **Open Mask Editor...** for a large, resizable Select Area window. It uses
+the exact same `LassoSelectionState` as the main window, so Add, Subtract, Undo,
+and Clear Selection update both views immediately. Closing the editor does not
+clear the mask. The editor provides horizontal and vertical scrollbars, and these
+pan controls:
+
+- mouse wheel or touchpad scroll: vertical
+- **Shift + mouse wheel**: horizontal
+- arrow keys: horizontal or vertical
+- touchpad pinch / **Ctrl + wheel** / **+** / **-**: zoom
+
+### Recolor review and export
+
+**Recolor** creates recolored frames and the contact sheet only as in-memory PIL
+images. It does not write preview PNGs or create an output directory. The review
+window provides:
+
+- **Accept & Export...**: choose a folder and write the existing result set
+- **Reject**: close the preview and discard only the in-memory recolored frames
+
+Rejecting or closing the review window writes no files and retains the source
+spritesheet, Lasso selection, propagated masks, and SAM 2 tracking result. Choose
+another team color and run Recolor again without retracking. If the mask itself
+is edited, the tracked masks are invalidated and tracking must be run again.
+
 Long-running SAM 2 setup and propagation run on a worker thread. Status updates
 are passed back to the Tkinter main thread, so the interface can continue to
 paint while inference runs.
 
-The selected output directory contains:
+Only an accepted export directory contains:
 
 - `masks/frame_000.png`, and subsequent masks through the selected frame count
 - `recolored_frames/frame_000.png`, and subsequent RGBA/RGB recolored frames

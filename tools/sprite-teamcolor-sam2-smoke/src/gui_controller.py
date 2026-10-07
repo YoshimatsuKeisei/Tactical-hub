@@ -15,6 +15,8 @@ from recolor import DEFAULT_TARGETS, make_contact_sheet, parse_target_color, rec
 
 
 ProgressCallback = Callable[[str], None]
+MIN_ZOOM = 1
+MAX_ZOOM = 16
 
 
 @dataclass(frozen=True)
@@ -222,6 +224,64 @@ def choose_display_scale(
     return max(1, min(preferred_scale, fitting_scale))
 
 
+def clamp_zoom(zoom: int, minimum: int = MIN_ZOOM, maximum: int = MAX_ZOOM) -> int:
+    if minimum <= 0 or maximum < minimum:
+        raise ValueError("Zoom limits must satisfy 0 < minimum <= maximum")
+    return max(minimum, min(maximum, int(zoom)))
+
+
+def viewport_to_frame(
+    viewport_x: float,
+    viewport_y: float,
+    zoom: int,
+    scroll_offset: tuple[float, float],
+    frame_size: tuple[int, int],
+) -> tuple[int, int]:
+    """Map a scrolled, zoomed canvas viewport coordinate to one frame pixel."""
+    validated_zoom = clamp_zoom(zoom)
+    frame_width, frame_height = frame_size
+    image_x = viewport_x + scroll_offset[0]
+    image_y = viewport_y + scroll_offset[1]
+    display_size = (frame_width * validated_zoom, frame_height * validated_zoom)
+    return display_to_frame(image_x, image_y, display_size, frame_size)
+
+
+def cursor_centered_zoom_offset(
+    cursor: tuple[float, float],
+    old_zoom: int,
+    new_zoom: int,
+    old_scroll: tuple[float, float],
+    viewport_size: tuple[int, int],
+    frame_size: tuple[int, int],
+) -> tuple[float, float]:
+    """Keep the source point under the cursor stable while changing zoom."""
+    old_zoom = clamp_zoom(old_zoom)
+    new_zoom = clamp_zoom(new_zoom)
+    anchor_x = (old_scroll[0] + cursor[0]) / old_zoom
+    anchor_y = (old_scroll[1] + cursor[1]) / old_zoom
+    desired_x = anchor_x * new_zoom - cursor[0]
+    desired_y = anchor_y * new_zoom - cursor[1]
+    content_size = (frame_size[0] * new_zoom, frame_size[1] * new_zoom)
+    max_x = max(0.0, content_size[0] - viewport_size[0])
+    max_y = max(0.0, content_size[1] - viewport_size[1])
+    return max(0.0, min(max_x, desired_x)), max(0.0, min(max_y, desired_y))
+
+
+def pan_scroll_offset(
+    current: tuple[float, float],
+    movement: tuple[float, float],
+    content_size: tuple[int, int],
+    viewport_size: tuple[int, int],
+) -> tuple[float, float]:
+    """Apply an arrow-key pan and clamp it to the scrollable image bounds."""
+    max_x = max(0.0, content_size[0] - viewport_size[0])
+    max_y = max(0.0, content_size[1] - viewport_size[1])
+    return (
+        max(0.0, min(max_x, current[0] + movement[0])),
+        max(0.0, min(max_y, current[1] + movement[1])),
+    )
+
+
 def frame_output_names(frame_count: int) -> list[str]:
     if frame_count <= 0:
         raise ValueError("Frame count must be positive")
@@ -334,6 +394,43 @@ def save_results(
         "recolored_contact_sheet": recolored_contact_path,
         "overlay_contact_sheet": overlay_contact_path,
     }
+
+
+class RecolorPreviewState:
+    """Own an in-memory recolor candidate until it is accepted or rejected."""
+
+    def __init__(self) -> None:
+        self._frames: tuple[Image.Image, ...] = ()
+        self._contact_sheet: Image.Image | None = None
+
+    @property
+    def has_preview(self) -> bool:
+        return self._contact_sheet is not None and bool(self._frames)
+
+    @property
+    def frames(self) -> tuple[Image.Image, ...]:
+        return self._frames
+
+    @property
+    def contact_sheet(self) -> Image.Image | None:
+        return self._contact_sheet
+
+    def begin(self, frames: Sequence[Image.Image], contact_sheet: Image.Image) -> None:
+        if not frames:
+            raise ValueError("At least one recolored frame is required")
+        self._frames = tuple(frame.copy() for frame in frames)
+        self._contact_sheet = contact_sheet.copy()
+
+    def reject(self) -> None:
+        self._frames = ()
+        self._contact_sheet = None
+
+    def accept(self, exporter: Callable[[Sequence[Image.Image]], object]) -> object:
+        if not self.has_preview:
+            raise RuntimeError("No recolor preview is awaiting review")
+        result = exporter(self._frames)
+        self.reject()
+        return result
 
 
 class Sam2GuiSession:
