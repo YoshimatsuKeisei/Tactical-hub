@@ -189,8 +189,9 @@ be visually checked on a local desktop.
 7. Refine the overlay with more Add or Subtract operations. **Undo** reverses
    the latest shape operation from the shared history; **Clear Selection**
    starts over.
-8. Review the translucent selection and yellow boundary. There is no Generate
-   Mask step for Select Area.
+8. Review the translucent selection and yellow boundary. Leave **Fill enclosed
+   holes** enabled unless comparing the raw mask. There is no Generate Mask step
+   for Select Area.
 9. Select the SAM 2.1 checkpoint, click **Track Across Frames**, and wait for
    propagation to finish.
 10. Choose Red, Blue, Green, Yellow, or enter a custom color.
@@ -229,6 +230,23 @@ transparent background unselected. For RGB input it selects the complete frame.
 It uses the same SAM 2 `add_new_mask()` and propagation path as Select Area.
 Switching modes preserves the editable Select Area mask and Quick Select clicks;
 Select All is regenerated from frame 0.
+
+### Mask cleanup
+
+**Mask cleanup: Fill enclosed holes** is enabled by default. It finds False
+pixel regions in each binary mask and fills only regions that cannot reach an
+image edge. A completely enclosed hole inside a shield-like selected part is
+filled, while the outside background and any notch or gap connected to an image
+edge remain unchanged. It does not dilate, erode, blur, or thicken the mask's
+outer boundary.
+
+Cleanup is applied to the visible frame 0 result and to every tracked mask used
+by Recolor and Accept & Export. The raw Quick Select or tracked masks remain in
+memory, so clearing the checkbox immediately derives and displays their unfilled
+versions without retracking. Re-enabling it reapplies the idempotent hole fill.
+The main window reports **Mask pixels: before → after (+N filled)** to show the
+effect. This is intended for cases where SAM 2 captures a part's outline but
+leaves internal holes; turn it off to compare the untouched mask.
 
 ### Zoom and Mask Editor
 

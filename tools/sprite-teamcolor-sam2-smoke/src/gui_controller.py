@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -384,6 +385,57 @@ def clip_mask_to_frame(mask: np.ndarray, frame: Image.Image) -> np.ndarray:
         alpha_support = np.asarray(frame.getchannel("A")) > 0
         return np.logical_and(boolean_mask, alpha_support)
     return boolean_mask.copy()
+
+
+def fill_enclosed_holes(mask: np.ndarray) -> np.ndarray:
+    """Fill 4-connected False regions that cannot reach the image boundary."""
+    binary = np.asarray(mask, dtype=bool)
+    if binary.ndim != 2 or binary.shape[0] <= 0 or binary.shape[1] <= 0:
+        raise ValueError("Mask must be a non-empty 2D array")
+
+    background = ~binary
+    exterior = np.zeros(binary.shape, dtype=bool)
+    pending: deque[tuple[int, int]] = deque()
+    height, width = binary.shape
+
+    def enqueue_if_background(y: int, x: int) -> None:
+        if background[y, x] and not exterior[y, x]:
+            exterior[y, x] = True
+            pending.append((y, x))
+
+    for x in range(width):
+        enqueue_if_background(0, x)
+        enqueue_if_background(height - 1, x)
+    for y in range(height):
+        enqueue_if_background(y, 0)
+        enqueue_if_background(y, width - 1)
+
+    while pending:
+        y, x = pending.popleft()
+        if y > 0:
+            enqueue_if_background(y - 1, x)
+        if y + 1 < height:
+            enqueue_if_background(y + 1, x)
+        if x > 0:
+            enqueue_if_background(y, x - 1)
+        if x + 1 < width:
+            enqueue_if_background(y, x + 1)
+
+    enclosed_holes = np.logical_and(background, ~exterior)
+    return np.logical_or(binary, enclosed_holes)
+
+
+def apply_mask_cleanup(mask: np.ndarray, fill_holes: bool) -> np.ndarray:
+    """Derive an active binary mask without modifying its raw source array."""
+    binary = np.asarray(mask, dtype=bool)
+    return fill_enclosed_holes(binary) if fill_holes else binary.copy()
+
+
+def apply_mask_cleanup_sequence(
+    masks: Sequence[np.ndarray],
+    fill_holes: bool,
+) -> list[np.ndarray]:
+    return [apply_mask_cleanup(mask, fill_holes) for mask in masks]
 
 
 def make_mask_overlay(

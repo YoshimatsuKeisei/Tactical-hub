@@ -8,11 +8,12 @@ import sys
 import threading
 import traceback
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
 from PIL import Image, ImageTk
 
 from gui_controller import (
@@ -24,6 +25,8 @@ from gui_controller import (
     PromptState,
     Sam2GuiSession,
     SheetLayout,
+    apply_mask_cleanup,
+    apply_mask_cleanup_sequence,
     choose_display_scale,
     clamp_zoom,
     clip_mask_to_frame,
@@ -75,6 +78,7 @@ class TeamColorApp:
         self.selection_tool = tk.StringVar(value="freehand")
         self.lasso_operation = tk.StringVar(value="add")
         self.shape_constraint = tk.BooleanVar(value=False)
+        self.fill_enclosed_holes = tk.BooleanVar(value=True)
         self.prompt_mode = tk.IntVar(value=1)
         self.color_preset = tk.StringVar(value="Red")
         self.custom_color = tk.StringVar(value="#D23030")
@@ -84,6 +88,7 @@ class TeamColorApp:
         self.selection_info = tk.StringVar(value="Selected: 0 pixels")
         self.prompt_info = tk.StringVar(value="Positive: 0 / Negative: 0")
         self.prompt_zoom_text = tk.StringVar(value=f"Zoom: {self.PREFERRED_DISPLAY_SCALE}x")
+        self.mask_cleanup_info = tk.StringVar(value="Mask pixels: 0 → 0")
         self.status = tk.StringVar(value="Ready")
 
         self.layout: SheetLayout | None = None
@@ -91,9 +96,11 @@ class TeamColorApp:
         self.frames: list[Image.Image] = []
         self.lasso_selection: LassoSelectionState | None = None
         self.prompts: PromptState | None = None
-        self.quick_frame0_mask = None
-        self.frame0_mask = None
-        self.masks = None
+        self.quick_frame0_mask: np.ndarray | None = None
+        self.frame0_mask: np.ndarray | None = None
+        self.masks: list[np.ndarray] | None = None
+        self.raw_masks: list[np.ndarray] | None = None
+        self._tracking_raw_frame0: np.ndarray | None = None
         self.recolored_frames: list[Image.Image] = []
         self.recolored_contact: Image.Image | None = None
         self.recolor_target: tuple[int, int, int] | None = None
@@ -307,6 +314,21 @@ class TeamColorApp:
 
         action_box = ttk.LabelFrame(middle, text="E/F/H. Process and save", padding=10)
         action_box.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        cleanup_controls = ttk.Frame(action_box)
+        cleanup_controls.pack(fill="x", pady=(0, 5))
+        ttk.Label(cleanup_controls, text="Mask cleanup:").pack(side="left")
+        self.cleanup_checkbox = ttk.Checkbutton(
+            cleanup_controls,
+            text="Fill enclosed holes",
+            variable=self.fill_enclosed_holes,
+            command=self._on_cleanup_toggle,
+        )
+        self.cleanup_checkbox.pack(side="left", padx=(8, 0))
+        ttk.Label(action_box, textvariable=self.mask_cleanup_info, wraplength=340).pack(
+            anchor="w",
+            fill="x",
+            pady=(0, 5),
+        )
         self.generate_button = ttk.Button(action_box, text="Generate Mask (Quick Select)", command=self._generate_mask)
         self.generate_button.pack(fill="x", pady=3)
         self.track_button = ttk.Button(action_box, text="Track Across Frames", command=self._track_frames)
@@ -401,6 +423,8 @@ class TeamColorApp:
         self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
+        self.raw_masks = None
+        self._tracking_raw_frame0 = None
         self.recolored_frames = []
         self.recolored_contact = None
         self.image_info.set(
@@ -420,6 +444,7 @@ class TeamColorApp:
         self.prompt_canvas.yview_moveto(0)
         self._refresh_selection_info()
         self._refresh_prompt_info()
+        self._refresh_cleanup_info()
         self._update_buttons()
 
     def _event_frame_point(self, event: tk.Event) -> tuple[int, int] | None:
@@ -627,6 +652,8 @@ class TeamColorApp:
             return
         self._clear_main_draft()
         self.masks = None
+        self.raw_masks = None
+        self._tracking_raw_frame0 = None
         self._discard_recolor_preview()
         if self.selection_mode.get() == "area":
             self._sync_lasso_mask()
@@ -637,7 +664,7 @@ class TeamColorApp:
                 self.status.set("Initial Mask Ready. Review it, then Track Across Frames.")
         elif self.selection_mode.get() == "quick":
             self._close_mask_editor()
-            self.frame0_mask = self.quick_frame0_mask.copy() if self.quick_frame0_mask is not None else None
+            self._sync_quick_mask()
             self.status.set("Quick Select: add clicks, then Generate Mask.")
         else:
             self._close_mask_editor()
@@ -645,6 +672,7 @@ class TeamColorApp:
             self._refresh_selection_info()
             self.status.set("Select All: visible frame 0 pixels selected. Review, then track.")
         self._show_editor_controls()
+        self._refresh_cleanup_info()
         self._redraw_prompt()
         self._update_buttons()
 
@@ -669,18 +697,83 @@ class TeamColorApp:
         if self.lasso_selection is None or not self.frames or self.lasso_selection.is_empty:
             self.frame0_mask = None
             return
-        self.frame0_mask = clip_mask_to_frame(self.lasso_selection.mask, self.frames[0])
-        if not self.frame0_mask.any():
-            self.frame0_mask = None
+        raw = clip_mask_to_frame(self.lasso_selection.mask, self.frames[0])
+        self._set_active_frame0_mask(raw)
 
     def _sync_select_all_mask(self) -> None:
-        self.frame0_mask = select_all_mask(self.frames[0]) if self.frames else None
+        raw = select_all_mask(self.frames[0]) if self.frames else None
+        self._set_active_frame0_mask(raw)
+
+    def _sync_quick_mask(self) -> None:
+        self._set_active_frame0_mask(self.quick_frame0_mask)
+
+    def _set_active_frame0_mask(self, raw_mask: np.ndarray | None) -> None:
+        if raw_mask is None or not self.frames:
+            self.frame0_mask = None
+            return
+        active = apply_mask_cleanup(raw_mask, self.fill_enclosed_holes.get())
+        active = clip_mask_to_frame(active, self.frames[0])
+        self.frame0_mask = active if active.any() else None
+
+    def _raw_frame0_mask(self) -> np.ndarray | None:
+        if not self.frames:
+            return None
+        if self.selection_mode.get() == "area":
+            if self.lasso_selection is None or self.lasso_selection.is_empty:
+                return None
+            return clip_mask_to_frame(self.lasso_selection.mask, self.frames[0])
+        if self.selection_mode.get() == "quick":
+            return self.quick_frame0_mask.copy() if self.quick_frame0_mask is not None else None
+        return select_all_mask(self.frames[0])
+
+    def _derive_active_masks(self, raw_masks: Sequence[np.ndarray]) -> list[np.ndarray]:
+        cleaned = apply_mask_cleanup_sequence(raw_masks, self.fill_enclosed_holes.get())
+        return [clip_mask_to_frame(mask, frame) for mask, frame in zip(cleaned, self.frames, strict=True)]
+
+    def _refresh_cleanup_info(self) -> None:
+        if self.raw_masks is not None and self.masks is not None:
+            raw_masks = self.raw_masks
+            active_masks = self.masks
+        else:
+            raw = self._raw_frame0_mask()
+            if raw is None or self.frame0_mask is None:
+                self.mask_cleanup_info.set("Mask pixels: 0 → 0")
+                return
+            raw_masks = [raw]
+            active_masks = [self.frame0_mask]
+        before = sum(int(mask.sum()) for mask in raw_masks)
+        after = sum(int(mask.sum()) for mask in active_masks)
+        if self.fill_enclosed_holes.get():
+            self.mask_cleanup_info.set(f"Mask pixels: {before} → {after} (+{after - before} filled)")
+        else:
+            self.mask_cleanup_info.set(f"Mask pixels: {before} → {after} (cleanup off)")
+
+    def _on_cleanup_toggle(self) -> None:
+        if self._busy:
+            return
+        raw_frame0 = self._raw_frame0_mask()
+        self._set_active_frame0_mask(raw_frame0)
+        if self.raw_masks is not None:
+            self.masks = self._derive_active_masks(self.raw_masks)
+            if self.masks:
+                self.frame0_mask = self.masks[0].copy()
+        self._discard_recolor_preview()
+        self._refresh_selection_info()
+        self._refresh_cleanup_info()
+        self._redraw_prompt()
+        self._refresh_mask_editor()
+        state = "enabled" if self.fill_enclosed_holes.get() else "disabled"
+        self.status.set(f"Fill enclosed holes {state}; tracking state retained.")
+        self._update_buttons()
 
     def _invalidate_after_lasso_change(self) -> None:
         self._sync_lasso_mask()
         self.masks = None
+        self.raw_masks = None
+        self._tracking_raw_frame0 = None
         self._discard_recolor_preview()
         self._refresh_selection_info()
+        self._refresh_cleanup_info()
         self._redraw_prompt()
         self._refresh_mask_editor()
         if self.frame0_mask is None:
@@ -745,8 +838,11 @@ class TeamColorApp:
         self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
+        self.raw_masks = None
+        self._tracking_raw_frame0 = None
         self._discard_recolor_preview()
         self._refresh_prompt_info()
+        self._refresh_cleanup_info()
         self._redraw_prompt()
         self.status.set("Prompts changed. Generate the frame 0 mask again.")
         self._update_buttons()
@@ -814,6 +910,8 @@ class TeamColorApp:
         if self.frame0_mask is None:
             messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
+        raw_frame0 = self._raw_frame0_mask()
+        self._tracking_raw_frame0 = raw_frame0.copy() if raw_frame0 is not None else None
         self._discard_recolor_preview()
         if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
@@ -851,6 +949,9 @@ class TeamColorApp:
         if self.masks is None or self.layout is None:
             messagebox.showerror("Tracking required", "Track the mask across frames first.")
             return
+        if self.raw_masks is not None:
+            self.masks = self._derive_active_masks(self.raw_masks)
+            self._refresh_cleanup_info()
         try:
             target = parse_team_color(self.color_preset.get(), self.custom_color.get())
         except Exception as error:
@@ -1005,12 +1106,24 @@ class TeamColorApp:
 
     def _handle_success(self, name: str, result: object) -> None:
         if name == "generate":
-            self.frame0_mask = result
             self.quick_frame0_mask = result.copy()
+            self.raw_masks = None
+            self.masks = None
+            self._sync_quick_mask()
             self.status.set("Frame 0 mask ready. Review the overlay, then track across frames.")
+            self._refresh_cleanup_info()
             self._redraw_prompt()
         elif name == "track":
-            self.masks = result
+            self.raw_masks = [mask.copy() for mask in result]
+            if self.raw_masks and self._tracking_raw_frame0 is not None:
+                self.raw_masks[0] = self._tracking_raw_frame0.copy()
+            self._tracking_raw_frame0 = None
+            self.masks = self._derive_active_masks(self.raw_masks)
+            if self.masks:
+                self.frame0_mask = self.masks[0].copy()
+            self._refresh_cleanup_info()
+            self._redraw_prompt()
+            self._refresh_mask_editor()
             self.status.set(f"Tracking complete for {len(self.masks)} frames. Choose a color and Recolor.")
         elif name == "recolor":
             self.recolored_frames, self.recolored_contact, self.recolor_target = result
@@ -1040,6 +1153,7 @@ class TeamColorApp:
         self.generate_button.configure(state="disabled" if generate_disabled else "normal")
         self.track_button.configure(state="disabled" if disabled or self.frame0_mask is None else "normal")
         self.recolor_button.configure(state="disabled" if disabled or self.masks is None else "normal")
+        self.cleanup_checkbox.configure(state="disabled" if disabled or not self.frames else "normal")
         self.open_mask_editor_button.configure(
             state="disabled"
             if disabled or not self.frames or self.selection_mode.get() != "area"
