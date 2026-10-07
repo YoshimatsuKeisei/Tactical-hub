@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from recolor import DEFAULT_TARGETS, make_contact_sheet, parse_target_color, recolor_masked
 
@@ -88,6 +88,72 @@ class PromptState:
 
     def clear(self) -> None:
         self._clicks.clear()
+
+
+def polygon_to_mask(
+    points: Sequence[tuple[int, int]],
+    frame_size: tuple[int, int],
+) -> np.ndarray:
+    """Rasterize a closed freehand polygon into a frame-sized boolean mask."""
+    width, height = frame_size
+    if width <= 0 or height <= 0:
+        raise ValueError("Frame dimensions must be positive")
+    if len(points) < 3:
+        raise ValueError("A lasso requires at least three points")
+    normalized = [(int(x), int(y)) for x, y in points]
+    if any(not (0 <= x < width and 0 <= y < height) for x, y in normalized):
+        raise ValueError("Lasso point is outside the frame")
+    image = Image.new("1", frame_size, 0)
+    ImageDraw.Draw(image).polygon(normalized, fill=1)
+    return np.asarray(image, dtype=bool).copy()
+
+
+class LassoSelectionState:
+    """Boolean selection with a lightweight multi-level undo history."""
+
+    def __init__(self, frame_size: tuple[int, int]) -> None:
+        width, height = frame_size
+        if width <= 0 or height <= 0:
+            raise ValueError("Frame dimensions must be positive")
+        self.frame_size = frame_size
+        self._mask = np.zeros((height, width), dtype=bool)
+        self._history: list[np.ndarray] = []
+
+    @property
+    def mask(self) -> np.ndarray:
+        return self._mask.copy()
+
+    @property
+    def is_empty(self) -> bool:
+        return not bool(self._mask.any())
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._history)
+
+    def apply(self, points: Sequence[tuple[int, int]], operation: str) -> np.ndarray:
+        polygon = polygon_to_mask(points, self.frame_size)
+        normalized_operation = operation.strip().lower()
+        if normalized_operation not in ("add", "subtract"):
+            raise ValueError("Lasso operation must be add or subtract")
+        self._history.append(self._mask.copy())
+        if normalized_operation == "add":
+            self._mask = np.logical_or(self._mask, polygon)
+        else:
+            self._mask = np.logical_and(self._mask, ~polygon)
+        return self.mask
+
+    def undo(self) -> np.ndarray | None:
+        if not self._history:
+            return None
+        self._mask = self._history.pop()
+        return self.mask
+
+    def clear(self) -> np.ndarray:
+        if self._mask.any():
+            self._history.append(self._mask.copy())
+        self._mask.fill(False)
+        return self.mask
 
 
 def load_sprite_png(path: Path) -> Image.Image:
@@ -196,6 +262,28 @@ def make_mask_overlay(
     return Image.fromarray(rgba)
 
 
+def make_selection_overlay(
+    frame: Image.Image,
+    mask: np.ndarray,
+    color: tuple[int, int, int] = (0, 170, 255),
+    outline: tuple[int, int, int] = (255, 220, 0),
+) -> Image.Image:
+    """Overlay a selection and draw a one-pixel outline without altering the source."""
+    selected = clip_mask_to_frame(mask, frame)
+    output = np.asarray(make_mask_overlay(frame, selected, color=color), dtype=np.uint8).copy()
+    padded = np.pad(selected, 1, constant_values=False)
+    interior = (
+        selected
+        & padded[:-2, 1:-1]
+        & padded[2:, 1:-1]
+        & padded[1:-1, :-2]
+        & padded[1:-1, 2:]
+    )
+    boundary = np.logical_and(selected, ~interior)
+    output[boundary, :3] = np.asarray(outline, dtype=np.uint8)
+    return Image.fromarray(output)
+
+
 def recolor_frame_sequence(
     frames: Sequence[Image.Image],
     masks: Sequence[np.ndarray],
@@ -273,6 +361,7 @@ class Sam2GuiSession:
         self.inference_state: object | None = None
         self.device: object | None = None
         self.frame0_mask: np.ndarray | None = None
+        self.sam_frame0_prediction: np.ndarray | None = None
         self.masks: list[np.ndarray] | None = None
 
     def _ensure_ready(self, progress: ProgressCallback) -> None:
@@ -315,7 +404,35 @@ class Sam2GuiSession:
             self.frames[0].size,
             self.work_size,
         )
+        self.sam_frame0_prediction = raw_mask.copy()
         self.frame0_mask = clip_mask_to_frame(raw_mask, self.frames[0])
+        self.masks = None
+        return self.frame0_mask.copy()
+
+    def set_frame0_mask(
+        self,
+        initial_mask: np.ndarray,
+        progress: ProgressCallback = lambda _message: None,
+    ) -> np.ndarray:
+        from smoke import validate_binary_mask
+
+        validated = validate_binary_mask(initial_mask, self.frames[0].size)
+        clipped = clip_mask_to_frame(validated, self.frames[0])
+        if not clipped.any():
+            raise ValueError("The selected area is empty after alpha clipping")
+        self._ensure_ready(progress)
+        from smoke import add_sam2_mask
+
+        progress("Registering frame 0 lasso mask with SAM 2...")
+        self.sam_frame0_prediction = add_sam2_mask(
+            self.predictor,
+            self.inference_state,
+            clipped,
+            self.frames[0].size,
+        )
+        # Preserve the exact user selection on frame 0. SAM 2 provides tracking
+        # for subsequent frames, while alpha clipping remains authoritative here.
+        self.frame0_mask = clipped
         self.masks = None
         return self.frame0_mask.copy()
 
@@ -340,6 +457,7 @@ class Sam2GuiSession:
         self.predictor = None
         self.inference_state = None
         self.device = None
+        self.sam_frame0_prediction = None
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
 

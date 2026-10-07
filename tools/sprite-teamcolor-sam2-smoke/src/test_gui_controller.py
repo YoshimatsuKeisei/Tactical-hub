@@ -6,19 +6,63 @@ import numpy as np
 from PIL import Image
 
 from gui_controller import (
+    LassoSelectionState,
     PromptState,
     SheetLayout,
     choose_display_scale,
     display_to_frame,
     extract_row_frames,
     frame_output_names,
+    make_selection_overlay,
     parse_team_color,
+    polygon_to_mask,
     recolor_frame_sequence,
     save_results,
 )
 
 
 class GuiControllerTests(unittest.TestCase):
+    def test_polygon_to_mask_selects_inside_not_outside(self) -> None:
+        mask = polygon_to_mask(((2, 2), (7, 2), (7, 7), (2, 7)), (10, 10))
+
+        self.assertEqual(mask.shape, (10, 10))
+        self.assertEqual(mask.dtype, np.bool_)
+        self.assertTrue(mask[4, 4])
+        self.assertFalse(mask[0, 0])
+
+    def test_lasso_add_subtract_undo_and_clear(self) -> None:
+        selection = LassoSelectionState((12, 10))
+        selection.apply(((1, 1), (9, 1), (9, 8), (1, 8)), "add")
+        added = selection.mask
+        self.assertTrue(added[4, 4])
+
+        selection.apply(((3, 3), (6, 3), (6, 6), (3, 6)), "subtract")
+        self.assertFalse(selection.mask[4, 4])
+        np.testing.assert_array_equal(selection.undo(), added)
+
+        selection.clear()
+        self.assertTrue(selection.is_empty)
+        np.testing.assert_array_equal(selection.undo(), added)
+
+    def test_polygon_mask_supports_non_128_frame(self) -> None:
+        mask = polygon_to_mask(((5, 3), (24, 3), (24, 12), (5, 12)), (30, 16))
+
+        self.assertEqual(mask.shape, (16, 30))
+        self.assertTrue(mask[8, 15])
+        self.assertFalse(mask[15, 29])
+
+    def test_selection_overlay_does_not_modify_source(self) -> None:
+        source = Image.new("RGBA", (5, 5), (100, 100, 100, 255))
+        before = np.asarray(source).copy()
+        mask = np.zeros((5, 5), dtype=bool)
+        mask[1:4, 1:4] = True
+
+        overlay = np.asarray(make_selection_overlay(source, mask))
+
+        np.testing.assert_array_equal(np.asarray(source), before)
+        np.testing.assert_array_equal(overlay[1, 1, :3], np.array([255, 220, 0]))
+        np.testing.assert_array_equal(overlay[0, 0], before[0, 0])
+
     def test_extracts_requested_row_and_frame_count(self) -> None:
         pixels = np.zeros((4, 6, 4), dtype=np.uint8)
         pixels[:, :, 3] = 255

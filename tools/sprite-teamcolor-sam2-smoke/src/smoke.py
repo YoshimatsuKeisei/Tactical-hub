@@ -259,6 +259,36 @@ def add_sam2_prompts(
     return _resize_work_mask(mask_logits[object_index], frame_size)
 
 
+def validate_binary_mask(mask: np.ndarray, frame_size: tuple[int, int]) -> np.ndarray:
+    """Validate a GUI mask before passing it to the official SAM 2 mask API."""
+    array = np.asarray(mask)
+    expected_shape = (frame_size[1], frame_size[0])
+    if array.ndim != 2 or array.shape != expected_shape:
+        raise ValueError(f"Mask shape {array.shape} does not match frame {expected_shape}")
+    if array.dtype != np.bool_:
+        raise ValueError(f"Mask dtype must be bool, got {array.dtype}")
+    return array.copy()
+
+
+def add_sam2_mask(
+    predictor: object,
+    inference_state: object,
+    initial_mask: np.ndarray,
+    frame_size: tuple[int, int],
+) -> np.ndarray:
+    """Register a binary frame-0 mask and return SAM 2's frame-sized prediction."""
+    validated = validate_binary_mask(initial_mask, frame_size)
+    _frame_index, object_ids, mask_logits = predictor.add_new_mask(
+        inference_state=inference_state,
+        frame_idx=0,
+        obj_id=1,
+        mask=validated,
+    )
+    object_id_list = [int(object_id) for object_id in object_ids]
+    object_index = object_id_list.index(1)
+    return _resize_work_mask(mask_logits[object_index], frame_size)
+
+
 def propagate_sam2_masks(
     predictor: object,
     inference_state: object,

@@ -16,16 +16,19 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from gui_controller import (
+    LassoSelectionState,
     TEAM_COLOR_NAMES,
     PromptState,
     Sam2GuiSession,
     SheetLayout,
     choose_display_scale,
+    clip_mask_to_frame,
     display_to_frame,
     extract_row_frames,
     frame_output_names,
     load_sprite_png,
     make_mask_overlay,
+    make_selection_overlay,
     parse_team_color,
     recolor_frame_sequence,
     save_results,
@@ -57,17 +60,22 @@ class TeamColorApp:
         self.target_row = tk.StringVar(value="0")
         self.frame_count = tk.StringVar(value="15")
         self.device = tk.StringVar(value="auto")
+        self.selection_mode = tk.StringVar(value="area")
+        self.lasso_operation = tk.StringVar(value="add")
         self.prompt_mode = tk.IntVar(value=1)
         self.color_preset = tk.StringVar(value="Red")
         self.custom_color = tk.StringVar(value="#D23030")
         self.image_info = tk.StringVar(value="No spritesheet loaded")
+        self.selection_info = tk.StringVar(value="Selected: 0 pixels")
         self.prompt_info = tk.StringVar(value="Positive: 0 / Negative: 0")
         self.status = tk.StringVar(value="Ready")
 
         self.layout: SheetLayout | None = None
         self.sprite: Image.Image | None = None
         self.frames: list[Image.Image] = []
+        self.lasso_selection: LassoSelectionState | None = None
         self.prompts: PromptState | None = None
+        self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
         self.recolored_frames: list[Image.Image] = []
@@ -76,6 +84,8 @@ class TeamColorApp:
         self.session_checkpoint: Path | None = None
         self.session_device_name: str | None = None
         self._prompt_display_size = (384, 384)
+        self._lasso_points: list[tuple[int, int]] = []
+        self._lasso_display_points: list[tuple[int, int]] = []
         self._prompt_photo: ImageTk.PhotoImage | None = None
         self._contact_photo: ImageTk.PhotoImage | None = None
         self._busy = False
@@ -142,16 +152,63 @@ class TeamColorApp:
 
         middle = ttk.Frame(container)
         middle.pack(fill="x", pady=(8, 0))
-        prompt_box = ttk.LabelFrame(middle, text="C/D. Prompt editor and mask preview", padding=8)
+        prompt_box = ttk.LabelFrame(middle, text="C/D. Selection editor and mask preview", padding=8)
         prompt_box.pack(side="left", fill="y", expand=False)
 
-        prompt_controls = ttk.Frame(prompt_box)
-        prompt_controls.pack(fill="x")
-        ttk.Radiobutton(prompt_controls, text="Positive", variable=self.prompt_mode, value=1).pack(side="left")
-        ttk.Radiobutton(prompt_controls, text="Negative", variable=self.prompt_mode, value=0).pack(side="left", padx=(8, 0))
-        ttk.Button(prompt_controls, text="Undo last click", command=self._undo_prompt).pack(side="left", padx=(16, 0))
-        ttk.Button(prompt_controls, text="Clear clicks", command=self._clear_prompts).pack(side="left", padx=(6, 0))
-        ttk.Label(prompt_box, textvariable=self.prompt_info).pack(anchor="w", pady=(4, 0))
+        selection_mode_controls = ttk.Frame(prompt_box)
+        selection_mode_controls.pack(fill="x")
+        ttk.Label(selection_mode_controls, text="Selection mode:").pack(side="left")
+        self.selection_mode_buttons = (
+            ttk.Radiobutton(
+                selection_mode_controls,
+                text="Select Area",
+                variable=self.selection_mode,
+                value="area",
+                command=self._on_selection_mode_change,
+            ),
+            ttk.Radiobutton(
+                selection_mode_controls,
+                text="Quick Select",
+                variable=self.selection_mode,
+                value="quick",
+                command=self._on_selection_mode_change,
+            ),
+        )
+        self.selection_mode_buttons[0].pack(side="left", padx=(8, 0))
+        self.selection_mode_buttons[1].pack(side="left", padx=(8, 0))
+
+        editor_controls = ttk.Frame(prompt_box)
+        editor_controls.pack(fill="x", pady=(5, 0))
+        self.lasso_controls = ttk.Frame(editor_controls)
+        ttk.Radiobutton(self.lasso_controls, text="Add", variable=self.lasso_operation, value="add").pack(side="left")
+        ttk.Radiobutton(self.lasso_controls, text="Subtract", variable=self.lasso_operation, value="subtract").pack(
+            side="left", padx=(8, 0)
+        )
+        self.lasso_undo_button = ttk.Button(self.lasso_controls, text="Undo", command=self._undo_lasso)
+        self.lasso_undo_button.pack(side="left", padx=(16, 0))
+        self.lasso_clear_button = ttk.Button(
+            self.lasso_controls,
+            text="Clear Selection",
+            command=self._clear_lasso,
+        )
+        self.lasso_clear_button.pack(side="left", padx=(6, 0))
+        self.lasso_controls.grid(row=0, column=0, sticky="w")
+
+        self.quick_controls = ttk.Frame(editor_controls)
+        ttk.Radiobutton(self.quick_controls, text="Positive", variable=self.prompt_mode, value=1).pack(side="left")
+        ttk.Radiobutton(self.quick_controls, text="Negative", variable=self.prompt_mode, value=0).pack(
+            side="left", padx=(8, 0)
+        )
+        self.quick_undo_button = ttk.Button(self.quick_controls, text="Undo", command=self._undo_prompt)
+        self.quick_undo_button.pack(side="left", padx=(16, 0))
+        self.quick_clear_button = ttk.Button(self.quick_controls, text="Clear clicks", command=self._clear_prompts)
+        self.quick_clear_button.pack(side="left", padx=(6, 0))
+        self.quick_controls.grid(row=0, column=0, sticky="w")
+
+        self.selection_info_label = ttk.Label(prompt_box, textvariable=self.selection_info)
+        self.selection_info_label.pack(anchor="w", pady=(4, 0))
+        self.prompt_info_label = ttk.Label(prompt_box, textvariable=self.prompt_info)
+        self.prompt_info_label.pack(anchor="w", pady=(4, 0))
         self.prompt_canvas = tk.Canvas(
             prompt_box,
             width=self._prompt_display_size[0],
@@ -160,11 +217,13 @@ class TeamColorApp:
             highlightthickness=0,
         )
         self.prompt_canvas.pack(pady=(6, 0))
-        self.prompt_canvas.bind("<Button-1>", self._on_canvas_click)
+        self.prompt_canvas.bind("<ButtonPress-1>", self._on_canvas_press)
+        self.prompt_canvas.bind("<B1-Motion>", self._on_canvas_drag)
+        self.prompt_canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
 
         action_box = ttk.LabelFrame(middle, text="E/F/H. Process and save", padding=10)
         action_box.pack(side="left", fill="both", expand=True, padx=(8, 0))
-        self.generate_button = ttk.Button(action_box, text="Generate Mask", command=self._generate_mask)
+        self.generate_button = ttk.Button(action_box, text="Generate Mask (Quick Select)", command=self._generate_mask)
         self.generate_button.pack(fill="x", pady=3)
         self.track_button = ttk.Button(action_box, text="Track Across Frames", command=self._track_frames)
         self.track_button.pack(fill="x", pady=3)
@@ -190,6 +249,7 @@ class TeamColorApp:
         preview_box.pack(fill="both", expand=True, pady=(8, 0))
         self.contact_label = ttk.Label(preview_box, text="Run Track Across Frames, then Recolor")
         self.contact_label.pack(expand=True)
+        self._show_editor_controls()
         self._update_buttons()
 
     def _browse_sprite(self) -> None:
@@ -230,6 +290,7 @@ class TeamColorApp:
         self.sprite = sprite
         self.layout = layout
         self.frames = frames
+        self.lasso_selection = LassoSelectionState(layout.frame_size)
         self.prompts = PromptState(layout.frame_size)
         available_size = (
             max(1, self.screen_size[0] - 480),
@@ -244,6 +305,9 @@ class TeamColorApp:
             layout.frame_width * display_scale,
             layout.frame_height * display_scale,
         )
+        self._lasso_points = []
+        self._lasso_display_points = []
+        self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
         self.recolored_frames = []
@@ -252,21 +316,147 @@ class TeamColorApp:
             f"{path.name}: {sprite.width}x{sprite.height}, mode {sprite.mode}; "
             f"loaded row {layout.target_row}, {len(frames)} frames"
         )
-        self.status.set("Spritesheet loaded. Add at least one positive click.")
+        if self.selection_mode.get() == "area":
+            self.status.set("Spritesheet loaded. Drag around the target area on frame 0.")
+        else:
+            self.status.set("Spritesheet loaded. Add at least one positive Quick Select click.")
         self._clear_contact_preview()
         self._redraw_prompt()
+        self._refresh_selection_info()
         self._refresh_prompt_info()
         self._update_buttons()
 
-    def _on_canvas_click(self, event: tk.Event) -> None:
+    def _event_frame_point(self, event: tk.Event) -> tuple[int, int] | None:
+        if self.layout is None:
+            return None
+        try:
+            return display_to_frame(event.x, event.y, self._prompt_display_size, self.layout.frame_size)
+        except ValueError:
+            return None
+
+    def _on_canvas_press(self, event: tk.Event) -> None:
         if self._busy or not self.frames or self.prompts is None or self.layout is None:
             return
-        try:
-            x, y = display_to_frame(event.x, event.y, self._prompt_display_size, self.layout.frame_size)
-            self.prompts.add(x, y, self.prompt_mode.get())
-        except ValueError:
+        point = self._event_frame_point(event)
+        if point is None:
             return
-        self._invalidate_after_prompt_change()
+        if self.selection_mode.get() == "quick":
+            self.prompts.add(*point, self.prompt_mode.get())
+            self._invalidate_after_prompt_change()
+            return
+        self._lasso_points = [point]
+        self._lasso_display_points = [(event.x, event.y)]
+        self.prompt_canvas.delete("lasso_draft")
+
+    def _on_canvas_drag(self, event: tk.Event) -> None:
+        if self._busy or self.selection_mode.get() != "area" or not self._lasso_points:
+            return
+        point = self._event_frame_point(event)
+        if point is None or point == self._lasso_points[-1]:
+            return
+        previous_x, previous_y = self._lasso_display_points[-1]
+        self._lasso_points.append(point)
+        self._lasso_display_points.append((event.x, event.y))
+        self.prompt_canvas.create_line(
+            previous_x,
+            previous_y,
+            event.x,
+            event.y,
+            fill="#ffdc00",
+            width=2,
+            tags="lasso_draft",
+        )
+
+    def _on_canvas_release(self, event: tk.Event) -> None:
+        if self._busy or self.selection_mode.get() != "area" or not self._lasso_points:
+            return
+        point = self._event_frame_point(event)
+        if point is not None and point != self._lasso_points[-1]:
+            self._lasso_points.append(point)
+            self._lasso_display_points.append((event.x, event.y))
+        points = tuple(self._lasso_points)
+        self._lasso_points = []
+        self._lasso_display_points = []
+        self.prompt_canvas.delete("lasso_draft")
+        if len(points) < 3 or self.lasso_selection is None:
+            self.status.set("Lasso needs at least three distinct frame pixels.")
+            return
+        try:
+            self.lasso_selection.apply(points, self.lasso_operation.get())
+        except ValueError as error:
+            self.status.set(str(error))
+            return
+        self._invalidate_after_lasso_change()
+
+    def _on_selection_mode_change(self) -> None:
+        if self._busy:
+            return
+        self._lasso_points = []
+        self._lasso_display_points = []
+        self.prompt_canvas.delete("lasso_draft")
+        self.masks = None
+        self.recolored_frames = []
+        self.recolored_contact = None
+        self._clear_contact_preview()
+        if self.selection_mode.get() == "area":
+            self._sync_lasso_mask()
+            self._refresh_selection_info()
+            if self.frame0_mask is None:
+                self.status.set("Select Area: drag around the target, then Track Across Frames.")
+            else:
+                self.status.set("Initial Mask Ready. Review it, then Track Across Frames.")
+        else:
+            self.frame0_mask = self.quick_frame0_mask.copy() if self.quick_frame0_mask is not None else None
+            self.status.set("Quick Select: add clicks, then Generate Mask.")
+        self._show_editor_controls()
+        self._redraw_prompt()
+        self._update_buttons()
+
+    def _show_editor_controls(self) -> None:
+        if self.selection_mode.get() == "area":
+            self.quick_controls.grid_remove()
+            self.lasso_controls.grid()
+            self.prompt_info_label.pack_forget()
+            self.selection_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_canvas)
+        else:
+            self.lasso_controls.grid_remove()
+            self.quick_controls.grid()
+            self.selection_info_label.pack_forget()
+            self.prompt_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_canvas)
+
+    def _sync_lasso_mask(self) -> None:
+        if self.lasso_selection is None or not self.frames or self.lasso_selection.is_empty:
+            self.frame0_mask = None
+            return
+        self.frame0_mask = clip_mask_to_frame(self.lasso_selection.mask, self.frames[0])
+        if not self.frame0_mask.any():
+            self.frame0_mask = None
+
+    def _invalidate_after_lasso_change(self) -> None:
+        self._sync_lasso_mask()
+        self.masks = None
+        self.recolored_frames = []
+        self.recolored_contact = None
+        self._clear_contact_preview()
+        self._refresh_selection_info()
+        self._redraw_prompt()
+        if self.frame0_mask is None:
+            self.status.set("Selection is empty. Use Add and draw around the target area.")
+        else:
+            self.status.set("Initial Mask Ready. Review it, then Track Across Frames.")
+        self._update_buttons()
+
+    def _undo_lasso(self) -> None:
+        if self._busy or self.lasso_selection is None:
+            return
+        if self.lasso_selection.undo() is not None:
+            self._invalidate_after_lasso_change()
+
+    def _clear_lasso(self) -> None:
+        if self._busy or self.lasso_selection is None:
+            return
+        self.lasso_selection.clear()
+        self._invalidate_after_lasso_change()
 
     def _undo_prompt(self) -> None:
         if self._busy:
@@ -282,6 +472,7 @@ class TeamColorApp:
             self._invalidate_after_prompt_change()
 
     def _invalidate_after_prompt_change(self) -> None:
+        self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
         self.recolored_frames = []
@@ -298,27 +489,42 @@ class TeamColorApp:
         negatives = sum(click.label == 0 for click in clicks)
         self.prompt_info.set(f"Positive: {positives} / Negative: {negatives}")
 
+    def _refresh_selection_info(self) -> None:
+        selected = (
+            int(self.frame0_mask.sum())
+            if self.selection_mode.get() == "area" and self.frame0_mask is not None
+            else 0
+        )
+        self.selection_info.set(f"Selected: {selected} pixels")
+
     def _redraw_prompt(self) -> None:
         self.prompt_canvas.delete("all")
         if not self.frames or self.layout is None:
             return
         source = self.frames[0]
         if self.frame0_mask is not None:
-            source = make_mask_overlay(source, self.frame0_mask)
+            if self.selection_mode.get() == "area":
+                source = make_selection_overlay(source, self.frame0_mask)
+            else:
+                source = make_mask_overlay(source, self.frame0_mask)
         display = source.resize(self._prompt_display_size, Image.Resampling.NEAREST)
         self._prompt_photo = ImageTk.PhotoImage(display)
         self.prompt_canvas.configure(width=display.width, height=display.height)
         self.prompt_canvas.create_image(0, 0, image=self._prompt_photo, anchor="nw")
-        for click in self.prompts.clicks if self.prompts else ():
-            cx = (click.x + 0.5) * display.width / self.layout.frame_width
-            cy = (click.y + 0.5) * display.height / self.layout.frame_height
-            if click.label == 1:
-                self.prompt_canvas.create_oval(cx - 6, cy - 6, cx + 6, cy + 6, outline="#00ff66", width=3)
-            else:
-                self.prompt_canvas.create_line(cx - 6, cy - 6, cx + 6, cy + 6, fill="#ff3344", width=3)
-                self.prompt_canvas.create_line(cx + 6, cy - 6, cx - 6, cy + 6, fill="#ff3344", width=3)
+        if self.selection_mode.get() == "quick":
+            for click in self.prompts.clicks if self.prompts else ():
+                cx = (click.x + 0.5) * display.width / self.layout.frame_width
+                cy = (click.y + 0.5) * display.height / self.layout.frame_height
+                if click.label == 1:
+                    self.prompt_canvas.create_oval(cx - 6, cy - 6, cx + 6, cy + 6, outline="#00ff66", width=3)
+                else:
+                    self.prompt_canvas.create_line(cx - 6, cy - 6, cx + 6, cy + 6, fill="#ff3344", width=3)
+                    self.prompt_canvas.create_line(cx + 6, cy - 6, cx - 6, cy + 6, fill="#ff3344", width=3)
 
     def _generate_mask(self) -> None:
+        if self.selection_mode.get() != "quick":
+            messagebox.showinfo("Select Area is ready", "Use Track Across Frames after completing the lasso selection.")
+            return
         if not self.prompts or not self.prompts.has_positive:
             messagebox.showerror("Missing positive prompt", "Add at least one positive click.")
             return
@@ -327,24 +533,46 @@ class TeamColorApp:
         device_name = self.device.get()
 
         def worker() -> object:
-            if (
-                self.sam_session is None
-                or self.session_checkpoint != checkpoint
-                or self.session_device_name != device_name
-            ):
-                self._close_session()
-                self.sam_session = Sam2GuiSession(self.frames, checkpoint, device_name=device_name)
-                self.session_checkpoint = checkpoint
-                self.session_device_name = device_name
+            self._ensure_sam_session(checkpoint, device_name)
             return self.sam_session.generate_frame0_mask(clicks, self._queue_status)
 
         self._start_task("generate", "Starting frame 0 mask generation...", worker)
 
     def _track_frames(self) -> None:
-        if self.sam_session is None or self.frame0_mask is None:
-            messagebox.showerror("Mask required", "Generate and review the frame 0 mask first.")
+        if self.frame0_mask is None:
+            messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
-        self._start_task("track", "Starting mask propagation...", lambda: self.sam_session.track_across_frames(self._queue_status))
+        if self.selection_mode.get() == "area":
+            checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
+            device_name = self.device.get()
+            initial_mask = self.frame0_mask.copy()
+
+            def worker() -> object:
+                self._ensure_sam_session(checkpoint, device_name)
+                self.sam_session.set_frame0_mask(initial_mask, self._queue_status)
+                return self.sam_session.track_across_frames(self._queue_status)
+
+            self._start_task("track", "Preparing lasso mask for propagation...", worker)
+            return
+        if self.sam_session is None:
+            messagebox.showerror("Mask required", "Generate and review the Quick Select mask first.")
+            return
+        self._start_task(
+            "track",
+            "Starting mask propagation...",
+            lambda: self.sam_session.track_across_frames(self._queue_status),
+        )
+
+    def _ensure_sam_session(self, checkpoint: Path, device_name: str) -> None:
+        if (
+            self.sam_session is None
+            or self.session_checkpoint != checkpoint
+            or self.session_device_name != device_name
+        ):
+            self._close_session()
+            self.sam_session = Sam2GuiSession(self.frames, checkpoint, device_name=device_name)
+            self.session_checkpoint = checkpoint
+            self.session_device_name = device_name
 
     def _recolor(self) -> None:
         if self.masks is None or self.layout is None:
@@ -430,6 +658,7 @@ class TeamColorApp:
     def _handle_success(self, name: str, result: object) -> None:
         if name == "generate":
             self.frame0_mask = result
+            self.quick_frame0_mask = result.copy()
             self.status.set("Frame 0 mask ready. Review the overlay, then track across frames.")
             self._redraw_prompt()
         elif name == "track":
@@ -454,10 +683,31 @@ class TeamColorApp:
 
     def _update_buttons(self) -> None:
         disabled = self._busy
-        self.generate_button.configure(state="disabled" if disabled or not self.frames else "normal")
+        quick_ready = self.prompts is not None and self.prompts.has_positive
+        generate_disabled = disabled or not self.frames or self.selection_mode.get() != "quick" or not quick_ready
+        self.generate_button.configure(state="disabled" if generate_disabled else "normal")
         self.track_button.configure(state="disabled" if disabled or self.frame0_mask is None else "normal")
         self.recolor_button.configure(state="disabled" if disabled or self.masks is None else "normal")
         self.save_button.configure(state="disabled" if disabled or not self.recolored_frames else "normal")
+        mode_state = "disabled" if disabled else "normal"
+        for button in self.selection_mode_buttons:
+            button.configure(state=mode_state)
+        self.lasso_undo_button.configure(
+            state="disabled"
+            if disabled or self.lasso_selection is None or not self.lasso_selection.can_undo
+            else "normal"
+        )
+        self.lasso_clear_button.configure(
+            state="disabled"
+            if disabled or self.lasso_selection is None or self.lasso_selection.is_empty
+            else "normal"
+        )
+        self.quick_undo_button.configure(
+            state="disabled" if disabled or self.prompts is None or not self.prompts.clicks else "normal"
+        )
+        self.quick_clear_button.configure(
+            state="disabled" if disabled or self.prompts is None or not self.prompts.clicks else "normal"
+        )
 
     def _close_session(self) -> None:
         if self.sam_session is not None:

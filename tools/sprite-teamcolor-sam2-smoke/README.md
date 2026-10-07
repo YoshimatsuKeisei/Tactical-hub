@@ -63,9 +63,10 @@ nearest-neighbour 1024 x 1024 work image to match its image encoder exactly.
 
 Repeat `--positive` or `--negative` for multiple points.
 
-## Optional OpenCV point picker
+## Legacy smoke OpenCV point picker
 
-On a machine with a graphical display:
+`smoke.py --gui` is a legacy point picker for smoke testing, not the supported
+team-color workflow. On a machine with a graphical display:
 
 ```bash
 .venv/bin/python src/smoke.py --gui --device auto
@@ -78,7 +79,8 @@ On a machine with a graphical display:
 - Esc: cancel
 
 The cloud execution environment has no desktop display, so its run uses CLI
-coordinates.
+coordinates. Use the Tkinter GUI MVP below for actual interactive selection,
+tracking, recoloring, and saving.
 
 ## Prepare-only validation
 
@@ -178,14 +180,30 @@ be visually checked on a local desktop.
 2. Enter the frame width/height and spritesheet columns/rows, then click
    **Load / Apply**.
 3. Select the single target row and frame count to process.
-4. Select **Positive** or **Negative**, then click the enlarged frame 0 preview;
-   use **Undo last click** or **Clear clicks** as needed.
-5. Select the SAM 2.1 checkpoint and click **Generate Mask**.
-6. Review the mask overlay, adjust prompts, and regenerate until acceptable.
-7. Click **Track Across Frames** and wait for the status to report completion.
-8. Choose Red, Blue, Green, Yellow, or enter a custom color.
-9. Click **Recolor** and review the contact sheet preview.
-10. Click **Save Results...** and select an output directory.
+4. Keep the default **Select Area** mode and choose **Add**.
+5. Hold the left mouse button and draw a freehand loop around the target on
+   frame 0; releasing the button closes and fills the loop.
+6. Refine the overlay with additional **Add** or **Subtract** loops. Use
+   **Undo** for the most recent operation or **Clear Selection** to start over.
+7. Review the translucent selection and yellow boundary. There is no Generate
+   Mask step for Select Area.
+8. Select the SAM 2.1 checkpoint, click **Track Across Frames**, and wait for
+   propagation to finish.
+9. Choose Red, Blue, Green, Yellow, or enter a custom color.
+10. Click **Recolor** and review the contact sheet preview.
+11. Click **Save Results...** and select an output directory.
+
+**Select Area** is the recommended mode. Its binary lasso mask is registered on
+frame 0 through the official SAM 2 Video Predictor `add_new_mask()` API, then SAM
+2 tracks it through the remaining frames. The saved frame 0 mask remains the
+user-confirmed lasso selection after alpha clipping; SAM 2 does not replace it
+with a different shape.
+
+**Quick Select** is an auxiliary mode for clearly separated parts that can be
+identified with a few clicks. Add Positive and optional Negative clicks, use
+**Undo** or **Clear clicks**, click **Generate Mask (Quick Select)**, review the
+overlay, and then click **Track Across Frames**. This retains the existing point
+prompt workflow.
 
 Long-running SAM 2 setup and propagation run on a worker thread. Status updates
 are passed back to the Tkinter main thread, so the interface can continue to
