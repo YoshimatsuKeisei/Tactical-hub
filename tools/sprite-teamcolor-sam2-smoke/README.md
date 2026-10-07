@@ -285,6 +285,25 @@ setting must recover target pixels without unacceptable body, weapon, or
 background spill. This manual control is for diagnosis; automatic threshold
 selection remains future work.
 
+If the visible mask does not change across the current -2.0 through +2.0 slider,
+click **Logit Diagnostics...** in Tracked Mask Preview before changing that
+range. The copyable plain-text report shows, for every tracked frame:
+
+- retained array shape and dtype
+- min, max, mean, and p01/p05/p25/p50/p75/p95/p99
+- unique-value count
+- alpha-clipped mask pixel counts at thresholds -20, -10, -5, -2, -1, -0.5,
+  0, +0.5, +1, +2, +5, +10, and +20
+
+The report also marks whether every retained array is 2D float32, whether at
+least one frame has more than 16 unique values, whether threshold 0.0 matches
+the direct legacy `logits > 0` path, and whether pixel counts are nonincreasing
+as the threshold rises. Diagnostic pixel counts use only threshold, nearest-
+neighbor resize, and alpha clipping; **Fill enclosed holes is deliberately
+excluded**. Use **Copy All** to place the complete report on the clipboard for
+comparison. The GUI slider remains -2.0 through +2.0 until real-data diagnostics
+justify a different fixed or adaptive range.
+
 ### Zoom and Mask Editor
 
 The main frame-0 canvas supports integer zoom from 1x through 16x while retaining

@@ -21,6 +21,23 @@ MAX_ZOOM = 16
 MIN_MASK_THRESHOLD = -2.0
 MAX_MASK_THRESHOLD = 2.0
 DEFAULT_MASK_THRESHOLD = 0.0
+LOGIT_DIAGNOSTIC_THRESHOLDS = (
+    -20.0,
+    -10.0,
+    -5.0,
+    -2.0,
+    -1.0,
+    -0.5,
+    0.0,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    20.0,
+)
+LOGIT_DIAGNOSTIC_PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
+CONTINUOUS_LOGIT_UNIQUE_MIN = 16
 
 
 @dataclass(frozen=True)
@@ -64,6 +81,30 @@ class PromptClick:
     x: int
     y: int
     label: int
+
+
+@dataclass(frozen=True)
+class SamLogitFrameDiagnostics:
+    frame_index: int
+    shape: tuple[int, int]
+    dtype: str
+    minimum: float
+    maximum: float
+    mean: float
+    percentiles: tuple[tuple[int, float], ...]
+    unique_value_count: int
+    threshold_pixel_counts: tuple[tuple[float, int], ...]
+    threshold_zero_compatible: bool
+    monotonic_nonincreasing: bool
+
+
+@dataclass(frozen=True)
+class SamLogitDiagnostics:
+    frames: tuple[SamLogitFrameDiagnostics, ...]
+    all_float32_2d: bool
+    has_continuous_values: bool
+    threshold_zero_compatible: bool
+    monotonic_nonincreasing: bool
 
 
 class PromptState:
@@ -481,6 +522,135 @@ def derive_masks_from_sam_logits(
         raw_binary_masks.append(raw_binary.copy())
         active_masks.append(active)
     return raw_binary_masks, active_masks
+
+
+def diagnose_sam_logits(
+    raw_logits: Sequence[np.ndarray],
+    frames: Sequence[Image.Image],
+    thresholds: Sequence[float] = LOGIT_DIAGNOSTIC_THRESHOLDS,
+) -> SamLogitDiagnostics:
+    """Measure retained logits and alpha-clipped threshold masks without cleanup."""
+    if len(raw_logits) != len(frames):
+        raise ValueError("SAM logit and frame counts do not match")
+    if not raw_logits:
+        raise ValueError("At least one SAM logit frame is required")
+    normalized_thresholds = tuple(float(value) for value in thresholds)
+    if not normalized_thresholds:
+        raise ValueError("At least one diagnostic threshold is required")
+    if any(left >= right for left, right in zip(normalized_thresholds, normalized_thresholds[1:])):
+        raise ValueError("Diagnostic thresholds must be strictly increasing")
+
+    from smoke import threshold_sam2_logits
+
+    frame_reports: list[SamLogitFrameDiagnostics] = []
+    for frame_index, (source, frame) in enumerate(zip(raw_logits, frames, strict=True)):
+        values = np.asarray(source)
+        if values.ndim != 2 or values.shape[0] <= 0 or values.shape[1] <= 0:
+            raise ValueError(
+                f"Frame {frame_index} raw logits must be a non-empty 2D array, got {values.shape}"
+            )
+        numeric_values = values.astype(np.float32, copy=False)
+        percentile_values = np.percentile(numeric_values, LOGIT_DIAGNOSTIC_PERCENTILES)
+        counts: list[tuple[float, int]] = []
+        for threshold in normalized_thresholds:
+            resized = threshold_sam2_logits(values, frame.size, threshold)
+            counts.append((threshold, int(clip_mask_to_frame(resized, frame).sum())))
+
+        direct_zero_work_mask = values > 0.0
+        direct_zero_image = Image.fromarray(direct_zero_work_mask.astype(np.uint8) * 255)
+        direct_zero = np.asarray(
+            direct_zero_image.resize(frame.size, Image.Resampling.NEAREST)
+        ) > 0
+        direct_zero = clip_mask_to_frame(direct_zero, frame)
+        helper_zero = clip_mask_to_frame(
+            threshold_sam2_logits(values, frame.size, 0.0),
+            frame,
+        )
+        pixel_counts = [count for _threshold, count in counts]
+        frame_reports.append(
+            SamLogitFrameDiagnostics(
+                frame_index=frame_index,
+                shape=(int(values.shape[0]), int(values.shape[1])),
+                dtype=str(values.dtype),
+                minimum=float(np.min(numeric_values)),
+                maximum=float(np.max(numeric_values)),
+                mean=float(np.mean(numeric_values)),
+                percentiles=tuple(
+                    (percentile, float(value))
+                    for percentile, value in zip(
+                        LOGIT_DIAGNOSTIC_PERCENTILES,
+                        percentile_values,
+                        strict=True,
+                    )
+                ),
+                unique_value_count=int(np.unique(values).size),
+                threshold_pixel_counts=tuple(counts),
+                threshold_zero_compatible=bool(np.array_equal(direct_zero, helper_zero)),
+                monotonic_nonincreasing=all(
+                    left >= right for left, right in zip(pixel_counts, pixel_counts[1:])
+                ),
+            )
+        )
+
+    reports = tuple(frame_reports)
+    return SamLogitDiagnostics(
+        frames=reports,
+        all_float32_2d=all(report.dtype == "float32" for report in reports),
+        has_continuous_values=any(
+            report.unique_value_count > CONTINUOUS_LOGIT_UNIQUE_MIN for report in reports
+        ),
+        threshold_zero_compatible=all(report.threshold_zero_compatible for report in reports),
+        monotonic_nonincreasing=all(report.monotonic_nonincreasing for report in reports),
+    )
+
+
+def format_sam_logit_diagnostics(diagnostics: SamLogitDiagnostics) -> str:
+    """Render diagnostics as plain text suitable for selection or clipboard copy."""
+    def result(value: bool) -> str:
+        return "PASS" if value else "FAIL"
+
+    def number(value: float) -> str:
+        return f"{value:.7g}"
+
+    def threshold_label(value: float) -> str:
+        if value == 0:
+            return "0"
+        return f"{value:+g}"
+
+    max_unique = max(report.unique_value_count for report in diagnostics.frames)
+    lines = [
+        "SAM raw logit diagnostics",
+        "Diagnostic mask counts: threshold -> nearest resize -> alpha clip (Hole Fill excluded)",
+        "",
+        f"2D float32 retained logits: {result(diagnostics.all_float32_2d)}",
+        (
+            f"Continuous-value check (>{CONTINUOUS_LOGIT_UNIQUE_MIN} unique in at least one frame): "
+            f"{result(diagnostics.has_continuous_values)} (max unique: {max_unique})"
+        ),
+        f"Threshold 0.0 compatibility: {result(diagnostics.threshold_zero_compatible)}",
+        f"Threshold-count monotonicity: {result(diagnostics.monotonic_nonincreasing)}",
+        "",
+    ]
+    for report in diagnostics.frames:
+        lines.extend(
+            [
+                f"frame_{report.frame_index:03}",
+                f"  shape: {report.shape}",
+                f"  dtype: {report.dtype}",
+                f"  min: {number(report.minimum)}",
+                f"  max: {number(report.maximum)}",
+                f"  mean: {number(report.mean)}",
+                f"  unique values: {report.unique_value_count}",
+            ]
+        )
+        for percentile, value in report.percentiles:
+            lines.append(f"  p{percentile:02}: {number(value)}")
+        lines.append(f"  threshold 0.0 compatibility: {result(report.threshold_zero_compatible)}")
+        lines.append(f"  threshold-count monotonicity: {result(report.monotonic_nonincreasing)}")
+        for threshold, count in report.threshold_pixel_counts:
+            lines.append(f"  threshold {threshold_label(threshold)}: {count} px")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def make_mask_overlay(

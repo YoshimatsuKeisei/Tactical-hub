@@ -33,10 +33,12 @@ from gui_controller import (
     clamp_zoom,
     clip_mask_to_frame,
     cursor_centered_zoom_offset,
+    diagnose_sam_logits,
     derive_masks_from_sam_logits,
     ellipse_to_mask,
     extract_row_frames,
     frame_output_names,
+    format_sam_logit_diagnostics,
     load_sprite_png,
     make_mask_overlay,
     make_selection_overlay,
@@ -127,6 +129,7 @@ class TeamColorApp:
         self.mask_editor: MaskEditorWindow | None = None
         self.review_window: RecolorReviewWindow | None = None
         self.tracked_mask_window: TrackedMaskPreviewWindow | None = None
+        self.logit_diagnostics_window: LogitDiagnosticsWindow | None = None
         self._pending_threshold_update: str | None = None
         self._busy = False
         self._events: queue.Queue[tuple] = queue.Queue()
@@ -429,6 +432,7 @@ class TeamColorApp:
         self._close_mask_editor()
         self._discard_recolor_preview()
         self._close_tracked_mask_preview()
+        self._close_logit_diagnostics()
         self._close_session()
         self.sprite = sprite
         self.layout = layout
@@ -691,6 +695,7 @@ class TeamColorApp:
         self.raw_masks = None
         self.sam_raw_logits = None
         self._close_tracked_mask_preview()
+        self._close_logit_diagnostics()
         self._discard_recolor_preview()
         if self.selection_mode.get() == "area":
             self._sync_lasso_mask()
@@ -873,6 +878,7 @@ class TeamColorApp:
         self.raw_masks = None
         self.sam_raw_logits = None
         self._close_tracked_mask_preview()
+        self._close_logit_diagnostics()
         self._discard_recolor_preview()
         self._refresh_selection_info()
         self._refresh_cleanup_info()
@@ -945,6 +951,7 @@ class TeamColorApp:
         self.raw_masks = None
         self.sam_raw_logits = None
         self._close_tracked_mask_preview()
+        self._close_logit_diagnostics()
         self._discard_recolor_preview()
         self._refresh_prompt_info()
         self._refresh_cleanup_info()
@@ -1022,6 +1029,7 @@ class TeamColorApp:
             messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
         self._discard_recolor_preview()
+        self._close_logit_diagnostics()
         if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
             device_name = self.device.get()
@@ -1202,6 +1210,39 @@ class TeamColorApp:
             self.tracked_mask_window = None
             preview.destroy()
 
+    def _open_logit_diagnostics(self) -> None:
+        if self.sam_raw_logits is None or not self.frames:
+            messagebox.showerror("Diagnostics unavailable", "Track masks before opening logit diagnostics.")
+            return
+        try:
+            diagnostics = diagnose_sam_logits(self.sam_raw_logits, self.frames)
+            diagnostic_text = format_sam_logit_diagnostics(diagnostics)
+        except Exception as error:
+            messagebox.showerror("Could not calculate diagnostics", str(error))
+            return
+        self._close_logit_diagnostics()
+        self.logit_diagnostics_window = LogitDiagnosticsWindow(self, diagnostic_text)
+        checks = (
+            diagnostics.all_float32_2d,
+            diagnostics.has_continuous_values,
+            diagnostics.threshold_zero_compatible,
+            diagnostics.monotonic_nonincreasing,
+        )
+        if all(checks):
+            self.status.set("Raw logit diagnostics ready; all integrity checks passed.")
+        else:
+            self.status.set("Raw logit diagnostics found a failed integrity check. Copy and review the report.")
+
+    def _close_logit_diagnostics(self) -> None:
+        if self.logit_diagnostics_window is not None:
+            diagnostics = self.logit_diagnostics_window
+            self.logit_diagnostics_window = None
+            diagnostics.destroy()
+
+    def _logit_diagnostics_window_closed(self, diagnostics: "LogitDiagnosticsWindow") -> None:
+        if self.logit_diagnostics_window is diagnostics:
+            self.logit_diagnostics_window = None
+
     def _tracked_mask_window_closed(self, preview: "TrackedMaskPreviewWindow") -> None:
         if self.tracked_mask_window is preview:
             self.tracked_mask_window = None
@@ -1352,6 +1393,7 @@ class TeamColorApp:
     def _on_close(self) -> None:
         self._discard_recolor_preview()
         self._close_tracked_mask_preview()
+        self._close_logit_diagnostics()
         self._close_mask_editor()
         self._close_session()
         self.root.destroy()
@@ -1800,6 +1842,11 @@ class TrackedMaskPreviewWindow:
         header = ttk.Frame(self.window, padding=8)
         header.pack(fill="x")
         ttk.Label(header, text="Tracked Mask Preview").pack(side="left")
+        ttk.Button(
+            header,
+            text="Logit Diagnostics...",
+            command=app._open_logit_diagnostics,
+        ).pack(side="left", padx=(12, 0))
 
         controls = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         controls.pack(fill="x")
@@ -1855,6 +1902,61 @@ class TrackedMaskPreviewWindow:
 
     def close(self) -> None:
         self.app._tracked_mask_window_closed(self)
+        self.destroy()
+
+
+class LogitDiagnosticsWindow:
+    """Scrollable, copyable plain-text report for retained SAM raw logits."""
+
+    def __init__(self, app: TeamColorApp, report: str) -> None:
+        self.app = app
+        self.report = report
+        self.window = tk.Toplevel(app.root)
+        self.window.title("SAM Raw Logit Diagnostics")
+        width = min(max(1, app.screen_size[0] - 80), 900)
+        height = min(max(1, app.screen_size[1] - 120), 720)
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(520, width), min(320, height))
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        header = ttk.Frame(self.window, padding=8)
+        header.pack(fill="x")
+        ttk.Label(header, text="SAM Raw Logit Diagnostics").pack(side="left")
+        ttk.Button(header, text="Copy All", command=self.copy_all).pack(side="right")
+        ttk.Button(header, text="Close", command=self.close).pack(side="right", padx=(0, 8))
+
+        viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+        viewport.pack(fill="both", expand=True)
+        self.text = tk.Text(viewport, wrap="none", font="TkFixedFont")
+        vertical = ttk.Scrollbar(viewport, orient="vertical", command=self.text.yview)
+        horizontal = ttk.Scrollbar(viewport, orient="horizontal", command=self.text.xview)
+        self.text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+        self.text.insert("1.0", report)
+        self.text.configure(state="disabled")
+        self.window.after(50, self.text.focus_set)
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def copy_all(self) -> None:
+        self.window.clipboard_clear()
+        self.window.clipboard_append(self.report)
+        self.app.status.set("Raw logit diagnostics copied to the clipboard.")
+
+    def destroy(self) -> None:
+        if self.exists():
+            self.window.destroy()
+
+    def close(self) -> None:
+        self.app._logit_diagnostics_window_closed(self)
         self.destroy()
 
 
