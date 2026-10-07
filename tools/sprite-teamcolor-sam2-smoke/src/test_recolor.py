@@ -11,6 +11,80 @@ from recolor import recolor_masked, save_contact_sheet
 
 
 class RecolorTests(unittest.TestCase):
+    def test_zero_strength_keeps_masked_rgb_unchanged(self) -> None:
+        source = np.array([[[32, 48, 64, 17], [120, 100, 80, 255]]], dtype=np.uint8)
+        mask = Image.fromarray(np.full((1, 2), 255, dtype=np.uint8))
+
+        result = np.asarray(recolor_masked(Image.fromarray(source), mask, strength=0.0))
+
+        np.testing.assert_array_equal(result, source)
+
+    def test_full_strength_without_protection_maximizes_target_hue_blend(self) -> None:
+        source = Image.new("RGB", (1, 1), (128, 128, 128))
+        mask = Image.new("L", (1, 1), 255)
+
+        partial = np.asarray(
+            recolor_masked(source, mask, strength=0.5, shadow_protect_amount=0.0)
+        )[0, 0]
+        full = np.asarray(
+            recolor_masked(source, mask, strength=1.0, shadow_protect_amount=0.0)
+        )[0, 0]
+
+        self.assertGreater(int(full[0]) - int(full[1]), int(partial[0]) - int(partial[1]))
+        self.assertEqual(int(full.max()), 128)
+
+    def test_full_protection_matches_existing_default_pixels(self) -> None:
+        source = Image.fromarray(
+            np.array([[[10, 10, 10], [40, 40, 40], [160, 160, 160]]], dtype=np.uint8)
+        )
+        mask = Image.new("L", (3, 1), 255)
+
+        existing = np.asarray(recolor_masked(source, mask))
+        explicit = np.asarray(recolor_masked(source, mask, shadow_protect_amount=1.0))
+        expected_legacy_pixels = np.array(
+            [[[10, 10, 10], [40, 26, 26], [160, 55, 55]]],
+            dtype=np.uint8,
+        )
+
+        np.testing.assert_array_equal(existing, expected_legacy_pixels)
+        np.testing.assert_array_equal(explicit, existing)
+
+    def test_zero_protection_removes_only_dark_pixel_attenuation(self) -> None:
+        source = Image.new("RGB", (1, 1), (10, 10, 10))
+        mask = Image.new("L", (1, 1), 255)
+
+        protected = np.asarray(
+            recolor_masked(source, mask, strength=1.0, shadow_protect_amount=1.0)
+        )[0, 0]
+        unprotected = np.asarray(
+            recolor_masked(source, mask, strength=1.0, shadow_protect_amount=0.0)
+        )[0, 0]
+
+        np.testing.assert_array_equal(protected, np.array([10, 10, 10], dtype=np.uint8))
+        self.assertGreater(unprotected[0], unprotected[1])
+        self.assertEqual(int(unprotected.max()), 10)
+
+    def test_max_settings_keep_unmasked_rgb_alpha_and_brightness_order(self) -> None:
+        levels = np.array([24, 96, 208], dtype=np.uint8)
+        rgb = np.repeat(levels[:, None], 3, axis=1)[None, :, :]
+        alpha = np.array([[[32], [128], [240]]], dtype=np.uint8)
+        source_array = np.concatenate((rgb, alpha), axis=2)
+        mask = Image.fromarray(np.array([[255, 255, 0]], dtype=np.uint8))
+
+        result = np.asarray(
+            recolor_masked(
+                Image.fromarray(source_array),
+                mask,
+                strength=1.0,
+                shadow_protect_amount=0.0,
+            )
+        )
+
+        np.testing.assert_array_equal(result[0, 2, :3], source_array[0, 2, :3])
+        np.testing.assert_array_equal(result[:, :, 3], source_array[:, :, 3])
+        self.assertLess(int(result[0, 0, :3].max()), int(result[0, 1, :3].max()))
+        self.assertLess(int(result[0, 1, :3].max()), int(result[0, 2, :3].max()))
+
     def test_only_masked_pixels_change_and_alpha_is_preserved(self) -> None:
         source = np.array(
             [

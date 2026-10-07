@@ -302,6 +302,14 @@ def clamp_zoom(zoom: int, minimum: int = MIN_ZOOM, maximum: int = MAX_ZOOM) -> i
     return max(minimum, min(maximum, int(zoom)))
 
 
+def percentage_to_unit(value: float) -> float:
+    """Convert one GUI percentage in the inclusive 0..100 range to 0..1."""
+    normalized = float(value)
+    if not 0.0 <= normalized <= 100.0:
+        raise ValueError("percentage must be between 0 and 100")
+    return normalized / 100.0
+
+
 def viewport_to_frame(
     viewport_x: float,
     viewport_y: float,
@@ -420,6 +428,8 @@ def recolor_frame_sequence(
     frames: Sequence[Image.Image],
     masks: Sequence[np.ndarray],
     target: tuple[int, int, int],
+    strength: float = 0.85,
+    shadow_protect_amount: float = 1.0,
 ) -> list[Image.Image]:
     if len(frames) != len(masks):
         raise ValueError("Frame and mask counts do not match")
@@ -427,7 +437,15 @@ def recolor_frame_sequence(
     for frame, mask in zip(frames, masks, strict=True):
         clipped = clip_mask_to_frame(mask, frame)
         mask_image = Image.fromarray(clipped.astype(np.uint8) * 255)
-        output.append(recolor_masked(frame, mask_image, target=target))
+        output.append(
+            recolor_masked(
+                frame,
+                mask_image,
+                target=target,
+                strength=strength,
+                shadow_protect_amount=shadow_protect_amount,
+            )
+        )
     return output
 
 

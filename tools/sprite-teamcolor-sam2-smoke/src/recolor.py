@@ -76,13 +76,16 @@ def recolor_masked(
     target: tuple[int, int, int] = DEFAULT_TARGETS["red"],
     strength: float = 0.85,
     shadow_protect: tuple[float, float] = (0.05, 0.25),
+    shadow_protect_amount: float = 1.0,
 ) -> Image.Image:
     """Shift masked RGB pixels toward a target hue without changing alpha.
 
     The original HSV value (maximum RGB channel) is restored after hue blending,
     so highlights and shadows retain their ordering. Very dark pixels receive a
     progressively weaker blend to avoid coloring near-black outlines too heavily.
-    A grayscale mask is also accepted, allowing a lightly feathered mask edge.
+    ``shadow_protect_amount`` interpolates continuously between no dark-pixel
+    attenuation (0) and the existing protection curve (1). A grayscale mask is
+    also accepted, allowing a lightly feathered mask edge.
     """
     if image.mode not in ("RGB", "RGBA"):
         raise ValueError(f"Expected RGB or RGBA input, got {image.mode}")
@@ -90,6 +93,8 @@ def recolor_masked(
         raise ValueError(f"Mask size {mask.size} does not match image size {image.size}")
     if not 0.0 <= strength <= 1.0:
         raise ValueError("strength must be between 0 and 1")
+    if not 0.0 <= shadow_protect_amount <= 1.0:
+        raise ValueError("shadow_protect_amount must be between 0 and 1")
     if len(target) != 3 or any(channel < 0 or channel > 255 for channel in target):
         raise ValueError("target must contain three channels from 0 to 255")
 
@@ -98,8 +103,9 @@ def recolor_masked(
     value = source_rgb.max(axis=2)
     tinted = _target_hsv_rgb(value, target)
 
-    outline_weight = _smoothstep(value, *shadow_protect)
-    color_weight = (strength * outline_weight)[..., None]
+    protected_weight = _smoothstep(value, *shadow_protect)
+    effective_weight = (1.0 - shadow_protect_amount) + shadow_protect_amount * protected_weight
+    color_weight = (strength * effective_weight)[..., None]
     recolored = source_rgb * (1.0 - color_weight) + tinted * color_weight
 
     # Blending two hues can lower the maximum channel. Normalize it back to the

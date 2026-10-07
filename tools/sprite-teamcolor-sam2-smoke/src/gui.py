@@ -36,6 +36,7 @@ from gui_controller import (
     make_selection_overlay,
     pan_scroll_offset,
     parse_team_color,
+    percentage_to_unit,
     rectangle_to_mask,
     recolor_frame_sequence,
     save_results,
@@ -77,6 +78,8 @@ class TeamColorApp:
         self.prompt_mode = tk.IntVar(value=1)
         self.color_preset = tk.StringVar(value="Red")
         self.custom_color = tk.StringVar(value="#D23030")
+        self.recolor_strength_percent = tk.DoubleVar(value=85.0)
+        self.outline_protection_percent = tk.DoubleVar(value=100.0)
         self.image_info = tk.StringVar(value="No spritesheet loaded")
         self.selection_info = tk.StringVar(value="Selected: 0 pixels")
         self.prompt_info = tk.StringVar(value="Positive: 0 / Negative: 0")
@@ -93,6 +96,7 @@ class TeamColorApp:
         self.masks = None
         self.recolored_frames: list[Image.Image] = []
         self.recolored_contact: Image.Image | None = None
+        self.recolor_target: tuple[int, int, int] | None = None
         self.sam_session: Sam2GuiSession | None = None
         self.session_checkpoint: Path | None = None
         self.session_device_name: str | None = None
@@ -852,15 +856,47 @@ class TeamColorApp:
         except Exception as error:
             messagebox.showerror("Invalid team color", str(error))
             return
+        strength = percentage_to_unit(round(self.recolor_strength_percent.get()))
+        protection = percentage_to_unit(round(self.outline_protection_percent.get()))
         self._discard_recolor_preview()
 
         def worker() -> object:
-            recolored = recolor_frame_sequence(self.frames, self.masks, target)
+            recolored = recolor_frame_sequence(
+                self.frames,
+                self.masks,
+                target,
+                strength=strength,
+                shadow_protect_amount=protection,
+            )
             labels = [Path(name).stem for name in frame_output_names(len(recolored))]
             contact = make_contact_sheet(recolored, labels, columns=min(5, len(recolored)))
-            return recolored, contact
+            return recolored, contact, target
 
         self._start_task("recolor", "Applying team color...", worker)
+
+    def _update_recolor_preview(self, strength: float, protection: float) -> None:
+        """Recompute only the in-memory recolor candidate from existing masks."""
+        if self.masks is None or self.recolor_target is None:
+            raise RuntimeError("No tracked recolor preview is available")
+        recolored = recolor_frame_sequence(
+            self.frames,
+            self.masks,
+            self.recolor_target,
+            strength=strength,
+            shadow_protect_amount=protection,
+        )
+        labels = [Path(name).stem for name in frame_output_names(len(recolored))]
+        contact = make_contact_sheet(recolored, labels, columns=min(5, len(recolored)))
+        self.review_state.begin(recolored, contact)
+        self.recolored_frames = list(self.review_state.frames)
+        self.recolored_contact = self.review_state.contact_sheet
+        self._show_contact_preview()
+        if self.review_window is not None and self.review_window.exists():
+            self.review_window.set_contact(contact)
+        self.status.set(
+            f"Preview updated: strength {round(strength * 100)}%, "
+            f"protection {round(protection * 100)}%."
+        )
 
     def _open_recolor_review(self) -> None:
         if not self.review_state.has_preview:
@@ -890,6 +926,7 @@ class TeamColorApp:
             return
         self.recolored_frames = []
         self.recolored_contact = None
+        self.recolor_target = None
         self._clear_contact_preview()
         self._close_review_window()
         self.status.set(f"Accepted and exported results to {Path(directory).resolve()}")
@@ -903,6 +940,7 @@ class TeamColorApp:
         self.review_state.reject()
         self.recolored_frames = []
         self.recolored_contact = None
+        self.recolor_target = None
         self._clear_contact_preview()
         self._close_review_window()
         if self.masks is not None:
@@ -913,6 +951,7 @@ class TeamColorApp:
         self.review_state.reject()
         self.recolored_frames = []
         self.recolored_contact = None
+        self.recolor_target = None
         self._clear_contact_preview()
         self._close_review_window()
 
@@ -974,7 +1013,7 @@ class TeamColorApp:
             self.masks = result
             self.status.set(f"Tracking complete for {len(self.masks)} frames. Choose a color and Recolor.")
         elif name == "recolor":
-            self.recolored_frames, self.recolored_contact = result
+            self.recolored_frames, self.recolored_contact, self.recolor_target = result
             self.review_state.begin(self.recolored_frames, self.recolored_contact)
             self.recolored_frames = list(self.review_state.frames)
             self.recolored_contact = self.review_state.contact_sheet
@@ -1370,9 +1409,13 @@ class RecolorReviewWindow:
         self.contact = app.review_state.contact_sheet
         if self.contact is None:
             raise RuntimeError("No recolor contact sheet is available")
+        self._pending_recolor_update: str | None = None
+        self.strength_text = tk.StringVar()
+        self.protection_text = tk.StringVar()
+        self._update_setting_labels()
         self.zoom = max(
             1,
-            min(2, (width - 50) // self.contact.width, (height - 160) // self.contact.height),
+            min(2, (width - 50) // self.contact.width, (height - 230) // self.contact.height),
         )
         self.zoom_text = tk.StringVar(value=f"Zoom: {self.zoom}x")
         self._photo: ImageTk.PhotoImage | None = None
@@ -1384,6 +1427,42 @@ class RecolorReviewWindow:
         ttk.Button(header, text="Zoom +", command=lambda: self.change_zoom(1)).pack(side="right")
         ttk.Button(header, text="Zoom -", command=lambda: self.change_zoom(-1)).pack(side="right", padx=(6, 0))
         ttk.Label(header, textvariable=self.zoom_text).pack(side="right", padx=(12, 0))
+
+        settings = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+        settings.pack(fill="x")
+        ttk.Label(settings, text="Recolor Strength:").grid(row=0, column=0, sticky="w")
+        ttk.Scale(
+            settings,
+            from_=0,
+            to=100,
+            variable=app.recolor_strength_percent,
+            command=self._schedule_recolor_update,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 6))
+        ttk.Label(settings, textvariable=self.strength_text, width=5).grid(row=0, column=2, sticky="e")
+        ttk.Label(settings, text="Dark / Outline Protection:").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Scale(
+            settings,
+            from_=0,
+            to=100,
+            variable=app.outline_protection_percent,
+            command=self._schedule_recolor_update,
+        ).grid(row=1, column=1, sticky="ew", padx=(8, 6), pady=(5, 0))
+        ttk.Label(settings, textvariable=self.protection_text, width=5).grid(
+            row=1,
+            column=2,
+            sticky="e",
+            pady=(5, 0),
+        )
+        mask_pixels = sum(int(mask.sum()) for mask in app.masks) if app.masks is not None else 0
+        ttk.Label(settings, text=f"Mask pixels: {mask_pixels}").grid(
+            row=0,
+            column=3,
+            rowspan=2,
+            sticky="e",
+            padx=(18, 0),
+        )
+        settings.columnconfigure(1, weight=1)
+
         viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         viewport.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(viewport, background="#181818", highlightthickness=0)
@@ -1410,7 +1489,7 @@ class RecolorReviewWindow:
 
         actions = ttk.Frame(self.window, padding=8)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Accept & Export...", command=app._accept_recolor_preview).pack(side="right")
+        ttk.Button(actions, text="Accept & Export...", command=self._accept_current_preview).pack(side="right")
         ttk.Button(actions, text="Reject", command=app._reject_recolor_preview).pack(side="right", padx=(0, 8))
 
         self.redraw()
@@ -1423,8 +1502,47 @@ class RecolorReviewWindow:
             return False
 
     def destroy(self) -> None:
+        if self._pending_recolor_update is not None and self.exists():
+            self.window.after_cancel(self._pending_recolor_update)
+            self._pending_recolor_update = None
         if self.exists():
             self.window.destroy()
+
+    def _update_setting_labels(self) -> None:
+        self.strength_text.set(f"{round(self.app.recolor_strength_percent.get())}%")
+        self.protection_text.set(f"{round(self.app.outline_protection_percent.get())}%")
+
+    def _schedule_recolor_update(self, _value: str) -> None:
+        self._update_setting_labels()
+        if self._pending_recolor_update is not None:
+            self.window.after_cancel(self._pending_recolor_update)
+        self._pending_recolor_update = self.window.after(75, self._apply_recolor_settings)
+
+    def _apply_recolor_settings(self) -> bool:
+        self._pending_recolor_update = None
+        try:
+            self.app._update_recolor_preview(
+                percentage_to_unit(round(self.app.recolor_strength_percent.get())),
+                percentage_to_unit(round(self.app.outline_protection_percent.get())),
+            )
+        except Exception as error:
+            self.app.status.set(f"Could not update recolor preview: {error}")
+            return False
+        return True
+
+    def _accept_current_preview(self) -> None:
+        if self._pending_recolor_update is not None:
+            self.window.after_cancel(self._pending_recolor_update)
+            self._pending_recolor_update = None
+            if not self._apply_recolor_settings():
+                return
+        self.app._accept_recolor_preview()
+
+    def set_contact(self, contact: Image.Image) -> None:
+        scroll = (self.canvas.canvasx(0), self.canvas.canvasy(0))
+        self.contact = contact.copy()
+        self.redraw()
+        self._set_scroll(scroll)
 
     def _view_size(self) -> tuple[int, int]:
         return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())

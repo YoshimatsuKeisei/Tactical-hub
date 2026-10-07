@@ -22,6 +22,7 @@ from gui_controller import (
     parse_team_color,
     pan_scroll_offset,
     polygon_to_mask,
+    percentage_to_unit,
     rectangle_to_mask,
     recolor_frame_sequence,
     save_results,
@@ -36,6 +37,13 @@ class GuiControllerTests(unittest.TestCase):
         self.assertEqual(clamp_zoom(-10), MIN_ZOOM)
         self.assertEqual(clamp_zoom(7), 7)
         self.assertEqual(clamp_zoom(100), MAX_ZOOM)
+
+    def test_recolor_percentages_map_to_unit_interval(self) -> None:
+        self.assertEqual(percentage_to_unit(0), 0.0)
+        self.assertEqual(percentage_to_unit(85), 0.85)
+        self.assertEqual(percentage_to_unit(100), 1.0)
+        with self.assertRaisesRegex(ValueError, "between 0 and 100"):
+            percentage_to_unit(101)
 
     def test_zoomed_and_scrolled_coordinates_map_to_same_frame_pixel(self) -> None:
         expected = (40, 80)

@@ -73,6 +73,39 @@ class RecolorReviewTests(unittest.TestCase):
             self.assertTrue(outputs["recolored_contact_sheet"].is_file())
             self.assertTrue(outputs["overlay_contact_sheet"].is_file())
 
+    def test_setting_changes_stay_in_memory_and_accept_exports_latest_result(self) -> None:
+        frames, masks = self._sample()
+        review = RecolorPreviewState()
+        initial = recolor_frame_sequence(
+            frames,
+            masks,
+            (210, 48, 48),
+            strength=0.85,
+            shadow_protect_amount=1.0,
+        )
+        latest = recolor_frame_sequence(
+            frames,
+            masks,
+            (210, 48, 48),
+            strength=1.0,
+            shadow_protect_amount=0.0,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "accepted"
+            review.begin(initial, Image.new("RGB", (8, 8), "red"))
+            review.begin(latest, Image.new("RGB", (8, 8), "red"))
+            self.assertEqual(list(root.iterdir()), [])
+
+            outputs = review.accept(
+                lambda pending: save_results(destination, frames, masks, pending, columns=2)
+            )
+            with Image.open(outputs["recolored_frames"] / "frame_000.png") as exported:
+                exported_pixels = np.asarray(exported).copy()
+
+        np.testing.assert_array_equal(exported_pixels, np.asarray(latest[0]))
+
     def test_reject_allows_retry_with_another_color(self) -> None:
         frames, masks = self._sample()
         review = RecolorPreviewState()

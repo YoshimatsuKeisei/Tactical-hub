@@ -259,7 +259,25 @@ pan controls:
 **Recolor** creates recolored frames and the contact sheet only as in-memory PIL
 images. It does not write preview PNGs or create an output directory. The review
 window uses nearest-neighbor rendering and integer zoom from 1x through 16x.
-Accept and Reject remain fixed outside the scrollable image. Preview controls are:
+Accept and Reject remain fixed outside the scrollable image.
+
+The review window also provides two live recolor controls:
+
+- **Recolor Strength** controls how strongly masked RGB pixels move toward the
+  selected target hue. Its range is 0% through 100%, and its default is 85%.
+- **Dark / Outline Protection** controls how strongly dark pixels and near-black
+  outlines stay near their original color. Its range is 0% through 100%, and its
+  default is 100%.
+
+The existing recolor result is **Strength 85% / Protection 100%**. To check the
+maximum target-hue coverage inside the mask, use **Strength 100% / Protection
+0%**. This still preserves each source pixel's HSV value: dark pixels become dark
+target-colored pixels rather than a flat bright fill. Slider changes recalculate
+only recoloring from the existing tracked masks; they do not rerun SAM 2 tracking
+and do not write files. **Mask pixels** reports the total selected pixels across
+the tracked frames.
+
+Preview navigation controls are:
 
 - touchpad pinch or **Ctrl + mouse wheel**: cursor-centered zoom
 - **+** / **-** keys or **Zoom +** / **Zoom -** buttons: zoom
@@ -270,7 +288,8 @@ Accept and Reject remain fixed outside the scrollable image. Preview controls ar
 
 Review actions are:
 
-- **Accept & Export...**: choose a folder and write the existing result set
+- **Accept & Export...**: choose a folder and write the currently previewed
+  target color, strength, and protection result
 - **Reject**: close the preview and discard only the in-memory recolored frames
 
 Rejecting or closing the review window writes no files and retains the source
