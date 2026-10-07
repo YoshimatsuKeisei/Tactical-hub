@@ -28,6 +28,7 @@ from gui_controller import (
     clamp_zoom,
     clip_mask_to_frame,
     cursor_centered_zoom_offset,
+    ellipse_to_mask,
     extract_row_frames,
     frame_output_names,
     load_sprite_png,
@@ -35,8 +36,11 @@ from gui_controller import (
     make_selection_overlay,
     pan_scroll_offset,
     parse_team_color,
+    rectangle_to_mask,
     recolor_frame_sequence,
     save_results,
+    select_all_mask,
+    shape_bounds,
     viewport_to_frame,
 )
 from recolor import make_contact_sheet
@@ -67,7 +71,9 @@ class TeamColorApp:
         self.frame_count = tk.StringVar(value="15")
         self.device = tk.StringVar(value="auto")
         self.selection_mode = tk.StringVar(value="area")
+        self.selection_tool = tk.StringVar(value="freehand")
         self.lasso_operation = tk.StringVar(value="add")
+        self.shape_constraint = tk.BooleanVar(value=False)
         self.prompt_mode = tk.IntVar(value=1)
         self.color_preset = tk.StringVar(value="Red")
         self.custom_color = tk.StringVar(value="#D23030")
@@ -95,6 +101,7 @@ class TeamColorApp:
         self._prompt_zoom = self.PREFERRED_DISPLAY_SCALE
         self._lasso_points: list[tuple[int, int]] = []
         self._lasso_display_points: list[tuple[int, int]] = []
+        self._shape_start: tuple[int, int] | None = None
         self._prompt_photo: ImageTk.PhotoImage | None = None
         self._contact_photo: ImageTk.PhotoImage | None = None
         self.review_state = RecolorPreviewState()
@@ -185,9 +192,17 @@ class TeamColorApp:
                 value="quick",
                 command=self._on_selection_mode_change,
             ),
+            ttk.Radiobutton(
+                selection_mode_controls,
+                text="Select All",
+                variable=self.selection_mode,
+                value="all",
+                command=self._on_selection_mode_change,
+            ),
         )
         self.selection_mode_buttons[0].pack(side="left", padx=(8, 0))
         self.selection_mode_buttons[1].pack(side="left", padx=(8, 0))
+        self.selection_mode_buttons[2].pack(side="left", padx=(8, 0))
         self.open_mask_editor_button = ttk.Button(
             selection_mode_controls,
             text="Open Mask Editor...",
@@ -205,14 +220,34 @@ class TeamColorApp:
         editor_controls = ttk.Frame(prompt_box)
         editor_controls.pack(fill="x", pady=(5, 0))
         self.lasso_controls = ttk.Frame(editor_controls)
-        ttk.Radiobutton(self.lasso_controls, text="Add", variable=self.lasso_operation, value="add").pack(side="left")
-        ttk.Radiobutton(self.lasso_controls, text="Subtract", variable=self.lasso_operation, value="subtract").pack(
+        tool_controls = ttk.Frame(self.lasso_controls)
+        tool_controls.pack(fill="x")
+        ttk.Label(tool_controls, text="Selection tool:").pack(side="left")
+        tools = (("Freehand", "freehand"), ("Rectangle", "rectangle"), ("Ellipse", "ellipse"))
+        for label, value in tools:
+            ttk.Radiobutton(
+                tool_controls,
+                text=label,
+                variable=self.selection_tool,
+                value=value,
+                command=self._on_selection_tool_change,
+            ).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            tool_controls,
+            text="Square / circle lock",
+            variable=self.shape_constraint,
+        ).pack(side="left", padx=(12, 0))
+
+        operation_controls = ttk.Frame(self.lasso_controls)
+        operation_controls.pack(fill="x", pady=(4, 0))
+        ttk.Radiobutton(operation_controls, text="Add", variable=self.lasso_operation, value="add").pack(side="left")
+        ttk.Radiobutton(operation_controls, text="Subtract", variable=self.lasso_operation, value="subtract").pack(
             side="left", padx=(8, 0)
         )
-        self.lasso_undo_button = ttk.Button(self.lasso_controls, text="Undo", command=self._undo_lasso)
+        self.lasso_undo_button = ttk.Button(operation_controls, text="Undo", command=self._undo_lasso)
         self.lasso_undo_button.pack(side="left", padx=(16, 0))
         self.lasso_clear_button = ttk.Button(
-            self.lasso_controls,
+            operation_controls,
             text="Clear Selection",
             command=self._clear_lasso,
         )
@@ -358,6 +393,7 @@ class TeamColorApp:
         self._prompt_display_size = self._prompt_viewport_size
         self._lasso_points = []
         self._lasso_display_points = []
+        self._shape_start = None
         self.quick_frame0_mask = None
         self.frame0_mask = None
         self.masks = None
@@ -369,6 +405,9 @@ class TeamColorApp:
         )
         if self.selection_mode.get() == "area":
             self.status.set("Spritesheet loaded. Drag around the target area on frame 0.")
+        elif self.selection_mode.get() == "all":
+            self._sync_select_all_mask()
+            self.status.set("Select All: visible frame 0 pixels selected. Review, then track.")
         else:
             self.status.set("Spritesheet loaded. Add at least one positive Quick Select click.")
         self._clear_contact_preview()
@@ -459,12 +498,26 @@ class TeamColorApp:
             self.prompts.add(*point, self.prompt_mode.get())
             self._invalidate_after_prompt_change()
             return
-        self._lasso_points = [point]
-        self._lasso_display_points = [(self.prompt_canvas.canvasx(event.x), self.prompt_canvas.canvasy(event.y))]
-        self.prompt_canvas.delete("lasso_draft")
+        if self.selection_mode.get() != "area":
+            return
+        self._clear_main_draft()
+        if self.selection_tool.get() == "freehand":
+            self._lasso_points = [point]
+            self._lasso_display_points = [
+                (self.prompt_canvas.canvasx(event.x), self.prompt_canvas.canvasy(event.y))
+            ]
+        else:
+            self._shape_start = point
+            self._draw_main_shape_draft(point, event)
 
     def _on_canvas_drag(self, event: tk.Event) -> None:
-        if self._busy or self.selection_mode.get() != "area" or not self._lasso_points:
+        if self._busy or self.selection_mode.get() != "area":
+            return
+        if self.selection_tool.get() != "freehand":
+            if self._shape_start is not None:
+                self._draw_main_shape_draft(self._event_frame_point(event), event)
+            return
+        if not self._lasso_points:
             return
         point = self._event_frame_point(event)
         if point is None or point == self._lasso_points[-1]:
@@ -481,11 +534,16 @@ class TeamColorApp:
             canvas_y,
             fill="#ffdc00",
             width=2,
-            tags="lasso_draft",
+            tags="selection_draft",
         )
 
     def _on_canvas_release(self, event: tk.Event) -> None:
-        if self._busy or self.selection_mode.get() != "area" or not self._lasso_points:
+        if self._busy or self.selection_mode.get() != "area":
+            return
+        if self.selection_tool.get() != "freehand":
+            self._commit_main_shape(event)
+            return
+        if not self._lasso_points:
             return
         point = self._event_frame_point(event)
         if point is not None and point != self._lasso_points[-1]:
@@ -496,7 +554,7 @@ class TeamColorApp:
         points = tuple(self._lasso_points)
         self._lasso_points = []
         self._lasso_display_points = []
-        self.prompt_canvas.delete("lasso_draft")
+        self.prompt_canvas.delete("selection_draft")
         if len(points) < 3 or self.lasso_selection is None:
             self.status.set("Lasso needs at least three distinct frame pixels.")
             return
@@ -507,12 +565,63 @@ class TeamColorApp:
             return
         self._invalidate_after_lasso_change()
 
+    def _shape_is_constrained(self, event: tk.Event) -> bool:
+        return self.shape_constraint.get() or bool(event.state & 0x0001)
+
+    def _clear_main_draft(self) -> None:
+        self._lasso_points = []
+        self._lasso_display_points = []
+        self._shape_start = None
+        self.prompt_canvas.delete("selection_draft")
+
+    def _draw_main_shape_draft(self, end: tuple[int, int] | None, event: tk.Event) -> None:
+        if self._shape_start is None or end is None or self.layout is None:
+            return
+        bounds = shape_bounds(
+            self._shape_start,
+            end,
+            self.layout.frame_size,
+            self._shape_is_constrained(event),
+        )
+        x0, y0, x1, y1 = bounds
+        coordinates = (
+            x0 * self._prompt_zoom,
+            y0 * self._prompt_zoom,
+            (x1 + 1) * self._prompt_zoom,
+            (y1 + 1) * self._prompt_zoom,
+        )
+        self.prompt_canvas.delete("selection_draft")
+        draw = (
+            self.prompt_canvas.create_rectangle
+            if self.selection_tool.get() == "rectangle"
+            else self.prompt_canvas.create_oval
+        )
+        draw(*coordinates, outline="#ffdc00", width=2, dash=(5, 3), tags="selection_draft")
+
+    def _commit_main_shape(self, event: tk.Event) -> None:
+        start = self._shape_start
+        end = self._event_frame_point(event)
+        self._clear_main_draft()
+        if start is None or end is None or self.layout is None or self.lasso_selection is None:
+            return
+        constrained = self._shape_is_constrained(event)
+        if self.selection_tool.get() == "rectangle":
+            mask = rectangle_to_mask(start, end, self.layout.frame_size, constrained)
+        else:
+            mask = ellipse_to_mask(start, end, self.layout.frame_size, constrained)
+        self.lasso_selection.apply_mask(mask, self.lasso_operation.get())
+        self._invalidate_after_lasso_change()
+
+    def _on_selection_tool_change(self) -> None:
+        self._clear_main_draft()
+        if self.mask_editor is not None and self.mask_editor.exists():
+            self.mask_editor.cancel_draft()
+        self.status.set(f"Selection tool: {self.selection_tool.get().title()}")
+
     def _on_selection_mode_change(self) -> None:
         if self._busy:
             return
-        self._lasso_points = []
-        self._lasso_display_points = []
-        self.prompt_canvas.delete("lasso_draft")
+        self._clear_main_draft()
         self.masks = None
         self._discard_recolor_preview()
         if self.selection_mode.get() == "area":
@@ -522,10 +631,15 @@ class TeamColorApp:
                 self.status.set("Select Area: drag around the target, then Track Across Frames.")
             else:
                 self.status.set("Initial Mask Ready. Review it, then Track Across Frames.")
-        else:
+        elif self.selection_mode.get() == "quick":
             self._close_mask_editor()
             self.frame0_mask = self.quick_frame0_mask.copy() if self.quick_frame0_mask is not None else None
             self.status.set("Quick Select: add clicks, then Generate Mask.")
+        else:
+            self._close_mask_editor()
+            self._sync_select_all_mask()
+            self._refresh_selection_info()
+            self.status.set("Select All: visible frame 0 pixels selected. Review, then track.")
         self._show_editor_controls()
         self._redraw_prompt()
         self._update_buttons()
@@ -536,11 +650,16 @@ class TeamColorApp:
             self.lasso_controls.grid()
             self.prompt_info_label.pack_forget()
             self.selection_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_viewport)
-        else:
+        elif self.selection_mode.get() == "quick":
             self.lasso_controls.grid_remove()
             self.quick_controls.grid()
             self.selection_info_label.pack_forget()
             self.prompt_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_viewport)
+        else:
+            self.lasso_controls.grid_remove()
+            self.quick_controls.grid_remove()
+            self.prompt_info_label.pack_forget()
+            self.selection_info_label.pack(anchor="w", pady=(4, 0), before=self.prompt_viewport)
 
     def _sync_lasso_mask(self) -> None:
         if self.lasso_selection is None or not self.frames or self.lasso_selection.is_empty:
@@ -549,6 +668,9 @@ class TeamColorApp:
         self.frame0_mask = clip_mask_to_frame(self.lasso_selection.mask, self.frames[0])
         if not self.frame0_mask.any():
             self.frame0_mask = None
+
+    def _sync_select_all_mask(self) -> None:
+        self.frame0_mask = select_all_mask(self.frames[0]) if self.frames else None
 
     def _invalidate_after_lasso_change(self) -> None:
         self._sync_lasso_mask()
@@ -634,7 +756,7 @@ class TeamColorApp:
     def _refresh_selection_info(self) -> None:
         selected = (
             int(self.frame0_mask.sum())
-            if self.selection_mode.get() == "area" and self.frame0_mask is not None
+            if self.selection_mode.get() in ("area", "all") and self.frame0_mask is not None
             else 0
         )
         self.selection_info.set(f"Selected: {selected} pixels")
@@ -645,7 +767,7 @@ class TeamColorApp:
             return
         source = self.frames[0]
         if self.frame0_mask is not None:
-            if self.selection_mode.get() == "area":
+            if self.selection_mode.get() in ("area", "all"):
                 source = make_selection_overlay(source, self.frame0_mask)
             else:
                 source = make_mask_overlay(source, self.frame0_mask)
@@ -669,7 +791,7 @@ class TeamColorApp:
 
     def _generate_mask(self) -> None:
         if self.selection_mode.get() != "quick":
-            messagebox.showinfo("Select Area is ready", "Use Track Across Frames after completing the lasso selection.")
+            messagebox.showinfo("Selection is ready", "Use Track Across Frames after reviewing the selection.")
             return
         if not self.prompts or not self.prompts.has_positive:
             messagebox.showerror("Missing positive prompt", "Add at least one positive click.")
@@ -689,7 +811,7 @@ class TeamColorApp:
             messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
         self._discard_recolor_preview()
-        if self.selection_mode.get() == "area":
+        if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
             device_name = self.device.get()
             initial_mask = self.frame0_mask.copy()
@@ -699,7 +821,7 @@ class TeamColorApp:
                 self.sam_session.set_frame0_mask(initial_mask, self._queue_status)
                 return self.sam_session.track_across_frames(self._queue_status)
 
-            self._start_task("track", "Preparing lasso mask for propagation...", worker)
+            self._start_task("track", "Preparing selection mask for propagation...", worker)
             return
         if self.sam_session is None:
             messagebox.showerror("Mask required", "Generate and review the Quick Select mask first.")
@@ -879,7 +1001,11 @@ class TeamColorApp:
         self.generate_button.configure(state="disabled" if generate_disabled else "normal")
         self.track_button.configure(state="disabled" if disabled or self.frame0_mask is None else "normal")
         self.recolor_button.configure(state="disabled" if disabled or self.masks is None else "normal")
-        self.open_mask_editor_button.configure(state="disabled" if disabled or not self.frames else "normal")
+        self.open_mask_editor_button.configure(
+            state="disabled"
+            if disabled or not self.frames or self.selection_mode.get() != "area"
+            else "normal"
+        )
         mode_state = "disabled" if disabled else "normal"
         for button in self.selection_mode_buttons:
             button.configure(state=mode_state)
@@ -938,10 +1064,29 @@ class MaskEditorWindow:
         self._photo: ImageTk.PhotoImage | None = None
         self._lasso_points: list[tuple[int, int]] = []
         self._lasso_canvas_points: list[tuple[float, float]] = []
+        self._shape_start: tuple[int, int] | None = None
 
-        controls = ttk.Frame(self.window, padding=8)
+        tool_controls = ttk.Frame(self.window, padding=(8, 8, 8, 2))
+        tool_controls.pack(fill="x")
+        ttk.Label(tool_controls, text="Selection tool:").pack(side="left")
+        tools = (("Freehand", "freehand"), ("Rectangle", "rectangle"), ("Ellipse", "ellipse"))
+        for label, value in tools:
+            ttk.Radiobutton(
+                tool_controls,
+                text=label,
+                variable=app.selection_tool,
+                value=value,
+                command=app._on_selection_tool_change,
+            ).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            tool_controls,
+            text="Square / circle lock",
+            variable=app.shape_constraint,
+        ).pack(side="left", padx=(12, 0))
+
+        controls = ttk.Frame(self.window, padding=(8, 2, 8, 4))
         controls.pack(fill="x")
-        ttk.Label(controls, text="Select Area:").pack(side="left")
+        ttk.Label(controls, text="Operation:").pack(side="left")
         ttk.Radiobutton(controls, text="Add", variable=app.lasso_operation, value="add").pack(
             side="left", padx=(8, 0)
         )
@@ -1026,12 +1171,22 @@ class MaskEditorWindow:
         point = self._frame_point(event)
         if point is None:
             return
-        self._lasso_points = [point]
-        self._lasso_canvas_points = [(self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))]
-        self.canvas.delete("lasso_draft")
+        self.cancel_draft()
+        if self.app.selection_tool.get() == "freehand":
+            self._lasso_points = [point]
+            self._lasso_canvas_points = [(self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))]
+        else:
+            self._shape_start = point
+            self._draw_shape_draft(point, event)
 
     def _on_drag(self, event: tk.Event) -> None:
-        if self.app._busy or not self._lasso_points:
+        if self.app._busy:
+            return
+        if self.app.selection_tool.get() != "freehand":
+            if self._shape_start is not None:
+                self._draw_shape_draft(self._frame_point(event), event)
+            return
+        if not self._lasso_points:
             return
         point = self._frame_point(event)
         if point is None or point == self._lasso_points[-1]:
@@ -1040,10 +1195,15 @@ class MaskEditorWindow:
         previous = self._lasso_canvas_points[-1]
         self._lasso_points.append(point)
         self._lasso_canvas_points.append(canvas_point)
-        self.canvas.create_line(*previous, *canvas_point, fill="#ffdc00", width=2, tags="lasso_draft")
+        self.canvas.create_line(*previous, *canvas_point, fill="#ffdc00", width=2, tags="selection_draft")
 
     def _on_release(self, event: tk.Event) -> None:
-        if self.app._busy or not self._lasso_points:
+        if self.app._busy:
+            return
+        if self.app.selection_tool.get() != "freehand":
+            self._commit_shape(event)
+            return
+        if not self._lasso_points:
             return
         point = self._frame_point(event)
         if point is not None and point != self._lasso_points[-1]:
@@ -1051,7 +1211,7 @@ class MaskEditorWindow:
         points = tuple(self._lasso_points)
         self._lasso_points = []
         self._lasso_canvas_points = []
-        self.canvas.delete("lasso_draft")
+        self.canvas.delete("selection_draft")
         if len(points) < 3 or self.app.lasso_selection is None:
             self.app.status.set("Lasso needs at least three distinct frame pixels.")
             return
@@ -1060,6 +1220,50 @@ class MaskEditorWindow:
         except ValueError as error:
             self.app.status.set(str(error))
             return
+        self.app._invalidate_after_lasso_change()
+
+    def cancel_draft(self) -> None:
+        self._lasso_points = []
+        self._lasso_canvas_points = []
+        self._shape_start = None
+        self.canvas.delete("selection_draft")
+
+    def _draw_shape_draft(self, end: tuple[int, int] | None, event: tk.Event) -> None:
+        if self._shape_start is None or end is None:
+            return
+        constrained = self.app._shape_is_constrained(event)
+        x0, y0, x1, y1 = shape_bounds(
+            self._shape_start,
+            end,
+            self.app.frames[0].size,
+            constrained,
+        )
+        coordinates = (
+            x0 * self.zoom,
+            y0 * self.zoom,
+            (x1 + 1) * self.zoom,
+            (y1 + 1) * self.zoom,
+        )
+        self.canvas.delete("selection_draft")
+        draw = (
+            self.canvas.create_rectangle
+            if self.app.selection_tool.get() == "rectangle"
+            else self.canvas.create_oval
+        )
+        draw(*coordinates, outline="#ffdc00", width=2, dash=(5, 3), tags="selection_draft")
+
+    def _commit_shape(self, event: tk.Event) -> None:
+        start = self._shape_start
+        end = self._frame_point(event)
+        self.cancel_draft()
+        if start is None or end is None or self.app.lasso_selection is None:
+            return
+        constrained = self.app._shape_is_constrained(event)
+        if self.app.selection_tool.get() == "rectangle":
+            mask = rectangle_to_mask(start, end, self.app.frames[0].size, constrained)
+        else:
+            mask = ellipse_to_mask(start, end, self.app.frames[0].size, constrained)
+        self.app.lasso_selection.apply_mask(mask, self.app.lasso_operation.get())
         self.app._invalidate_after_lasso_change()
 
     def _view_size(self) -> tuple[int, int]:
@@ -1151,7 +1355,7 @@ class MaskEditorWindow:
 
 
 class RecolorReviewWindow:
-    """Resizable in-memory preview that exports only after explicit acceptance."""
+    """Zoomable in-memory preview that exports only after explicit acceptance."""
 
     def __init__(self, app: TeamColorApp) -> None:
         self.app = app
@@ -1163,11 +1367,23 @@ class RecolorReviewWindow:
         self.window.minsize(min(560, width), min(360, height))
         self.window.protocol("WM_DELETE_WINDOW", app._reject_recolor_preview)
 
-        ttk.Label(
-            self.window,
-            text="Review the recolored contact sheet. No files are written until Accept & Export.",
-            padding=8,
-        ).pack(anchor="w")
+        self.contact = app.review_state.contact_sheet
+        if self.contact is None:
+            raise RuntimeError("No recolor contact sheet is available")
+        self.zoom = max(
+            1,
+            min(2, (width - 50) // self.contact.width, (height - 160) // self.contact.height),
+        )
+        self.zoom_text = tk.StringVar(value=f"Zoom: {self.zoom}x")
+        self._photo: ImageTk.PhotoImage | None = None
+
+        header = ttk.Frame(self.window, padding=8)
+        header.pack(fill="x")
+        ttk.Label(header, text="Recolor Preview").pack(side="left")
+        ttk.Label(header, text="No files are written until Accept & Export.").pack(side="left", padx=(12, 0))
+        ttk.Button(header, text="Zoom +", command=lambda: self.change_zoom(1)).pack(side="right")
+        ttk.Button(header, text="Zoom -", command=lambda: self.change_zoom(-1)).pack(side="right", padx=(6, 0))
+        ttk.Label(header, textvariable=self.zoom_text).pack(side="right", padx=(12, 0))
         viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         viewport.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(viewport, background="#181818", highlightthickness=0)
@@ -1180,19 +1396,25 @@ class RecolorReviewWindow:
         viewport.rowconfigure(0, weight=1)
         viewport.columnconfigure(0, weight=1)
 
+        self.canvas.bind("<Control-MouseWheel>", self._on_zoom_wheel)
+        self.canvas.bind("<MouseWheel>", self._on_vertical_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self._on_horizontal_wheel)
+        for sequence in ("<KeyPress-plus>", "<KeyPress-equal>", "<KeyPress-KP_Add>"):
+            self.window.bind(sequence, lambda _event: self._zoom_key(1))
+        for sequence in ("<KeyPress-minus>", "<KeyPress-KP_Subtract>"):
+            self.window.bind(sequence, lambda _event: self._zoom_key(-1))
+        self.window.bind("<Left>", lambda _event: self._arrow_pan(-1, 0))
+        self.window.bind("<Right>", lambda _event: self._arrow_pan(1, 0))
+        self.window.bind("<Up>", lambda _event: self._arrow_pan(0, -1))
+        self.window.bind("<Down>", lambda _event: self._arrow_pan(0, 1))
+
         actions = ttk.Frame(self.window, padding=8)
         actions.pack(fill="x")
         ttk.Button(actions, text="Accept & Export...", command=app._accept_recolor_preview).pack(side="right")
         ttk.Button(actions, text="Reject", command=app._reject_recolor_preview).pack(side="right", padx=(0, 8))
 
-        contact = app.review_state.contact_sheet
-        if contact is None:
-            raise RuntimeError("No recolor contact sheet is available")
-        scale = max(1, min(2, (width - 50) // contact.width, (height - 140) // contact.height))
-        display = contact.resize((contact.width * scale, contact.height * scale), Image.Resampling.NEAREST)
-        self._photo = ImageTk.PhotoImage(display)
-        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
-        self.canvas.configure(scrollregion=(0, 0, display.width, display.height))
+        self.redraw()
+        self.window.after(50, self.canvas.focus_set)
 
     def exists(self) -> bool:
         try:
@@ -1203,6 +1425,77 @@ class RecolorReviewWindow:
     def destroy(self) -> None:
         if self.exists():
             self.window.destroy()
+
+    def _view_size(self) -> tuple[int, int]:
+        return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
+
+    def _content_size(self) -> tuple[int, int]:
+        return self.contact.width * self.zoom, self.contact.height * self.zoom
+
+    def _set_scroll(self, offset: tuple[float, float]) -> None:
+        content = self._content_size()
+        self.canvas.xview_moveto(offset[0] / content[0] if content[0] else 0)
+        self.canvas.yview_moveto(offset[1] / content[1] if content[1] else 0)
+
+    def change_zoom(self, step: int, cursor: tuple[float, float] | None = None) -> None:
+        old_zoom = self.zoom
+        new_zoom = clamp_zoom(old_zoom + step, MIN_ZOOM, MAX_ZOOM)
+        if new_zoom == old_zoom:
+            return
+        viewport = self._view_size()
+        if cursor is None:
+            cursor = (viewport[0] / 2, viewport[1] / 2)
+        new_scroll = cursor_centered_zoom_offset(
+            cursor,
+            old_zoom,
+            new_zoom,
+            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+            viewport,
+            self.contact.size,
+        )
+        self.zoom = new_zoom
+        self.zoom_text.set(f"Zoom: {new_zoom}x")
+        self.redraw()
+        self._set_scroll(new_scroll)
+
+    def _on_zoom_wheel(self, event: tk.Event) -> str:
+        self.change_zoom(1 if event.delta > 0 else -1, (event.x, event.y))
+        return "break"
+
+    def _zoom_key(self, step: int) -> str:
+        self.change_zoom(step)
+        return "break"
+
+    @staticmethod
+    def _wheel_units(delta: int) -> int:
+        amount = max(1, abs(delta) // 120)
+        return -amount if delta > 0 else amount
+
+    def _on_vertical_wheel(self, event: tk.Event) -> str:
+        self.canvas.yview_scroll(self._wheel_units(event.delta), "units")
+        return "break"
+
+    def _on_horizontal_wheel(self, event: tk.Event) -> str:
+        self.canvas.xview_scroll(self._wheel_units(event.delta), "units")
+        return "break"
+
+    def _arrow_pan(self, horizontal: int, vertical: int) -> str:
+        step = max(16, self.zoom * 4)
+        offset = pan_scroll_offset(
+            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+            (horizontal * step, vertical * step),
+            self._content_size(),
+            self._view_size(),
+        )
+        self._set_scroll(offset)
+        return "break"
+
+    def redraw(self) -> None:
+        display = self.contact.resize(self._content_size(), Image.Resampling.NEAREST)
+        self._photo = ImageTk.PhotoImage(display)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+        self.canvas.configure(scrollregion=(0, 0, display.width, display.height))
 
 
 def main() -> int:

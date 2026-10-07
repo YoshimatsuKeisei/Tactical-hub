@@ -5,7 +5,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from gui_controller import RecolorPreviewState, recolor_frame_sequence, save_results
+from gui_controller import (
+    MAX_ZOOM,
+    MIN_ZOOM,
+    RecolorPreviewState,
+    clamp_zoom,
+    cursor_centered_zoom_offset,
+    pan_scroll_offset,
+    recolor_frame_sequence,
+    save_results,
+)
 
 
 class RecolorReviewTests(unittest.TestCase):
@@ -76,6 +85,36 @@ class RecolorReviewTests(unittest.TestCase):
 
         self.assertTrue(review.has_preview)
         self.assertFalse(np.array_equal(np.asarray(red[0]), np.asarray(review.frames[0])))
+
+    def test_preview_zoom_clamps_to_supported_range(self) -> None:
+        self.assertEqual(clamp_zoom(0), MIN_ZOOM)
+        self.assertEqual(clamp_zoom(17), MAX_ZOOM)
+
+    def test_preview_cursor_centered_zoom_keeps_contact_point_stable(self) -> None:
+        cursor = (120.0, 80.0)
+        old_scroll = (240.0, 160.0)
+        new_scroll = cursor_centered_zoom_offset(
+            cursor,
+            old_zoom=2,
+            new_zoom=5,
+            old_scroll=old_scroll,
+            viewport_size=(500, 300),
+            frame_size=(660, 420),
+        )
+
+        old_anchor = ((old_scroll[0] + cursor[0]) / 2, (old_scroll[1] + cursor[1]) / 2)
+        new_anchor = ((new_scroll[0] + cursor[0]) / 5, (new_scroll[1] + cursor[1]) / 5)
+        self.assertEqual(new_anchor, old_anchor)
+
+    def test_preview_arrow_pan_clamps_to_scrollable_contact_sheet(self) -> None:
+        self.assertEqual(
+            pan_scroll_offset((200, 100), (64, -64), (1320, 840), (500, 300)),
+            (264, 36),
+        )
+        self.assertEqual(
+            pan_scroll_offset((810, 530), (64, 64), (1320, 840), (500, 300)),
+            (820, 540),
+        )
 
 
 if __name__ == "__main__":

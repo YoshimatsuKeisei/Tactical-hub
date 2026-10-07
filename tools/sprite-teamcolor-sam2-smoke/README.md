@@ -180,32 +180,55 @@ be visually checked on a local desktop.
 2. Enter the frame width/height and spritesheet columns/rows, then click
    **Load / Apply**.
 3. Select the single target row and frame count to process.
-4. Keep the default **Select Area** mode and choose **Add**.
-5. Hold the left mouse button and draw a freehand loop around the target on
-   frame 0; releasing the button closes and fills the loop.
-6. Refine the overlay with additional **Add** or **Subtract** loops. Use
-   **Undo** for the most recent operation or **Clear Selection** to start over.
-7. Review the translucent selection and yellow boundary. There is no Generate
+4. Choose **Select Area**, **Quick Select**, or **Select All**. Select Area is
+   the default.
+5. For Select Area, choose **Freehand**, **Rectangle**, or **Ellipse**, then
+   choose **Add** or **Subtract**. Freehand is the default tool.
+6. Drag on frame 0. Freehand closes and fills the dragged loop; Rectangle and
+   Ellipse show a yellow dashed outline while dragging and commit on release.
+7. Refine the overlay with more Add or Subtract operations. **Undo** reverses
+   the latest shape operation from the shared history; **Clear Selection**
+   starts over.
+8. Review the translucent selection and yellow boundary. There is no Generate
    Mask step for Select Area.
-8. Select the SAM 2.1 checkpoint, click **Track Across Frames**, and wait for
+9. Select the SAM 2.1 checkpoint, click **Track Across Frames**, and wait for
    propagation to finish.
-9. Choose Red, Blue, Green, Yellow, or enter a custom color.
-10. Click **Recolor** and review the contact sheet in the resizable preview
+10. Choose Red, Blue, Green, Yellow, or enter a custom color.
+11. Click **Recolor** and review the contact sheet in the resizable preview
     window.
-11. Click **Accept & Export...** to choose an output directory, or **Reject** to
+12. Click **Accept & Export...** to choose an output directory, or **Reject** to
     discard only the recolor candidate.
 
-**Select Area** is the recommended mode. Its binary lasso mask is registered on
+**Select Area** is the recommended mode. Its binary selection mask is registered on
 frame 0 through the official SAM 2 Video Predictor `add_new_mask()` API, then SAM
 2 tracks it through the remaining frames. The saved frame 0 mask remains the
-user-confirmed lasso selection after alpha clipping; SAM 2 does not replace it
+user-confirmed selection after alpha clipping; SAM 2 does not replace it
 with a different shape.
+
+Select Area provides these tools:
+
+- **Freehand**: draw the existing closed lasso selection.
+- **Rectangle**: drag between opposite corners of a rectangle.
+- **Ellipse**: drag its bounding rectangle.
+
+Hold **Shift** while dragging Rectangle or Ellipse to constrain it to a square
+or circle. The shared **Square / circle lock** checkbox provides the same
+constraint when Shift handling is inconvenient on Windows. Shape tools work in
+both the main editor and **Open Mask Editor...**. Both windows share the selected
+tool, Add/Subtract operation, constraint setting, selection mask, and Undo history.
 
 **Quick Select** is an auxiliary mode for clearly separated parts that can be
 identified with a few clicks. Add Positive and optional Negative clicks, use
 **Undo** or **Clear clicks**, click **Generate Mask (Quick Select)**, review the
 overlay, and then click **Track Across Frames**. This retains the existing point
 prompt workflow.
+
+**Select All** derives the frame 0 selection from the source image immediately.
+For RGBA input it selects only pixels whose alpha is greater than zero, leaving
+transparent background unselected. For RGB input it selects the complete frame.
+It uses the same SAM 2 `add_new_mask()` and propagation path as Select Area.
+Switching modes preserves the editable Select Area mask and Quick Select clicks;
+Select All is regenerated from frame 0.
 
 ### Zoom and Mask Editor
 
@@ -217,8 +240,8 @@ nearest-neighbor rendering. Place the pointer over the canvas and use:
 - the **+** and **-** keys (or the visible +/- buttons)
 
 Zoom is centered on the cursor when a wheel event supplies its position. Canvas
-scroll offsets are included when converting every click and lasso point back to
-the original frame coordinates.
+scroll offsets are included when converting every click, lasso point, and shape
+corner back to the original frame coordinates.
 
 Click **Open Mask Editor...** for a large, resizable Select Area window. It uses
 the exact same `LassoSelectionState` as the main window, so Add, Subtract, Undo,
@@ -235,7 +258,17 @@ pan controls:
 
 **Recolor** creates recolored frames and the contact sheet only as in-memory PIL
 images. It does not write preview PNGs or create an output directory. The review
-window provides:
+window uses nearest-neighbor rendering and integer zoom from 1x through 16x.
+Accept and Reject remain fixed outside the scrollable image. Preview controls are:
+
+- touchpad pinch or **Ctrl + mouse wheel**: cursor-centered zoom
+- **+** / **-** keys or **Zoom +** / **Zoom -** buttons: zoom
+- mouse wheel or touchpad scroll: vertical pan
+- **Shift + mouse wheel**: horizontal pan
+- arrow keys: horizontal or vertical pan
+- horizontal and vertical scrollbars
+
+Review actions are:
 
 - **Accept & Export...**: choose a folder and write the existing result set
 - **Reject**: close the preview and discard only the in-memory recolored frames

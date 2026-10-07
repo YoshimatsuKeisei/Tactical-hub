@@ -110,6 +110,70 @@ def polygon_to_mask(
     return np.asarray(image, dtype=bool).copy()
 
 
+def shape_bounds(
+    start: tuple[int, int],
+    end: tuple[int, int],
+    frame_size: tuple[int, int],
+    constrain_square: bool = False,
+) -> tuple[int, int, int, int]:
+    """Return an inclusive, normalized drag box inside the source frame."""
+    width, height = frame_size
+    if width <= 0 or height <= 0:
+        raise ValueError("Frame dimensions must be positive")
+    if any(not (0 <= x < width and 0 <= y < height) for x, y in (start, end)):
+        raise ValueError("Shape point is outside the frame")
+    start_x, start_y = (int(start[0]), int(start[1]))
+    end_x, end_y = (int(end[0]), int(end[1]))
+    if constrain_square:
+        direction_x = 1 if end_x >= start_x else -1
+        direction_y = 1 if end_y >= start_y else -1
+        available_x = width - 1 - start_x if direction_x > 0 else start_x
+        available_y = height - 1 - start_y if direction_y > 0 else start_y
+        side = min(
+            max(abs(end_x - start_x), abs(end_y - start_y)),
+            available_x,
+            available_y,
+        )
+        end_x = start_x + side * direction_x
+        end_y = start_y + side * direction_y
+    return min(start_x, end_x), min(start_y, end_y), max(start_x, end_x), max(start_y, end_y)
+
+
+def rectangle_to_mask(
+    start: tuple[int, int],
+    end: tuple[int, int],
+    frame_size: tuple[int, int],
+    constrain_square: bool = False,
+) -> np.ndarray:
+    """Rasterize an inclusive drag rectangle into a boolean mask."""
+    bounds = shape_bounds(start, end, frame_size, constrain_square)
+    image = Image.new("1", frame_size, 0)
+    ImageDraw.Draw(image).rectangle(bounds, fill=1)
+    return np.asarray(image, dtype=bool).copy()
+
+
+def ellipse_to_mask(
+    start: tuple[int, int],
+    end: tuple[int, int],
+    frame_size: tuple[int, int],
+    constrain_circle: bool = False,
+) -> np.ndarray:
+    """Rasterize an ellipse within an inclusive drag box into a boolean mask."""
+    bounds = shape_bounds(start, end, frame_size, constrain_circle)
+    image = Image.new("1", frame_size, 0)
+    ImageDraw.Draw(image).ellipse(bounds, fill=1)
+    return np.asarray(image, dtype=bool).copy()
+
+
+def select_all_mask(frame: Image.Image) -> np.ndarray:
+    """Select visible RGBA pixels, or the complete frame for RGB input."""
+    if frame.mode == "RGBA":
+        return (np.asarray(frame.getchannel("A")) > 0).copy()
+    if frame.mode == "RGB":
+        return np.ones((frame.height, frame.width), dtype=bool)
+    raise ValueError(f"Select All requires an RGB or RGBA frame, got {frame.mode}")
+
+
 class LassoSelectionState:
     """Boolean selection with a lightweight multi-level undo history."""
 
@@ -135,14 +199,22 @@ class LassoSelectionState:
 
     def apply(self, points: Sequence[tuple[int, int]], operation: str) -> np.ndarray:
         polygon = polygon_to_mask(points, self.frame_size)
+        return self.apply_mask(polygon, operation)
+
+    def apply_mask(self, mask: np.ndarray, operation: str) -> np.ndarray:
+        """Apply any frame-sized shape through the shared Add/Subtract history."""
+        shape_mask = np.asarray(mask, dtype=bool)
+        expected_shape = (self.frame_size[1], self.frame_size[0])
+        if shape_mask.shape != expected_shape:
+            raise ValueError(f"Selection mask shape {shape_mask.shape} does not match {expected_shape}")
         normalized_operation = operation.strip().lower()
         if normalized_operation not in ("add", "subtract"):
-            raise ValueError("Lasso operation must be add or subtract")
+            raise ValueError("Selection operation must be add or subtract")
         self._history.append(self._mask.copy())
         if normalized_operation == "add":
-            self._mask = np.logical_or(self._mask, polygon)
+            self._mask = np.logical_or(self._mask, shape_mask)
         else:
-            self._mask = np.logical_and(self._mask, ~polygon)
+            self._mask = np.logical_and(self._mask, ~shape_mask)
         return self.mask
 
     def undo(self) -> np.ndarray | None:
@@ -520,7 +592,7 @@ class Sam2GuiSession:
         self._ensure_ready(progress)
         from smoke import add_sam2_mask
 
-        progress("Registering frame 0 lasso mask with SAM 2...")
+        progress("Registering frame 0 selection mask with SAM 2...")
         self.sam_frame0_prediction = add_sam2_mask(
             self.predictor,
             self.inference_state,

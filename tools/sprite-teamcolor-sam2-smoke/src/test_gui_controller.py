@@ -15,14 +15,18 @@ from gui_controller import (
     clamp_zoom,
     cursor_centered_zoom_offset,
     display_to_frame,
+    ellipse_to_mask,
     extract_row_frames,
     frame_output_names,
     make_selection_overlay,
     parse_team_color,
     pan_scroll_offset,
     polygon_to_mask,
+    rectangle_to_mask,
     recolor_frame_sequence,
     save_results,
+    select_all_mask,
+    shape_bounds,
     viewport_to_frame,
 )
 
@@ -95,6 +99,104 @@ class GuiControllerTests(unittest.TestCase):
         selection.clear()
         self.assertTrue(selection.is_empty)
         np.testing.assert_array_equal(selection.undo(), added)
+
+    def test_rectangle_selects_inside_not_outside_and_reverse_drag(self) -> None:
+        forward = rectangle_to_mask((2, 3), (7, 8), (12, 11))
+        reverse = rectangle_to_mask((7, 8), (2, 3), (12, 11))
+
+        self.assertTrue(forward[5, 4])
+        self.assertFalse(forward[2, 4])
+        self.assertFalse(forward[5, 8])
+        np.testing.assert_array_equal(reverse, forward)
+
+    def test_rectangle_supports_one_pixel_width_and_square_constraint(self) -> None:
+        one_pixel_wide = rectangle_to_mask((3, 2), (3, 7), (10, 10))
+        square = rectangle_to_mask((2, 2), (8, 5), (12, 12), constrain_square=True)
+
+        self.assertEqual(int(one_pixel_wide.sum()), 6)
+        self.assertTrue(one_pixel_wide[4, 3])
+        self.assertFalse(one_pixel_wide[4, 4])
+        self.assertEqual(shape_bounds((2, 2), (8, 5), (12, 12), True), (2, 2, 8, 8))
+        self.assertEqual(int(square.sum()), 49)
+
+    def test_rectangle_add_subtract_share_selection_history(self) -> None:
+        selection = LassoSelectionState((12, 12))
+        outer = rectangle_to_mask((1, 1), (10, 10), selection.frame_size)
+        inner = rectangle_to_mask((4, 4), (7, 7), selection.frame_size)
+
+        selection.apply_mask(outer, "add")
+        added = selection.mask
+        selection.apply_mask(inner, "subtract")
+
+        self.assertFalse(selection.mask[5, 5])
+        np.testing.assert_array_equal(selection.undo(), added)
+
+    def test_ellipse_selects_inside_not_outside_and_reverse_drag(self) -> None:
+        forward = ellipse_to_mask((2, 2), (9, 7), (12, 10))
+        reverse = ellipse_to_mask((9, 7), (2, 2), (12, 10))
+
+        self.assertTrue(forward[4, 5])
+        self.assertFalse(forward[1, 5])
+        self.assertFalse(forward[2, 2])
+        np.testing.assert_array_equal(reverse, forward)
+
+    def test_ellipse_circle_constraint_and_add_subtract(self) -> None:
+        circle = ellipse_to_mask((2, 2), (9, 6), (12, 12), constrain_circle=True)
+        selection = LassoSelectionState((12, 12))
+        selection.apply_mask(circle, "add")
+        added = selection.mask
+        cutout = ellipse_to_mask((3, 3), (5, 5), selection.frame_size)
+        selection.apply_mask(cutout, "subtract")
+
+        self.assertEqual(shape_bounds((2, 2), (9, 6), (12, 12), True), (2, 2, 9, 9))
+        self.assertTrue(added[4, 4])
+        self.assertFalse(selection.mask[4, 4])
+        np.testing.assert_array_equal(selection.undo(), added)
+
+    def test_freehand_rectangle_ellipse_use_one_undo_stack(self) -> None:
+        selection = LassoSelectionState((16, 16))
+        selection.apply(((1, 1), (6, 1), (6, 6), (1, 6)), "add")
+        freehand = selection.mask
+        selection.apply_mask(rectangle_to_mask((8, 1), (12, 5), selection.frame_size), "add")
+        rectangle = selection.mask
+        selection.apply_mask(ellipse_to_mask((5, 8), (10, 13), selection.frame_size), "add")
+
+        np.testing.assert_array_equal(selection.undo(), rectangle)
+        np.testing.assert_array_equal(selection.undo(), freehand)
+        self.assertTrue(selection.clear().sum() == 0)
+        np.testing.assert_array_equal(selection.undo(), freehand)
+
+    def test_shape_coordinates_remain_correct_after_zoom_and_scroll(self) -> None:
+        start = viewport_to_frame(9, 8, 4, (31, 52), (128, 128))
+        end = viewport_to_frame(89, 68, 4, (31, 52), (128, 128))
+        rectangle = rectangle_to_mask(start, end, (128, 128))
+        self.assertEqual(start, (10, 15))
+        self.assertEqual(end, (30, 30))
+        self.assertTrue(rectangle[20, 20])
+
+        ellipse_start = viewport_to_frame(5, 7, 8, (75, 73), (128, 128))
+        ellipse_end = viewport_to_frame(165, 167, 8, (75, 73), (128, 128))
+        ellipse = ellipse_to_mask(ellipse_start, ellipse_end, (128, 128))
+        self.assertEqual((ellipse_start, ellipse_end), ((10, 10), (30, 30)))
+        self.assertTrue(ellipse[20, 20])
+
+    def test_select_all_uses_only_visible_rgba_pixels(self) -> None:
+        pixels = np.zeros((3, 4, 4), dtype=np.uint8)
+        pixels[0, 1, 3] = 1
+        pixels[2, 3, 3] = 255
+
+        frame0_mask = select_all_mask(Image.fromarray(pixels, "RGBA"))
+
+        self.assertEqual(int(frame0_mask.sum()), 2)
+        self.assertTrue(frame0_mask[0, 1])
+        self.assertTrue(frame0_mask[2, 3])
+        self.assertFalse(frame0_mask[1, 2])
+
+    def test_select_all_uses_full_rgb_frame(self) -> None:
+        frame0_mask = select_all_mask(Image.new("RGB", (5, 3), "black"))
+
+        self.assertEqual(frame0_mask.shape, (3, 5))
+        self.assertTrue(frame0_mask.all())
 
     def test_polygon_mask_supports_non_128_frame(self) -> None:
         mask = polygon_to_mask(((5, 3), (24, 3), (24, 12), (5, 12)), (30, 16))
