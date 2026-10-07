@@ -183,8 +183,12 @@ class SamThresholdTests(unittest.TestCase):
             session = Sam2GuiSession([rgba_frame((2, 2)), rgba_frame((2, 2))], checkpoint, work_size=2)
             session.predictor = predictor
             session.inference_state = object()
+            session.reverse_raw_logits = [np.ones((2, 2), dtype=np.float32)]
             session.generate_frame0_mask([PromptClick(0, 0, 1)])
+            self.assertIsNone(session.reverse_raw_logits)
+            session.reverse_raw_logits = [np.ones((2, 2), dtype=np.float32)]
             retained = session.track_across_frames_logits()
+            self.assertIsNone(session.reverse_raw_logits)
             retained_before = [item.copy() for item in retained]
 
             zero = derive_masks_from_sam_logits(retained, session.frames, 0.0, False)

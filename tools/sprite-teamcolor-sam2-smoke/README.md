@@ -255,13 +255,14 @@ internal holes; turn cleanup off to compare the unfilled, alpha-clipped mask.
 ### Tracked Mask Preview and diagnostic threshold
 
 After **Track Across Frames** completes, **Tracked Mask Preview** automatically
-shows the source frames with the current active masks as translucent overlays,
+shows the source frames with the current Combined preview masks as translucent overlays,
 labelled `frame_000` through the selected frame count. It reports the total mask
 pixel count and uses the same nearest-neighbor 1x–16x navigation as Recolor
 Preview: Ctrl+wheel or touchpad pinch and +/- for zoom, wheel/Shift+wheel and
 arrow keys for pan, plus horizontal and vertical scrollbars. **Use These Masks**
-confirms the visible choice; **Close** only closes the window and does not discard
-tracking data.
+adopts the visible Combined choice for Recolor and Export; **Close** only closes
+the window and does not discard tracking data or change the previously adopted
+masks.
 
 **SAM Mask Threshold** is a diagnostic control from -2.0 through +2.0, in 0.05
 steps. Its default is **0.0**, which is pixel-for-pixel compatible with the
@@ -329,9 +330,54 @@ status, and pixel counts at 0, -5, -10, and +5.
 defaults to 0. It only re-renders retained CPU diagnostic data using threshold,
 nearest-neighbor resize, and frame-alpha clipping. The optional diagnostic hole
 fill starts off. Neither control reruns SAM 2 or changes the standard masks.
-Pre-gate candidates are never passed to Recolor or Export and are not used as an
-automatic fallback. This diagnostic exists only to decide whether a future
-fallback is technically justified after Windows visual review.
+The same threshold and diagnostic hole-fill state are shared with the optional
+Pre-Gate mask source described below. Pre-gate candidates are still never used
+automatically: they reach Recolor or Export only after **Add Pre-Gate** is
+selected and the visible Combined mask is explicitly adopted with **Use These
+Masks**.
+
+### Mask Sources and Combined preview
+
+Tracked Mask Preview keeps three independent sources and always rebuilds the
+visible result from them:
+
+- **Regular SAM** is the normal Forward tracking result and is always the base.
+  It cannot be turned off.
+- **Pre-Gate** is the Forward candidate captured before SAM 2 replaces an
+  object-absent result with `NO_OBJ_SCORE`. **Add Pre-Gate** uses the exact
+  threshold and hole-fill settings currently shown by Pre-Gate Diagnostics.
+- **Reverse** starts from the non-empty Regular mask on `frame_014`, creates a
+  fresh SAM inference state with the already-loaded predictor/model, and calls
+  official `propagate_in_video(start_frame_idx=14, reverse=True)` to track down
+  through `frame_000`. It uses standard post-gate SAM output; Reverse Pre-Gate
+  is not captured.
+
+The Combined preview is deliberately only this union:
+
+```text
+Regular OR optional Pre-Gate OR optional Reverse
+```
+
+Use **Add Pre-Gate** and **Add Reverse** to compare Regular only, Regular +
+Pre-Gate, Regular + Reverse, and all three sources. The source label and total
+Combined pixel count update with the 15-frame contact sheet. Reverse inference
+runs in the background only the first time it is enabled. Turning Reverse off
+removes it from the union but retains its CPU raw logits; enabling it again is
+immediate. SAM Mask Threshold changes rebuild both Regular and cached Reverse
+from retained logits without rerunning SAM.
+
+Source toggles change only the preview. The previous Recolor/Export masks remain
+separate, and Recolor is disabled while the preview is unapplied. Click **Use
+These Masks** to copy the currently visible Combined masks into the active
+Recolor/Export state. Every source change rebuilds from the independent Regular,
+Pre-Gate, and Reverse arrays, so removed source pixels are never baked into
+Regular. Loading a sheet or row, changing the frame-0 selection or Quick Select
+prompts, rerunning Forward tracking, recreating/closing the SAM session, or
+exiting clears the Reverse cache.
+
+This is a manual comparison facility. It does not implement automatic source or
+frame selection, confidence weighting, intersection, voting, object-score/IoU
+fallback, or Pre-Gate false-positive removal.
 
 ### Zoom and Mask Editor
 

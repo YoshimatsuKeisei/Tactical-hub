@@ -26,6 +26,7 @@ from gui_controller import (
     PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
     PRE_GATE_PREVIEW_MAX_THRESHOLD,
     PRE_GATE_PREVIEW_MIN_THRESHOLD,
+    MaskSourceState,
     RecolorPreviewState,
     SamPreGateFrameDiagnostics,
     TEAM_COLOR_NAMES,
@@ -39,6 +40,8 @@ from gui_controller import (
     cursor_centered_zoom_offset,
     diagnose_sam_logits,
     derive_masks_from_sam_logits,
+    derive_pre_gate_masks,
+    derive_reverse_masks_from_sam_logits,
     ellipse_to_mask,
     extract_row_frames,
     frame_output_names,
@@ -94,6 +97,15 @@ class TeamColorApp:
         self.mask_threshold = tk.DoubleVar(value=DEFAULT_MASK_THRESHOLD)
         self.mask_threshold_text = tk.StringVar(value=f"{DEFAULT_MASK_THRESHOLD:+.2f}")
         self.tracked_mask_info = tk.StringVar(value="Total mask pixels: 0")
+        self.mask_sources_info = tk.StringVar(value="Sources: Regular")
+        self.mask_adoption_info = tk.StringVar(value="")
+        self.add_pre_gate_source = tk.BooleanVar(value=False)
+        self.add_reverse_source = tk.BooleanVar(value=False)
+        self.pre_gate_threshold = tk.DoubleVar(value=PRE_GATE_PREVIEW_DEFAULT_THRESHOLD)
+        self.pre_gate_threshold_text = tk.StringVar(
+            value=f"{PRE_GATE_PREVIEW_DEFAULT_THRESHOLD:+.1f}"
+        )
+        self.pre_gate_fill_holes = tk.BooleanVar(value=False)
         self.prompt_mode = tk.IntVar(value=1)
         self.color_preset = tk.StringVar(value="Red")
         self.custom_color = tk.StringVar(value="#D23030")
@@ -117,6 +129,14 @@ class TeamColorApp:
         self.raw_masks: list[np.ndarray] | None = None
         self.sam_raw_logits: list[np.ndarray] | None = None
         self.pre_gate_diagnostics: list[SamPreGateFrameDiagnostics] | None = None
+        self.regular_raw_masks: list[np.ndarray] | None = None
+        self.regular_masks: list[np.ndarray] | None = None
+        self.pre_gate_masks: list[np.ndarray] | None = None
+        self.reverse_raw_logits: list[np.ndarray] | None = None
+        self.reverse_raw_masks: list[np.ndarray] | None = None
+        self.reverse_masks: list[np.ndarray] | None = None
+        self.combined_preview_masks: list[np.ndarray] | None = None
+        self.mask_source_state: MaskSourceState | None = None
         self.quick_frame0_logits: np.ndarray | None = None
         self.recolored_frames: list[Image.Image] = []
         self.recolored_contact: Image.Image | None = None
@@ -139,6 +159,7 @@ class TeamColorApp:
         self.logit_diagnostics_window: LogitDiagnosticsWindow | None = None
         self.pre_gate_diagnostics_window: PreGateDiagnosticsWindow | None = None
         self._pending_threshold_update: str | None = None
+        self._pending_pre_gate_update: str | None = None
         self._busy = False
         self._events: queue.Queue[tuple] = queue.Queue()
 
@@ -469,10 +490,9 @@ class TeamColorApp:
         self._shape_start = None
         self.quick_frame0_mask = None
         self.frame0_mask = None
-        self.masks = None
-        self.raw_masks = None
         self.sam_raw_logits = None
         self.pre_gate_diagnostics = None
+        self._reset_mask_sources(clear_active=True)
         self.quick_frame0_logits = None
         self.recolored_frames = []
         self.recolored_contact = None
@@ -701,10 +721,9 @@ class TeamColorApp:
         if self._busy:
             return
         self._clear_main_draft()
-        self.masks = None
-        self.raw_masks = None
         self.sam_raw_logits = None
         self._clear_pre_gate_diagnostics()
+        self._reset_mask_sources(clear_active=True)
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._discard_recolor_preview()
@@ -784,18 +803,83 @@ class TeamColorApp:
             return None
         return self._raw_frame0_mask()
 
+    def _reset_mask_sources(self, clear_active: bool = True) -> None:
+        self.add_pre_gate_source.set(False)
+        self.add_reverse_source.set(False)
+        self.regular_raw_masks = None
+        self.regular_masks = None
+        self.pre_gate_masks = None
+        self.reverse_raw_logits = None
+        self.reverse_raw_masks = None
+        self.reverse_masks = None
+        self.combined_preview_masks = None
+        self.mask_source_state = None
+        self.mask_sources_info.set("Sources: Regular")
+        self.mask_adoption_info.set("")
+        self.tracked_mask_info.set("Total mask pixels: 0")
+        if self.sam_session is not None:
+            self.sam_session.reverse_raw_logits = None
+        if clear_active:
+            self.raw_masks = None
+            self.masks = None
+
+    def _sync_mask_source_preview(self) -> None:
+        if self.mask_source_state is None:
+            self.combined_preview_masks = None
+            return
+        self.combined_preview_masks = self.mask_source_state.rebuild_preview()
+        self.mask_sources_info.set(f"Sources: {self.mask_source_state.source_label}")
+        self.mask_adoption_info.set(
+            "Preview changed. Click Use These Masks to apply."
+            if self.mask_source_state.preview_dirty
+            else "Current preview is applied for Recolor / Export."
+        )
+
     def _rebuild_masks_from_logits(self) -> None:
         if self.sam_raw_logits is None:
             return
-        self.raw_masks, self.masks = derive_masks_from_sam_logits(
+        regular_raw, regular = derive_masks_from_sam_logits(
             self.sam_raw_logits,
             self.frames,
             threshold=validate_mask_threshold(self.mask_threshold.get()),
             fill_holes=self.fill_enclosed_holes.get(),
             authoritative_frame0=self._authoritative_frame0_mask(),
         )
-        if self.masks:
-            self.frame0_mask = self.masks[0].copy()
+        self.regular_raw_masks = regular_raw
+        self.regular_masks = regular
+        self.raw_masks = [mask.copy() for mask in regular_raw]
+        if self.mask_source_state is None:
+            self.mask_source_state = MaskSourceState(regular)
+            self.masks = self.mask_source_state.adopt_preview()
+        else:
+            self.mask_source_state.set_regular_masks(regular)
+
+        if self.pre_gate_diagnostics is not None:
+            self.pre_gate_masks = derive_pre_gate_masks(
+                self.pre_gate_diagnostics,
+                self.frames,
+                threshold=self.pre_gate_threshold.get(),
+                fill_holes=self.pre_gate_fill_holes.get(),
+            )
+            self.mask_source_state.set_pre_gate_masks(self.pre_gate_masks)
+        if self.reverse_raw_logits is not None:
+            reverse_raw, reverse = derive_reverse_masks_from_sam_logits(
+                self.reverse_raw_logits,
+                self.frames,
+                regular,
+                threshold=validate_mask_threshold(self.mask_threshold.get()),
+                fill_holes=self.fill_enclosed_holes.get(),
+            )
+            self.reverse_raw_masks = reverse_raw
+            self.reverse_masks = reverse
+            self.mask_source_state.set_reverse_masks(reverse)
+        self.mask_source_state.set_enabled(
+            pre_gate=self.add_pre_gate_source.get(),
+            reverse=self.add_reverse_source.get(),
+        )
+        self._sync_mask_source_preview()
+        if regular:
+            self.frame0_mask = regular[0].copy()
 
     def _rebuild_quick_frame0_from_logits(self) -> None:
         if self.quick_frame0_logits is None or not self.frames:
@@ -836,17 +920,23 @@ class TeamColorApp:
         self._refresh_mask_editor()
         self._refresh_tracked_mask_preview()
         if updated_from_logits:
+            suffix = (
+                " Preview changed; click Use These Masks to apply."
+                if self.mask_source_state is not None and self.mask_source_state.preview_dirty
+                else ""
+            )
             self.status.set(
-                f"Mask threshold {threshold:+.2f} applied from retained logits; SAM 2 was not rerun."
+                f"Mask threshold {threshold:+.2f} applied from retained logits; "
+                f"SAM 2 was not rerun.{suffix}"
             )
         else:
             self.status.set(f"Mask threshold set to {threshold:+.2f} for the next SAM mask.")
         self._update_buttons()
 
     def _refresh_cleanup_info(self) -> None:
-        if self.raw_masks is not None and self.masks is not None:
-            raw_masks = self.raw_masks
-            active_masks = self.masks
+        if self.regular_raw_masks is not None and self.regular_masks is not None:
+            raw_masks = self.regular_raw_masks
+            active_masks = self.regular_masks
         else:
             raw = self._raw_frame0_mask()
             if raw is None or self.frame0_mask is None:
@@ -880,15 +970,19 @@ class TeamColorApp:
         self._refresh_mask_editor()
         self._refresh_tracked_mask_preview()
         state = "enabled" if self.fill_enclosed_holes.get() else "disabled"
-        self.status.set(f"Fill enclosed holes {state}; tracking state retained.")
+        suffix = (
+            " Preview changed; click Use These Masks to apply."
+            if self.mask_source_state is not None and self.mask_source_state.preview_dirty
+            else ""
+        )
+        self.status.set(f"Fill enclosed holes {state}; tracking state retained.{suffix}")
         self._update_buttons()
 
     def _invalidate_after_lasso_change(self) -> None:
         self._sync_lasso_mask()
-        self.masks = None
-        self.raw_masks = None
         self.sam_raw_logits = None
         self._clear_pre_gate_diagnostics()
+        self._reset_mask_sources(clear_active=True)
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._discard_recolor_preview()
@@ -959,10 +1053,9 @@ class TeamColorApp:
         self.quick_frame0_logits = None
         self.tracked_mask_info.set("Total mask pixels: 0")
         self.frame0_mask = None
-        self.masks = None
-        self.raw_masks = None
         self.sam_raw_logits = None
         self._clear_pre_gate_diagnostics()
+        self._reset_mask_sources(clear_active=True)
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._discard_recolor_preview()
@@ -1044,6 +1137,8 @@ class TeamColorApp:
         self._discard_recolor_preview()
         self._close_logit_diagnostics()
         self._clear_pre_gate_diagnostics()
+        self.sam_raw_logits = None
+        self._reset_mask_sources(clear_active=True)
         if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
             device_name = self.device.get()
@@ -1080,9 +1175,12 @@ class TeamColorApp:
         if self.masks is None or self.layout is None:
             messagebox.showerror("Tracking required", "Track the mask across frames first.")
             return
-        if self.sam_raw_logits is not None:
-            self._rebuild_masks_from_logits()
-            self._refresh_cleanup_info()
+        if self.mask_source_state is not None and self.mask_source_state.preview_dirty:
+            messagebox.showinfo(
+                "Apply preview masks",
+                "Preview changed. Click Use These Masks before Recolor.",
+            )
+            return
         try:
             target = parse_team_color(self.color_preset.get(), self.custom_color.get())
         except Exception as error:
@@ -1194,29 +1292,120 @@ class TeamColorApp:
             review.destroy()
 
     def _tracked_mask_contact(self) -> Image.Image:
-        if self.masks is None:
+        if self.combined_preview_masks is None:
             raise RuntimeError("No tracked masks are available")
         overlays = [
             make_mask_overlay(frame, mask)
-            for frame, mask in zip(self.frames, self.masks, strict=True)
+            for frame, mask in zip(self.frames, self.combined_preview_masks, strict=True)
         ]
         labels = [Path(name).stem for name in frame_output_names(len(overlays))]
         return make_contact_sheet(overlays, labels, columns=min(5, len(overlays)))
 
     def _open_tracked_mask_preview(self) -> None:
-        if self.masks is None:
+        if self.combined_preview_masks is None:
             return
         self._close_tracked_mask_preview()
         self.tracked_mask_window = TrackedMaskPreviewWindow(self)
 
     def _refresh_tracked_mask_preview(self) -> None:
-        if self.masks is None:
+        if self.combined_preview_masks is None:
             self.tracked_mask_info.set("Total mask pixels: 0")
             return
-        total = sum(int(mask.sum()) for mask in self.masks)
+        total = sum(int(mask.sum()) for mask in self.combined_preview_masks)
         self.tracked_mask_info.set(f"Total mask pixels: {total}")
         if self.tracked_mask_window is not None and self.tracked_mask_window.exists():
             self.tracked_mask_window.set_contact(self._tracked_mask_contact())
+            self.tracked_mask_window.update_controls()
+
+    def _mark_mask_source_preview_changed(self) -> None:
+        self._discard_recolor_preview()
+        self._sync_mask_source_preview()
+        self._refresh_tracked_mask_preview()
+        self.status.set("Preview changed. Click Use These Masks to apply.")
+        self._update_buttons()
+
+    def _on_pre_gate_source_toggle(self) -> None:
+        if self._busy or self.mask_source_state is None:
+            return
+        try:
+            self.mask_source_state.set_enabled(pre_gate=self.add_pre_gate_source.get())
+        except ValueError as error:
+            self.add_pre_gate_source.set(False)
+            messagebox.showerror("Pre-Gate unavailable", str(error))
+            return
+        self._mark_mask_source_preview_changed()
+
+    def _on_reverse_source_toggle(self) -> None:
+        if self._busy or self.mask_source_state is None:
+            return
+        if not self.add_reverse_source.get():
+            self.mask_source_state.set_enabled(reverse=False)
+            self._mark_mask_source_preview_changed()
+            return
+        if self.reverse_masks is not None:
+            self.mask_source_state.set_reverse_masks(self.reverse_masks)
+            self.mask_source_state.set_enabled(reverse=True)
+            self._mark_mask_source_preview_changed()
+            return
+        if self.sam_session is None or self.regular_masks is None:
+            self.add_reverse_source.set(False)
+            messagebox.showerror("Reverse unavailable", "Complete Regular tracking first.")
+            return
+        if len(self.regular_masks) <= 14:
+            self.add_reverse_source.set(False)
+            messagebox.showerror(
+                "Reverse unavailable",
+                "Reverse tracking requires frames 000 through 014.",
+            )
+            return
+        if not self.regular_masks[14].any():
+            self.add_reverse_source.set(False)
+            messagebox.showerror(
+                "Reverse unavailable",
+                "Reverse requires a non-empty Regular mask on frame 014.",
+            )
+            return
+        regular_snapshot = [mask.copy() for mask in self.regular_masks]
+        self._start_task(
+            "reverse",
+            "Generating reverse tracking from frame 014...",
+            lambda: self.sam_session.track_reverse_logits(regular_snapshot, self._queue_status),
+        )
+
+    def _schedule_pre_gate_update(self, value: str) -> None:
+        rounded = max(
+            PRE_GATE_PREVIEW_MIN_THRESHOLD,
+            min(PRE_GATE_PREVIEW_MAX_THRESHOLD, round(float(value) * 2.0) / 2.0),
+        )
+        self.pre_gate_threshold.set(rounded)
+        self.pre_gate_threshold_text.set(f"{rounded:+.1f}")
+        if self._pending_pre_gate_update is not None:
+            self.root.after_cancel(self._pending_pre_gate_update)
+        self._pending_pre_gate_update = self.root.after(75, self._apply_pre_gate_settings)
+
+    def _apply_pre_gate_settings(self) -> None:
+        self._pending_pre_gate_update = None
+        if self.pre_gate_diagnostics is None or not self.frames:
+            return
+        self.pre_gate_masks = derive_pre_gate_masks(
+            self.pre_gate_diagnostics,
+            self.frames,
+            threshold=self.pre_gate_threshold.get(),
+            fill_holes=self.pre_gate_fill_holes.get(),
+        )
+        if self.mask_source_state is not None:
+            self.mask_source_state.set_pre_gate_masks(self.pre_gate_masks)
+            self._sync_mask_source_preview()
+            self._refresh_tracked_mask_preview()
+            if self.add_pre_gate_source.get():
+                self._discard_recolor_preview()
+        if self.pre_gate_diagnostics_window is not None and self.pre_gate_diagnostics_window.exists():
+            self.pre_gate_diagnostics_window.refresh_contact()
+        if self.add_pre_gate_source.get():
+            self.status.set("Pre-Gate source preview changed. Click Use These Masks to apply.")
+        else:
+            self.status.set("Pre-Gate diagnostic preview updated; Combined mask is unchanged.")
+        self._update_buttons()
 
     def _close_tracked_mask_preview(self) -> None:
         if self.tracked_mask_window is not None:
@@ -1291,11 +1480,22 @@ class TeamColorApp:
             self.root.after_cancel(self._pending_threshold_update)
             self._pending_threshold_update = None
             self._apply_threshold_update()
+        if self._pending_pre_gate_update is not None:
+            self.root.after_cancel(self._pending_pre_gate_update)
+            self._pending_pre_gate_update = None
+            self._apply_pre_gate_settings()
+        if self.mask_source_state is None:
+            messagebox.showerror("Tracking required", "No Combined masks are available.")
+            return
+        self.masks = self.mask_source_state.adopt_preview()
+        self._sync_mask_source_preview()
         threshold = validate_mask_threshold(self.mask_threshold.get())
         self.status.set(
-            f"Using tracked masks at threshold {threshold:+.2f}; choose a color and Recolor."
+            f"Using {self.mask_source_state.source_label} masks at threshold {threshold:+.2f}; "
+            "choose a color and Recolor."
         )
         self._close_tracked_mask_preview()
+        self._update_buttons()
 
     def _start_task(self, name: str, status: str, worker: Callable[[], object]) -> None:
         if self._busy:
@@ -1326,6 +1526,17 @@ class TeamColorApp:
                 elif event[0] == "error":
                     _kind, name, message, details = event
                     self._busy = False
+                    if name == "reverse":
+                        self.add_reverse_source.set(False)
+                        self.reverse_raw_logits = None
+                        self.reverse_raw_masks = None
+                        self.reverse_masks = None
+                        if self.sam_session is not None:
+                            self.sam_session.reverse_raw_logits = None
+                        if self.mask_source_state is not None:
+                            self.mask_source_state.set_enabled(reverse=False)
+                            self._sync_mask_source_preview()
+                            self._refresh_tracked_mask_preview()
                     print(details, file=sys.stderr)
                     self.status.set(f"{name} failed: {message}")
                     messagebox.showerror(f"{name.title()} failed", message)
@@ -1344,10 +1555,9 @@ class TeamColorApp:
             generated_mask, raw_logits = result
             self.quick_frame0_mask = generated_mask.copy()
             self.quick_frame0_logits = raw_logits
-            self.raw_masks = None
             self.sam_raw_logits = None
             self.pre_gate_diagnostics = None
-            self.masks = None
+            self._reset_mask_sources(clear_active=True)
             self._rebuild_quick_frame0_from_logits()
             self.status.set("Frame 0 mask ready. Review the overlay, then track across frames.")
             self._refresh_cleanup_info()
@@ -1362,6 +1572,19 @@ class TeamColorApp:
             self._open_tracked_mask_preview()
             self.status.set(
                 f"Tracking complete for {len(self.masks)} frames. Review tracked masks before Recolor."
+            )
+        elif name == "reverse":
+            self.reverse_raw_logits = [logits.copy() for logits in result]
+            self._rebuild_masks_from_logits()
+            if self.mask_source_state is None or self.reverse_masks is None:
+                raise RuntimeError("Reverse masks were not retained after propagation")
+            self.mask_source_state.set_reverse_masks(self.reverse_masks)
+            self.mask_source_state.set_enabled(reverse=True)
+            self._sync_mask_source_preview()
+            self._refresh_tracked_mask_preview()
+            self.status.set(
+                "Reverse tracking ready and added to the Combined preview. "
+                "Click Use These Masks to apply."
             )
         elif name == "recolor":
             self.recolored_frames, self.recolored_contact, self.recolor_target = result
@@ -1390,7 +1613,10 @@ class TeamColorApp:
         generate_disabled = disabled or not self.frames or self.selection_mode.get() != "quick" or not quick_ready
         self.generate_button.configure(state="disabled" if generate_disabled else "normal")
         self.track_button.configure(state="disabled" if disabled or self.frame0_mask is None else "normal")
-        self.recolor_button.configure(state="disabled" if disabled or self.masks is None else "normal")
+        preview_dirty = self.mask_source_state is not None and self.mask_source_state.preview_dirty
+        self.recolor_button.configure(
+            state="disabled" if disabled or self.masks is None or preview_dirty else "normal"
+        )
         self.cleanup_checkbox.configure(state="disabled" if disabled or not self.frames else "normal")
         self.threshold_scale.configure(state="disabled" if disabled or not self.frames else "normal")
         self.open_mask_editor_button.configure(
@@ -1419,6 +1645,8 @@ class TeamColorApp:
         )
         if self.mask_editor is not None and self.mask_editor.exists():
             self.mask_editor.update_controls()
+        if self.tracked_mask_window is not None and self.tracked_mask_window.exists():
+            self.tracked_mask_window.update_controls()
 
     def _close_session(self) -> None:
         if self.sam_session is not None:
@@ -1428,6 +1656,14 @@ class TeamColorApp:
         self.session_device_name = None
         self.sam_raw_logits = None
         self.pre_gate_diagnostics = None
+        self.regular_raw_masks = None
+        self.regular_masks = None
+        self.pre_gate_masks = None
+        self.reverse_raw_logits = None
+        self.reverse_raw_masks = None
+        self.reverse_masks = None
+        self.combined_preview_masks = None
+        self.mask_source_state = None
         self.raw_masks = None
         self.masks = None
         self.quick_frame0_logits = None
@@ -1917,6 +2153,31 @@ class TrackedMaskPreviewWindow:
         ttk.Label(controls, textvariable=app.tracked_mask_info).grid(row=1, column=2, sticky="e")
         controls.columnconfigure(1, weight=1)
 
+        sources = ttk.LabelFrame(self.window, text="Mask Sources", padding=(8, 4))
+        sources.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(sources, text="Regular SAM: ON — Base").grid(row=0, column=0, sticky="w")
+        self.pre_gate_checkbox = ttk.Checkbutton(
+            sources,
+            text="Add Pre-Gate",
+            variable=app.add_pre_gate_source,
+            command=app._on_pre_gate_source_toggle,
+        )
+        self.pre_gate_checkbox.grid(row=0, column=1, sticky="w", padx=(16, 0))
+        self.reverse_checkbox = ttk.Checkbutton(
+            sources,
+            text="Add Reverse",
+            variable=app.add_reverse_source,
+            command=app._on_reverse_source_toggle,
+        )
+        self.reverse_checkbox.grid(row=0, column=2, sticky="w", padx=(16, 0))
+        ttk.Label(sources, textvariable=app.mask_sources_info).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(sources, textvariable=app.mask_adoption_info).grid(
+            row=1, column=2, sticky="e", pady=(4, 0)
+        )
+        sources.columnconfigure(2, weight=1)
+
         viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         viewport.pack(fill="both", expand=True)
         self.image_view = ZoomPanImageView(viewport, self.window, contact, initial_zoom)
@@ -1929,7 +2190,12 @@ class TrackedMaskPreviewWindow:
 
         actions = ttk.Frame(self.window, padding=8)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Use These Masks", command=app._use_tracked_masks).pack(side="right")
+        self.use_button = ttk.Button(
+            actions,
+            text="Use These Masks",
+            command=app._use_tracked_masks,
+        )
+        self.use_button.pack(side="right")
         ttk.Button(actions, text="Close", command=self.close).pack(side="right", padx=(0, 8))
 
         app._refresh_tracked_mask_preview()
@@ -1943,6 +2209,25 @@ class TrackedMaskPreviewWindow:
 
     def set_contact(self, contact: Image.Image) -> None:
         self.image_view.set_image(contact)
+
+    def update_controls(self) -> None:
+        disabled = self.app._busy
+        self.pre_gate_checkbox.configure(
+            state="disabled"
+            if disabled or self.app.pre_gate_diagnostics is None
+            else "normal"
+        )
+        reverse_ready = (
+            self.app.regular_masks is not None
+            and len(self.app.regular_masks) > 14
+            and bool(self.app.regular_masks[14].any())
+        )
+        self.reverse_checkbox.configure(
+            state="disabled" if disabled or not reverse_ready else "normal"
+        )
+        self.use_button.configure(
+            state="disabled" if disabled or self.app.combined_preview_masks is None else "normal"
+        )
 
     def destroy(self) -> None:
         if self.exists():
@@ -2016,12 +2301,14 @@ class PreGateDiagnosticsWindow:
             raise RuntimeError("No pre-gate diagnostics are available")
         self.app = app
         self.diagnostics = tuple(app.pre_gate_diagnostics)
-        self.threshold = tk.DoubleVar(value=PRE_GATE_PREVIEW_DEFAULT_THRESHOLD)
-        self.threshold_text = tk.StringVar(value=f"{PRE_GATE_PREVIEW_DEFAULT_THRESHOLD:+.1f}")
-        self.fill_holes = tk.BooleanVar(value=False)
-        self._pending_update: str | None = None
         self.report = format_pre_gate_diagnostics(app.frames, self.diagnostics)
-        contact = make_pre_gate_contact_sheet(app.frames, self.diagnostics, columns=5)
+        contact = make_pre_gate_contact_sheet(
+            app.frames,
+            self.diagnostics,
+            threshold=app.pre_gate_threshold.get(),
+            fill_holes=app.pre_gate_fill_holes.get(),
+            columns=5,
+        )
 
         self.window = tk.Toplevel(app.root)
         self.window.title("SAM Pre-Gate Diagnostics")
@@ -2048,15 +2335,15 @@ class PreGateDiagnosticsWindow:
             controls,
             from_=PRE_GATE_PREVIEW_MIN_THRESHOLD,
             to=PRE_GATE_PREVIEW_MAX_THRESHOLD,
-            variable=self.threshold,
-            command=self._schedule_update,
+            variable=app.pre_gate_threshold,
+            command=app._schedule_pre_gate_update,
         ).grid(row=0, column=1, sticky="ew", padx=(8, 6))
-        ttk.Label(controls, textvariable=self.threshold_text, width=7).grid(row=0, column=2)
+        ttk.Label(controls, textvariable=app.pre_gate_threshold_text, width=7).grid(row=0, column=2)
         ttk.Checkbutton(
             controls,
             text="Apply hole fill for diagnostic view",
-            variable=self.fill_holes,
-            command=self._update_contact,
+            variable=app.pre_gate_fill_holes,
+            command=app._apply_pre_gate_settings,
         ).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
         controls.columnconfigure(1, weight=1)
 
@@ -2086,30 +2373,15 @@ class PreGateDiagnosticsWindow:
         except tk.TclError:
             return False
 
-    def _schedule_update(self, value: str) -> None:
-        rounded = max(
-            PRE_GATE_PREVIEW_MIN_THRESHOLD,
-            min(PRE_GATE_PREVIEW_MAX_THRESHOLD, round(float(value) * 2.0) / 2.0),
-        )
-        self.threshold.set(rounded)
-        self.threshold_text.set(f"{rounded:+.1f}")
-        if self._pending_update is not None:
-            self.window.after_cancel(self._pending_update)
-        self._pending_update = self.window.after(75, self._update_contact)
-
-    def _update_contact(self) -> None:
-        self._pending_update = None
+    def refresh_contact(self) -> None:
         contact = make_pre_gate_contact_sheet(
             self.app.frames,
             self.diagnostics,
-            threshold=self.threshold.get(),
-            fill_holes=self.fill_holes.get(),
+            threshold=self.app.pre_gate_threshold.get(),
+            fill_holes=self.app.pre_gate_fill_holes.get(),
             columns=5,
         )
         self.image_view.set_image(contact)
-        self.app.status.set(
-            f"Pre-gate diagnostic preview updated at {self.threshold.get():+.1f}; standard masks unchanged."
-        )
 
     def copy_all(self) -> None:
         self.window.clipboard_clear()
@@ -2117,9 +2389,6 @@ class PreGateDiagnosticsWindow:
         self.app.status.set("Pre-gate diagnostics copied to the clipboard.")
 
     def destroy(self) -> None:
-        if self._pending_update is not None and self.exists():
-            self.window.after_cancel(self._pending_update)
-            self._pending_update = None
         if self.exists():
             self.window.destroy()
 

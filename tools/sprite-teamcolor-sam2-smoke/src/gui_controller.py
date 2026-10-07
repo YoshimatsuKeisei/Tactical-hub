@@ -42,6 +42,7 @@ PRE_GATE_PREVIEW_MIN_THRESHOLD = -20.0
 PRE_GATE_PREVIEW_MAX_THRESHOLD = 20.0
 PRE_GATE_PREVIEW_DEFAULT_THRESHOLD = 0.0
 PRE_GATE_DIAGNOSTIC_THRESHOLDS = (0.0, -5.0, -10.0, 5.0)
+REVERSE_ANCHOR_FRAME_INDEX = 14
 
 
 @dataclass(frozen=True)
@@ -557,6 +558,186 @@ def derive_masks_from_sam_logits(
         raw_binary_masks.append(raw_binary.copy())
         active_masks.append(active)
     return raw_binary_masks, active_masks
+
+
+def derive_reverse_masks_from_sam_logits(
+    raw_logits: Sequence[np.ndarray],
+    frames: Sequence[Image.Image],
+    regular_masks: Sequence[np.ndarray],
+    threshold: float = DEFAULT_MASK_THRESHOLD,
+    fill_holes: bool = True,
+    anchor_frame_index: int = 14,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Build Reverse masks while keeping its Regular anchor authoritative."""
+    if not (len(raw_logits) == len(frames) == len(regular_masks)):
+        raise ValueError("Reverse logits, frames, and Regular mask counts do not match")
+    if not 0 <= anchor_frame_index < len(frames):
+        raise ValueError("Reverse anchor frame is outside the frame sequence")
+    raw_masks, active_masks = derive_masks_from_sam_logits(
+        raw_logits,
+        frames,
+        threshold=threshold,
+        fill_holes=fill_holes,
+    )
+    from smoke import validate_binary_mask
+
+    anchor = validate_binary_mask(regular_masks[anchor_frame_index], frames[anchor_frame_index].size)
+    if not anchor.any():
+        raise ValueError(
+            f"Reverse requires a non-empty Regular mask on frame {anchor_frame_index:03}."
+        )
+    anchor = clip_mask_to_frame(anchor, frames[anchor_frame_index])
+    raw_masks[anchor_frame_index] = anchor.copy()
+    active_masks[anchor_frame_index] = anchor.copy()
+    return raw_masks, active_masks
+
+
+def derive_pre_gate_masks(
+    diagnostics: Sequence[SamPreGateFrameDiagnostics],
+    frames: Sequence[Image.Image],
+    threshold: float = PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
+    fill_holes: bool = False,
+) -> list[np.ndarray]:
+    """Build the exact masks shown by Pre-Gate Diagnostics for source union."""
+    if len(diagnostics) != len(frames):
+        raise ValueError("Frame and pre-gate diagnostic counts do not match")
+    output: list[np.ndarray] = []
+    for diagnostic, frame in zip(diagnostics, frames, strict=True):
+        preview = pre_gate_preview_mask(diagnostic, frame, threshold, fill_holes)
+        output.append(
+            np.zeros((frame.height, frame.width), dtype=bool)
+            if preview is None
+            else preview.copy()
+        )
+    return output
+
+
+def _copy_mask_source(
+    masks: Sequence[np.ndarray],
+    source_name: str,
+    expected_shapes: Sequence[tuple[int, int]] | None = None,
+) -> list[np.ndarray]:
+    if not masks:
+        raise ValueError(f"{source_name} masks cannot be empty")
+    copied: list[np.ndarray] = []
+    for index, mask in enumerate(masks):
+        values = np.asarray(mask)
+        if values.ndim != 2:
+            raise ValueError(f"{source_name} frame {index} mask must be 2D")
+        if expected_shapes is not None and values.shape != expected_shapes[index]:
+            raise ValueError(
+                f"{source_name} frame {index} shape {values.shape} does not match "
+                f"Regular shape {expected_shapes[index]}"
+            )
+        copied.append(values.astype(bool, copy=True))
+    return copied
+
+
+def combine_mask_sources(
+    regular_masks: Sequence[np.ndarray],
+    pre_gate_masks: Sequence[np.ndarray] | None = None,
+    reverse_masks: Sequence[np.ndarray] | None = None,
+    *,
+    include_pre_gate: bool = False,
+    include_reverse: bool = False,
+) -> list[np.ndarray]:
+    """Rebuild a non-destructive Regular-first OR union from selected sources."""
+    regular = _copy_mask_source(regular_masks, "Regular")
+    shapes = [mask.shape for mask in regular]
+    selected: list[list[np.ndarray]] = []
+    for enabled, masks, name in (
+        (include_pre_gate, pre_gate_masks, "Pre-Gate"),
+        (include_reverse, reverse_masks, "Reverse"),
+    ):
+        if not enabled:
+            continue
+        if masks is None:
+            raise ValueError(f"{name} masks are not available")
+        if len(masks) != len(regular):
+            raise ValueError(f"{name} and Regular mask counts do not match")
+        selected.append(_copy_mask_source(masks, name, shapes))
+
+    combined = [mask.copy() for mask in regular]
+    for source in selected:
+        for index, mask in enumerate(source):
+            combined[index] = np.logical_or(combined[index], mask)
+    return combined
+
+
+class MaskSourceState:
+    """Keep Regular, optional sources, preview union, and adopted masks separate."""
+
+    def __init__(self, regular_masks: Sequence[np.ndarray]) -> None:
+        self.regular_masks = _copy_mask_source(regular_masks, "Regular")
+        self.pre_gate_masks: list[np.ndarray] | None = None
+        self.reverse_masks: list[np.ndarray] | None = None
+        self.include_pre_gate = False
+        self.include_reverse = False
+        self.preview_masks = combine_mask_sources(self.regular_masks)
+        self.active_masks = [mask.copy() for mask in self.preview_masks]
+        self.preview_dirty = False
+
+    def _replace_source(self, masks: Sequence[np.ndarray], name: str) -> list[np.ndarray]:
+        if len(masks) != len(self.regular_masks):
+            raise ValueError(f"{name} and Regular mask counts do not match")
+        return _copy_mask_source(masks, name, [mask.shape for mask in self.regular_masks])
+
+    def set_regular_masks(self, masks: Sequence[np.ndarray]) -> None:
+        replacement = _copy_mask_source(masks, "Regular")
+        if len(replacement) != len(self.regular_masks) or any(
+            actual.shape != previous.shape
+            for actual, previous in zip(replacement, self.regular_masks, strict=True)
+        ):
+            raise ValueError("Updated Regular masks do not match the tracked frame layout")
+        self.regular_masks = replacement
+        self.rebuild_preview()
+
+    def set_pre_gate_masks(self, masks: Sequence[np.ndarray]) -> None:
+        self.pre_gate_masks = self._replace_source(masks, "Pre-Gate")
+        self.rebuild_preview()
+
+    def set_reverse_masks(self, masks: Sequence[np.ndarray]) -> None:
+        self.reverse_masks = self._replace_source(masks, "Reverse")
+        self.rebuild_preview()
+
+    def set_enabled(self, *, pre_gate: bool | None = None, reverse: bool | None = None) -> None:
+        if pre_gate is not None:
+            if pre_gate and self.pre_gate_masks is None:
+                raise ValueError("Pre-Gate masks are not available")
+            self.include_pre_gate = bool(pre_gate)
+        if reverse is not None:
+            if reverse and self.reverse_masks is None:
+                raise ValueError("Reverse masks are not available")
+            self.include_reverse = bool(reverse)
+        self.rebuild_preview()
+
+    def rebuild_preview(self) -> list[np.ndarray]:
+        self.preview_masks = combine_mask_sources(
+            self.regular_masks,
+            self.pre_gate_masks,
+            self.reverse_masks,
+            include_pre_gate=self.include_pre_gate,
+            include_reverse=self.include_reverse,
+        )
+        self.preview_dirty = any(
+            not np.array_equal(preview, active)
+            for preview, active in zip(self.preview_masks, self.active_masks, strict=True)
+        )
+        return [mask.copy() for mask in self.preview_masks]
+
+    def adopt_preview(self) -> list[np.ndarray]:
+        self.active_masks = [mask.copy() for mask in self.preview_masks]
+        self.preview_dirty = False
+        return [mask.copy() for mask in self.active_masks]
+
+    @property
+    def source_label(self) -> str:
+        sources = ["Regular"]
+        if self.include_pre_gate:
+            sources.append("Pre-Gate")
+        if self.include_reverse:
+            sources.append("Reverse")
+        return " + ".join(sources)
 
 
 def diagnose_sam_logits(
@@ -1118,6 +1299,7 @@ class Sam2GuiSession:
         self.work_size = work_size
         self.model_config = model_config
         self.temp_dir = Path(tempfile.mkdtemp(prefix="sprite-teamcolor-sam2-"))
+        self.sam_frames_dir: Path | None = None
         self.predictor: object | None = None
         self.inference_state: object | None = None
         self.device: object | None = None
@@ -1125,6 +1307,7 @@ class Sam2GuiSession:
         self.sam_frame0_prediction: np.ndarray | None = None
         self.frame0_logits: np.ndarray | None = None
         self.raw_logits: list[np.ndarray] | None = None
+        self.reverse_raw_logits: list[np.ndarray] | None = None
         self.pre_gate_diagnostics: list[SamPreGateFrameDiagnostics] | None = None
         self.masks: list[np.ndarray] | None = None
 
@@ -1143,6 +1326,7 @@ class Sam2GuiSession:
 
         progress("Preparing SAM 2 frames...")
         sam_frames = prepare_frame_sequence(self.frames, self.temp_dir, self.work_size)
+        self.sam_frames_dir = sam_frames
         progress("Loading SAM 2 model...")
         self.device = resolve_device(self.device_name)
         self.predictor = create_sam2_predictor(self.model_config, self.checkpoint_path, self.device)
@@ -1173,6 +1357,7 @@ class Sam2GuiSession:
         self.sam_frame0_prediction = raw_mask.copy()
         self.frame0_mask = clip_mask_to_frame(raw_mask, self.frames[0])
         self.raw_logits = None
+        self.reverse_raw_logits = None
         self.pre_gate_diagnostics = None
         self.masks = None
         return self.frame0_mask.copy()
@@ -1207,6 +1392,7 @@ class Sam2GuiSession:
         # for subsequent frames, while alpha clipping remains authoritative here.
         self.frame0_mask = clipped
         self.raw_logits = None
+        self.reverse_raw_logits = None
         self.pre_gate_diagnostics = None
         self.masks = None
         return self.frame0_mask.copy()
@@ -1229,8 +1415,77 @@ class Sam2GuiSession:
         if [diagnostic.frame_index for diagnostic in diagnostics] != expected:
             raise RuntimeError("Pre-gate diagnostic frame mapping does not match propagated frames")
         self.raw_logits = [propagated[index].copy() for index in expected]
+        self.reverse_raw_logits = None
         self.pre_gate_diagnostics = list(diagnostics)
         return list(self.raw_logits)
+
+    def track_reverse_logits(
+        self,
+        regular_masks: Sequence[np.ndarray],
+        progress: ProgressCallback = lambda _message: None,
+    ) -> list[np.ndarray]:
+        """Track frame 014 to 000 in a fresh state while reusing the loaded model."""
+        if (
+            self.predictor is None
+            or self.inference_state is None
+            or self.device is None
+            or self.sam_frames_dir is None
+        ):
+            raise RuntimeError("Complete Regular tracking before generating Reverse masks")
+        if len(self.frames) != REVERSE_ANCHOR_FRAME_INDEX + 1:
+            raise ValueError("Reverse tracking requires frames 000 through 014")
+        if len(regular_masks) != len(self.frames):
+            raise ValueError("Regular mask and frame counts do not match")
+
+        from smoke import (
+            add_sam2_mask_at_frame_logits,
+            initialize_sam2_state,
+            propagate_sam2_logits,
+            validate_binary_mask,
+        )
+
+        anchor_frame = self.frames[REVERSE_ANCHOR_FRAME_INDEX]
+        anchor = validate_binary_mask(
+            regular_masks[REVERSE_ANCHOR_FRAME_INDEX],
+            anchor_frame.size,
+        )
+        anchor = clip_mask_to_frame(anchor, anchor_frame)
+        if not anchor.any():
+            raise ValueError("Reverse requires a non-empty Regular mask on frame 014.")
+
+        progress("Initializing fresh SAM 2 state for Reverse tracking...")
+        reverse_state = initialize_sam2_state(
+            self.predictor,
+            self.sam_frames_dir,
+            self.device,
+        )
+        try:
+            progress("Registering frame 014 Regular mask as the Reverse anchor...")
+            add_sam2_mask_at_frame_logits(
+                self.predictor,
+                reverse_state,
+                anchor,
+                anchor_frame.size,
+                REVERSE_ANCHOR_FRAME_INDEX,
+            )
+            progress("Propagating Reverse masks from frame 014 to frame 000...")
+            propagated = propagate_sam2_logits(
+                self.predictor,
+                reverse_state,
+                start_frame_idx=REVERSE_ANCHOR_FRAME_INDEX,
+                reverse=True,
+            )
+        finally:
+            reset_state = getattr(self.predictor, "reset_state", None)
+            if callable(reset_state):
+                reset_state(reverse_state)
+
+        expected = list(range(REVERSE_ANCHOR_FRAME_INDEX + 1))
+        if sorted(propagated) != expected:
+            raise RuntimeError(f"Expected Reverse frames {expected}, got {sorted(propagated)}")
+        retained = [propagated[index].copy() for index in expected]
+        self.reverse_raw_logits = retained
+        return [logits.copy() for logits in retained]
 
     def track_across_frames(
         self,
@@ -1253,9 +1508,11 @@ class Sam2GuiSession:
         self.predictor = None
         self.inference_state = None
         self.device = None
+        self.sam_frames_dir = None
         self.sam_frame0_prediction = None
         self.frame0_logits = None
         self.raw_logits = None
+        self.reverse_raw_logits = None
         self.pre_gate_diagnostics = None
         self.frame0_mask = None
         self.masks = None

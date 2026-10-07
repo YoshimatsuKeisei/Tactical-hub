@@ -329,10 +329,29 @@ def add_sam2_mask_logits(
     frame_size: tuple[int, int],
 ) -> np.ndarray:
     """Register a frame-0 mask and return the raw object-1 SAM logits."""
+    return add_sam2_mask_at_frame_logits(
+        predictor,
+        inference_state,
+        initial_mask,
+        frame_size,
+        frame_index=0,
+    )
+
+
+def add_sam2_mask_at_frame_logits(
+    predictor: object,
+    inference_state: object,
+    initial_mask: np.ndarray,
+    frame_size: tuple[int, int],
+    frame_index: int,
+) -> np.ndarray:
+    """Register a binary mask on one conditioning frame and return object-1 logits."""
+    if frame_index < 0:
+        raise ValueError("Frame index must be non-negative")
     validated = validate_binary_mask(initial_mask, frame_size)
     _frame_index, object_ids, mask_logits = predictor.add_new_mask(
         inference_state=inference_state,
-        frame_idx=0,
+        frame_idx=int(frame_index),
         obj_id=1,
         mask=validated,
     )
@@ -353,10 +372,21 @@ def add_sam2_mask(
 def propagate_sam2_logits(
     predictor: object,
     inference_state: object,
+    *,
+    start_frame_idx: int | None = None,
+    reverse: bool = False,
 ) -> dict[int, np.ndarray]:
     """Propagate object 1 and retain each frame's raw CPU logits."""
     propagated: dict[int, np.ndarray] = {}
-    for frame_index, object_ids, mask_logits in predictor.propagate_in_video(inference_state):
+    if start_frame_idx is None and not reverse:
+        iterator = predictor.propagate_in_video(inference_state)
+    else:
+        iterator = predictor.propagate_in_video(
+            inference_state=inference_state,
+            start_frame_idx=start_frame_idx,
+            reverse=reverse,
+        )
+    for frame_index, object_ids, mask_logits in iterator:
         propagated[int(frame_index)] = _object_logits(object_ids, mask_logits)
     return propagated
 
