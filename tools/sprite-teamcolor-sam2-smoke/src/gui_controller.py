@@ -18,6 +18,9 @@ from recolor import DEFAULT_TARGETS, make_contact_sheet, parse_target_color, rec
 ProgressCallback = Callable[[str], None]
 MIN_ZOOM = 1
 MAX_ZOOM = 16
+MIN_MASK_THRESHOLD = -2.0
+MAX_MASK_THRESHOLD = 2.0
+DEFAULT_MASK_THRESHOLD = 0.0
 
 
 @dataclass(frozen=True)
@@ -311,6 +314,16 @@ def percentage_to_unit(value: float) -> float:
     return normalized / 100.0
 
 
+def validate_mask_threshold(value: float) -> float:
+    """Validate the diagnostic SAM logit threshold used by the GUI."""
+    threshold = float(value)
+    if not MIN_MASK_THRESHOLD <= threshold <= MAX_MASK_THRESHOLD:
+        raise ValueError(
+            f"Mask threshold must be between {MIN_MASK_THRESHOLD:.1f} and {MAX_MASK_THRESHOLD:.1f}"
+        )
+    return threshold
+
+
 def viewport_to_frame(
     viewport_x: float,
     viewport_y: float,
@@ -436,6 +449,38 @@ def apply_mask_cleanup_sequence(
     fill_holes: bool,
 ) -> list[np.ndarray]:
     return [apply_mask_cleanup(mask, fill_holes) for mask in masks]
+
+
+def derive_masks_from_sam_logits(
+    raw_logits: Sequence[np.ndarray],
+    frames: Sequence[Image.Image],
+    threshold: float = DEFAULT_MASK_THRESHOLD,
+    fill_holes: bool = True,
+    authoritative_frame0: np.ndarray | None = None,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Build raw binary and active masks without mutating retained SAM logits.
+
+    The processing order is threshold at SAM resolution, nearest-neighbor resize,
+    frame-alpha clipping, then optional enclosed-hole filling. An authoritative
+    frame-0 selection replaces only frame 0 for Select Area and Select All.
+    """
+    if len(raw_logits) != len(frames):
+        raise ValueError("SAM logit and frame counts do not match")
+    threshold = validate_mask_threshold(threshold)
+    from smoke import threshold_sam2_logits, validate_binary_mask
+
+    raw_binary_masks: list[np.ndarray] = []
+    active_masks: list[np.ndarray] = []
+    for index, (logits, frame) in enumerate(zip(raw_logits, frames, strict=True)):
+        if index == 0 and authoritative_frame0 is not None:
+            raw_binary = validate_binary_mask(authoritative_frame0, frame.size)
+        else:
+            raw_binary = threshold_sam2_logits(logits, frame.size, threshold)
+        alpha_clipped = clip_mask_to_frame(raw_binary, frame)
+        active = apply_mask_cleanup(alpha_clipped, fill_holes)
+        raw_binary_masks.append(raw_binary.copy())
+        active_masks.append(active)
+    return raw_binary_masks, active_masks
 
 
 def make_mask_overlay(
@@ -601,6 +646,8 @@ class Sam2GuiSession:
         self.device: object | None = None
         self.frame0_mask: np.ndarray | None = None
         self.sam_frame0_prediction: np.ndarray | None = None
+        self.frame0_logits: np.ndarray | None = None
+        self.raw_logits: list[np.ndarray] | None = None
         self.masks: list[np.ndarray] | None = None
 
     def _ensure_ready(self, progress: ProgressCallback) -> None:
@@ -628,23 +675,26 @@ class Sam2GuiSession:
         self,
         clicks: Sequence[PromptClick],
         progress: ProgressCallback = lambda _message: None,
+        threshold: float = DEFAULT_MASK_THRESHOLD,
     ) -> np.ndarray:
         if not any(click.label == 1 for click in clicks):
             raise ValueError("Add at least one positive click before generating a mask")
         self._ensure_ready(progress)
-        from smoke import PromptPoint, add_sam2_prompts
+        from smoke import PromptPoint, add_sam2_prompts_logits, threshold_sam2_logits
 
         progress("Generating frame 0 mask...")
         points = [PromptPoint(click.x, click.y, click.label) for click in clicks]
-        raw_mask = add_sam2_prompts(
+        self.frame0_logits = add_sam2_prompts_logits(
             self.predictor,
             self.inference_state,
             points,
             self.frames[0].size,
             self.work_size,
         )
+        raw_mask = threshold_sam2_logits(self.frame0_logits, self.frames[0].size, threshold)
         self.sam_frame0_prediction = raw_mask.copy()
         self.frame0_mask = clip_mask_to_frame(raw_mask, self.frames[0])
+        self.raw_logits = None
         self.masks = None
         return self.frame0_mask.copy()
 
@@ -660,35 +710,58 @@ class Sam2GuiSession:
         if not clipped.any():
             raise ValueError("The selected area is empty after alpha clipping")
         self._ensure_ready(progress)
-        from smoke import add_sam2_mask
+        from smoke import add_sam2_mask_logits, threshold_sam2_logits
 
         progress("Registering frame 0 selection mask with SAM 2...")
-        self.sam_frame0_prediction = add_sam2_mask(
+        self.frame0_logits = add_sam2_mask_logits(
             self.predictor,
             self.inference_state,
             clipped,
             self.frames[0].size,
         )
+        self.sam_frame0_prediction = threshold_sam2_logits(
+            self.frame0_logits,
+            self.frames[0].size,
+            DEFAULT_MASK_THRESHOLD,
+        )
         # Preserve the exact user selection on frame 0. SAM 2 provides tracking
         # for subsequent frames, while alpha clipping remains authoritative here.
         self.frame0_mask = clipped
+        self.raw_logits = None
         self.masks = None
         return self.frame0_mask.copy()
+
+    def track_across_frames_logits(
+        self,
+        progress: ProgressCallback = lambda _message: None,
+    ) -> list[np.ndarray]:
+        """Run propagation once and retain owned CPU raw logits for every frame."""
+        if self.frame0_mask is None or self.predictor is None or self.inference_state is None:
+            raise RuntimeError("Generate and review the frame 0 mask before tracking")
+        from smoke import propagate_sam2_logits
+
+        progress("Propagating mask across frames...")
+        propagated = propagate_sam2_logits(self.predictor, self.inference_state)
+        expected = list(range(len(self.frames)))
+        if sorted(propagated) != expected:
+            raise RuntimeError(f"Expected propagated frames {expected}, got {sorted(propagated)}")
+        self.raw_logits = [propagated[index].copy() for index in expected]
+        return list(self.raw_logits)
 
     def track_across_frames(
         self,
         progress: ProgressCallback = lambda _message: None,
     ) -> list[np.ndarray]:
-        if self.frame0_mask is None or self.predictor is None or self.inference_state is None:
-            raise RuntimeError("Generate and review the frame 0 mask before tracking")
-        from smoke import propagate_sam2_masks
+        raw_logits = self.track_across_frames_logits(progress)
+        from smoke import threshold_sam2_logits
 
-        progress("Propagating mask across frames...")
-        propagated = propagate_sam2_masks(self.predictor, self.inference_state, self.frames[0].size)
-        expected = list(range(len(self.frames)))
-        if sorted(propagated) != expected:
-            raise RuntimeError(f"Expected propagated frames {expected}, got {sorted(propagated)}")
-        self.masks = [clip_mask_to_frame(propagated[index], frame) for index, frame in enumerate(self.frames)]
+        self.masks = [
+            clip_mask_to_frame(
+                threshold_sam2_logits(logits, frame.size, DEFAULT_MASK_THRESHOLD),
+                frame,
+            )
+            for logits, frame in zip(raw_logits, self.frames, strict=True)
+        ]
         self.masks[0] = self.frame0_mask.copy()
         return [mask.copy() for mask in self.masks]
 
@@ -697,6 +770,10 @@ class Sam2GuiSession:
         self.inference_state = None
         self.device = None
         self.sam_frame0_prediction = None
+        self.frame0_logits = None
+        self.raw_logits = None
+        self.frame0_mask = None
+        self.masks = None
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
 

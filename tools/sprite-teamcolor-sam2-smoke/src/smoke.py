@@ -222,20 +222,56 @@ def initialize_sam2_state(predictor: object, sam_frames_dir: Path, device: torch
     )
 
 
-def _resize_work_mask(mask_logits: object, frame_size: tuple[int, int]) -> np.ndarray:
-    work_mask = mask_logits.detach().cpu().numpy().squeeze() > 0
+def validate_sam2_logits(mask_logits: object) -> np.ndarray:
+    """Return one SAM 2 object mask as an owned 2D CPU float32 array."""
+    if isinstance(mask_logits, np.ndarray):
+        values = mask_logits
+    else:
+        try:
+            values = mask_logits.detach().cpu().numpy()
+        except AttributeError as error:
+            raise ValueError("SAM 2 mask logits must be a tensor or NumPy array") from error
+    logits = np.asarray(values, dtype=np.float32)
+    if logits.ndim > 2 and int(np.prod(logits.shape[:-2])) == 1:
+        logits = logits.reshape(logits.shape[-2:])
+    if logits.ndim != 2 or logits.shape[0] <= 0 or logits.shape[1] <= 0:
+        raise ValueError(f"SAM 2 mask logits must reduce to a non-empty 2D array, got {logits.shape}")
+    return logits.copy()
+
+
+def threshold_sam2_logits(
+    mask_logits: object,
+    frame_size: tuple[int, int],
+    threshold: float = 0.0,
+) -> np.ndarray:
+    """Threshold at SAM work resolution, then resize with nearest neighbor."""
+    frame_width, frame_height = frame_size
+    if frame_width <= 0 or frame_height <= 0:
+        raise ValueError("Frame dimensions must be positive")
+    work_mask = validate_sam2_logits(mask_logits) > float(threshold)
     mask_image = Image.fromarray(work_mask.astype(np.uint8) * 255)
     return np.asarray(mask_image.resize(frame_size, Image.Resampling.NEAREST)) > 0
 
 
-def add_sam2_prompts(
+def _resize_work_mask(mask_logits: object, frame_size: tuple[int, int]) -> np.ndarray:
+    """Compatibility path for the historic fixed SAM threshold of zero."""
+    return threshold_sam2_logits(mask_logits, frame_size, threshold=0.0)
+
+
+def _object_logits(object_ids: object, mask_logits: object, object_id: int = 1) -> np.ndarray:
+    object_id_list = [int(value) for value in object_ids]
+    object_index = object_id_list.index(object_id)
+    return validate_sam2_logits(mask_logits[object_index])
+
+
+def add_sam2_prompts_logits(
     predictor: object,
     inference_state: object,
     prompt_points: list[PromptPoint],
     frame_size: tuple[int, int],
     work_size: int,
 ) -> np.ndarray:
-    """Replace frame-0 prompts and return its mask in original-frame coordinates."""
+    """Replace frame-0 prompts and return the raw object-1 SAM logits."""
     if not any(point.label == 1 for point in prompt_points):
         raise ValueError("At least one positive point is required")
     frame_width, frame_height = frame_size
@@ -254,9 +290,25 @@ def add_sam2_prompts(
         labels=label_array,
         clear_old_points=True,
     )
-    object_id_list = [int(object_id) for object_id in object_ids]
-    object_index = object_id_list.index(1)
-    return _resize_work_mask(mask_logits[object_index], frame_size)
+    return _object_logits(object_ids, mask_logits)
+
+
+def add_sam2_prompts(
+    predictor: object,
+    inference_state: object,
+    prompt_points: list[PromptPoint],
+    frame_size: tuple[int, int],
+    work_size: int,
+) -> np.ndarray:
+    """Replace frame-0 prompts and return its mask in original-frame coordinates."""
+    logits = add_sam2_prompts_logits(
+        predictor,
+        inference_state,
+        prompt_points,
+        frame_size,
+        work_size,
+    )
+    return threshold_sam2_logits(logits, frame_size, threshold=0.0)
 
 
 def validate_binary_mask(mask: np.ndarray, frame_size: tuple[int, int]) -> np.ndarray:
@@ -270,13 +322,13 @@ def validate_binary_mask(mask: np.ndarray, frame_size: tuple[int, int]) -> np.nd
     return array.copy()
 
 
-def add_sam2_mask(
+def add_sam2_mask_logits(
     predictor: object,
     inference_state: object,
     initial_mask: np.ndarray,
     frame_size: tuple[int, int],
 ) -> np.ndarray:
-    """Register a binary frame-0 mask and return SAM 2's frame-sized prediction."""
+    """Register a frame-0 mask and return the raw object-1 SAM logits."""
     validated = validate_binary_mask(initial_mask, frame_size)
     _frame_index, object_ids, mask_logits = predictor.add_new_mask(
         inference_state=inference_state,
@@ -284,9 +336,29 @@ def add_sam2_mask(
         obj_id=1,
         mask=validated,
     )
-    object_id_list = [int(object_id) for object_id in object_ids]
-    object_index = object_id_list.index(1)
-    return _resize_work_mask(mask_logits[object_index], frame_size)
+    return _object_logits(object_ids, mask_logits)
+
+
+def add_sam2_mask(
+    predictor: object,
+    inference_state: object,
+    initial_mask: np.ndarray,
+    frame_size: tuple[int, int],
+) -> np.ndarray:
+    """Register a binary frame-0 mask and return the historic threshold-0 mask."""
+    logits = add_sam2_mask_logits(predictor, inference_state, initial_mask, frame_size)
+    return threshold_sam2_logits(logits, frame_size, threshold=0.0)
+
+
+def propagate_sam2_logits(
+    predictor: object,
+    inference_state: object,
+) -> dict[int, np.ndarray]:
+    """Propagate object 1 and retain each frame's raw CPU logits."""
+    propagated: dict[int, np.ndarray] = {}
+    for frame_index, object_ids, mask_logits in predictor.propagate_in_video(inference_state):
+        propagated[int(frame_index)] = _object_logits(object_ids, mask_logits)
+    return propagated
 
 
 def propagate_sam2_masks(
@@ -294,13 +366,11 @@ def propagate_sam2_masks(
     inference_state: object,
     frame_size: tuple[int, int],
 ) -> dict[int, np.ndarray]:
-    """Propagate object 1 and return masks in original-frame coordinates."""
-    propagated: dict[int, np.ndarray] = {}
-    for frame_index, object_ids, mask_logits in predictor.propagate_in_video(inference_state):
-        object_id_list = [int(object_id) for object_id in object_ids]
-        object_index = object_id_list.index(1)
-        propagated[int(frame_index)] = _resize_work_mask(mask_logits[object_index], frame_size)
-    return propagated
+    """Propagate object 1 with the historic threshold-0 binary behavior."""
+    return {
+        frame_index: threshold_sam2_logits(logits, frame_size, threshold=0.0)
+        for frame_index, logits in propagate_sam2_logits(predictor, inference_state).items()
+    }
 
 
 def bbox(mask: np.ndarray) -> list[int] | None:

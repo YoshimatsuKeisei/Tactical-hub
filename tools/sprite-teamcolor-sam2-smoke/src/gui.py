@@ -18,19 +18,22 @@ from PIL import Image, ImageTk
 
 from gui_controller import (
     LassoSelectionState,
+    DEFAULT_MASK_THRESHOLD,
     MAX_ZOOM,
+    MAX_MASK_THRESHOLD,
     MIN_ZOOM,
+    MIN_MASK_THRESHOLD,
     RecolorPreviewState,
     TEAM_COLOR_NAMES,
     PromptState,
     Sam2GuiSession,
     SheetLayout,
     apply_mask_cleanup,
-    apply_mask_cleanup_sequence,
     choose_display_scale,
     clamp_zoom,
     clip_mask_to_frame,
     cursor_centered_zoom_offset,
+    derive_masks_from_sam_logits,
     ellipse_to_mask,
     extract_row_frames,
     frame_output_names,
@@ -46,6 +49,7 @@ from gui_controller import (
     select_all_mask,
     shape_bounds,
     viewport_to_frame,
+    validate_mask_threshold,
 )
 from recolor import make_contact_sheet
 
@@ -79,6 +83,9 @@ class TeamColorApp:
         self.lasso_operation = tk.StringVar(value="add")
         self.shape_constraint = tk.BooleanVar(value=False)
         self.fill_enclosed_holes = tk.BooleanVar(value=True)
+        self.mask_threshold = tk.DoubleVar(value=DEFAULT_MASK_THRESHOLD)
+        self.mask_threshold_text = tk.StringVar(value=f"{DEFAULT_MASK_THRESHOLD:+.2f}")
+        self.tracked_mask_info = tk.StringVar(value="Total mask pixels: 0")
         self.prompt_mode = tk.IntVar(value=1)
         self.color_preset = tk.StringVar(value="Red")
         self.custom_color = tk.StringVar(value="#D23030")
@@ -100,7 +107,8 @@ class TeamColorApp:
         self.frame0_mask: np.ndarray | None = None
         self.masks: list[np.ndarray] | None = None
         self.raw_masks: list[np.ndarray] | None = None
-        self._tracking_raw_frame0: np.ndarray | None = None
+        self.sam_raw_logits: list[np.ndarray] | None = None
+        self.quick_frame0_logits: np.ndarray | None = None
         self.recolored_frames: list[Image.Image] = []
         self.recolored_contact: Image.Image | None = None
         self.recolor_target: tuple[int, int, int] | None = None
@@ -118,6 +126,8 @@ class TeamColorApp:
         self.review_state = RecolorPreviewState()
         self.mask_editor: MaskEditorWindow | None = None
         self.review_window: RecolorReviewWindow | None = None
+        self.tracked_mask_window: TrackedMaskPreviewWindow | None = None
+        self._pending_threshold_update: str | None = None
         self._busy = False
         self._events: queue.Queue[tuple] = queue.Queue()
 
@@ -324,6 +334,29 @@ class TeamColorApp:
             command=self._on_cleanup_toggle,
         )
         self.cleanup_checkbox.pack(side="left", padx=(8, 0))
+        threshold_controls = ttk.Frame(action_box)
+        threshold_controls.pack(fill="x", pady=(0, 5))
+        ttk.Label(threshold_controls, text="SAM Mask Threshold:").grid(row=0, column=0, sticky="w")
+        self.threshold_scale = ttk.Scale(
+            threshold_controls,
+            from_=MIN_MASK_THRESHOLD,
+            to=MAX_MASK_THRESHOLD,
+            variable=self.mask_threshold,
+            command=self._schedule_threshold_update,
+        )
+        self.threshold_scale.grid(row=0, column=1, sticky="ew", padx=(8, 6))
+        ttk.Label(threshold_controls, textvariable=self.mask_threshold_text, width=7).grid(
+            row=0,
+            column=2,
+            sticky="e",
+        )
+        ttk.Label(threshold_controls, text="Lower = more inclusive").grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="w",
+        )
+        threshold_controls.columnconfigure(1, weight=1)
         ttk.Label(action_box, textvariable=self.mask_cleanup_info, wraplength=340).pack(
             anchor="w",
             fill="x",
@@ -395,6 +428,7 @@ class TeamColorApp:
             return
         self._close_mask_editor()
         self._discard_recolor_preview()
+        self._close_tracked_mask_preview()
         self._close_session()
         self.sprite = sprite
         self.layout = layout
@@ -424,9 +458,11 @@ class TeamColorApp:
         self.frame0_mask = None
         self.masks = None
         self.raw_masks = None
-        self._tracking_raw_frame0 = None
+        self.sam_raw_logits = None
+        self.quick_frame0_logits = None
         self.recolored_frames = []
         self.recolored_contact = None
+        self.tracked_mask_info.set("Total mask pixels: 0")
         self.image_info.set(
             f"{path.name}: {sprite.width}x{sprite.height}, mode {sprite.mode}; "
             f"loaded row {layout.target_row}, {len(frames)} frames"
@@ -653,7 +689,8 @@ class TeamColorApp:
         self._clear_main_draft()
         self.masks = None
         self.raw_masks = None
-        self._tracking_raw_frame0 = None
+        self.sam_raw_logits = None
+        self._close_tracked_mask_preview()
         self._discard_recolor_preview()
         if self.selection_mode.get() == "area":
             self._sync_lasso_mask()
@@ -711,8 +748,8 @@ class TeamColorApp:
         if raw_mask is None or not self.frames:
             self.frame0_mask = None
             return
-        active = apply_mask_cleanup(raw_mask, self.fill_enclosed_holes.get())
-        active = clip_mask_to_frame(active, self.frames[0])
+        alpha_clipped = clip_mask_to_frame(raw_mask, self.frames[0])
+        active = apply_mask_cleanup(alpha_clipped, self.fill_enclosed_holes.get())
         self.frame0_mask = active if active.any() else None
 
     def _raw_frame0_mask(self) -> np.ndarray | None:
@@ -726,9 +763,69 @@ class TeamColorApp:
             return self.quick_frame0_mask.copy() if self.quick_frame0_mask is not None else None
         return select_all_mask(self.frames[0])
 
-    def _derive_active_masks(self, raw_masks: Sequence[np.ndarray]) -> list[np.ndarray]:
-        cleaned = apply_mask_cleanup_sequence(raw_masks, self.fill_enclosed_holes.get())
-        return [clip_mask_to_frame(mask, frame) for mask, frame in zip(cleaned, self.frames, strict=True)]
+    def _authoritative_frame0_mask(self) -> np.ndarray | None:
+        if self.selection_mode.get() not in ("area", "all"):
+            return None
+        return self._raw_frame0_mask()
+
+    def _rebuild_masks_from_logits(self) -> None:
+        if self.sam_raw_logits is None:
+            return
+        self.raw_masks, self.masks = derive_masks_from_sam_logits(
+            self.sam_raw_logits,
+            self.frames,
+            threshold=validate_mask_threshold(self.mask_threshold.get()),
+            fill_holes=self.fill_enclosed_holes.get(),
+            authoritative_frame0=self._authoritative_frame0_mask(),
+        )
+        if self.masks:
+            self.frame0_mask = self.masks[0].copy()
+
+    def _rebuild_quick_frame0_from_logits(self) -> None:
+        if self.quick_frame0_logits is None or not self.frames:
+            return
+        raw, active = derive_masks_from_sam_logits(
+            [self.quick_frame0_logits],
+            [self.frames[0]],
+            threshold=validate_mask_threshold(self.mask_threshold.get()),
+            fill_holes=self.fill_enclosed_holes.get(),
+        )
+        self.quick_frame0_mask = raw[0]
+        self.frame0_mask = active[0] if active[0].any() else None
+
+    def _schedule_threshold_update(self, value: str) -> None:
+        rounded = round(float(value) / 0.05) * 0.05
+        rounded = validate_mask_threshold(rounded)
+        self.mask_threshold.set(rounded)
+        self.mask_threshold_text.set(f"{rounded:+.2f}")
+        if self._pending_threshold_update is not None:
+            self.root.after_cancel(self._pending_threshold_update)
+        self._pending_threshold_update = self.root.after(75, self._apply_threshold_update)
+
+    def _apply_threshold_update(self) -> None:
+        self._pending_threshold_update = None
+        threshold = validate_mask_threshold(self.mask_threshold.get())
+        self.mask_threshold_text.set(f"{threshold:+.2f}")
+        updated_from_logits = False
+        if self.sam_raw_logits is not None:
+            self._rebuild_masks_from_logits()
+            updated_from_logits = True
+        elif self.selection_mode.get() == "quick" and self.quick_frame0_logits is not None:
+            self._rebuild_quick_frame0_from_logits()
+            updated_from_logits = True
+        self._discard_recolor_preview()
+        self._refresh_cleanup_info()
+        self._refresh_selection_info()
+        self._redraw_prompt()
+        self._refresh_mask_editor()
+        self._refresh_tracked_mask_preview()
+        if updated_from_logits:
+            self.status.set(
+                f"Mask threshold {threshold:+.2f} applied from retained logits; SAM 2 was not rerun."
+            )
+        else:
+            self.status.set(f"Mask threshold set to {threshold:+.2f} for the next SAM mask.")
+        self._update_buttons()
 
     def _refresh_cleanup_info(self) -> None:
         if self.raw_masks is not None and self.masks is not None:
@@ -744,24 +841,28 @@ class TeamColorApp:
         before = sum(int(mask.sum()) for mask in raw_masks)
         after = sum(int(mask.sum()) for mask in active_masks)
         if self.fill_enclosed_holes.get():
-            self.mask_cleanup_info.set(f"Mask pixels: {before} → {after} (+{after - before} filled)")
+            self.mask_cleanup_info.set(
+                f"Mask pixels: raw {before} → active {after} (alpha clip + hole fill)"
+            )
         else:
-            self.mask_cleanup_info.set(f"Mask pixels: {before} → {after} (cleanup off)")
+            self.mask_cleanup_info.set(f"Mask pixels: raw {before} → active {after} (alpha clip; cleanup off)")
 
     def _on_cleanup_toggle(self) -> None:
         if self._busy:
             return
-        raw_frame0 = self._raw_frame0_mask()
-        self._set_active_frame0_mask(raw_frame0)
-        if self.raw_masks is not None:
-            self.masks = self._derive_active_masks(self.raw_masks)
-            if self.masks:
-                self.frame0_mask = self.masks[0].copy()
+        if self.sam_raw_logits is not None:
+            self._rebuild_masks_from_logits()
+        elif self.selection_mode.get() == "quick" and self.quick_frame0_logits is not None:
+            self._rebuild_quick_frame0_from_logits()
+        else:
+            raw_frame0 = self._raw_frame0_mask()
+            self._set_active_frame0_mask(raw_frame0)
         self._discard_recolor_preview()
         self._refresh_selection_info()
         self._refresh_cleanup_info()
         self._redraw_prompt()
         self._refresh_mask_editor()
+        self._refresh_tracked_mask_preview()
         state = "enabled" if self.fill_enclosed_holes.get() else "disabled"
         self.status.set(f"Fill enclosed holes {state}; tracking state retained.")
         self._update_buttons()
@@ -770,7 +871,8 @@ class TeamColorApp:
         self._sync_lasso_mask()
         self.masks = None
         self.raw_masks = None
-        self._tracking_raw_frame0 = None
+        self.sam_raw_logits = None
+        self._close_tracked_mask_preview()
         self._discard_recolor_preview()
         self._refresh_selection_info()
         self._refresh_cleanup_info()
@@ -836,10 +938,13 @@ class TeamColorApp:
 
     def _invalidate_after_prompt_change(self) -> None:
         self.quick_frame0_mask = None
+        self.quick_frame0_logits = None
+        self.tracked_mask_info.set("Total mask pixels: 0")
         self.frame0_mask = None
         self.masks = None
         self.raw_masks = None
-        self._tracking_raw_frame0 = None
+        self.sam_raw_logits = None
+        self._close_tracked_mask_preview()
         self._discard_recolor_preview()
         self._refresh_prompt_info()
         self._refresh_cleanup_info()
@@ -899,10 +1004,16 @@ class TeamColorApp:
         checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
         clicks = self.prompts.clicks
         device_name = self.device.get()
+        threshold = validate_mask_threshold(self.mask_threshold.get())
 
         def worker() -> object:
             self._ensure_sam_session(checkpoint, device_name)
-            return self.sam_session.generate_frame0_mask(clicks, self._queue_status)
+            mask = self.sam_session.generate_frame0_mask(
+                clicks,
+                self._queue_status,
+                threshold=threshold,
+            )
+            return mask, self.sam_session.frame0_logits
 
         self._start_task("generate", "Starting frame 0 mask generation...", worker)
 
@@ -910,8 +1021,6 @@ class TeamColorApp:
         if self.frame0_mask is None:
             messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
-        raw_frame0 = self._raw_frame0_mask()
-        self._tracking_raw_frame0 = raw_frame0.copy() if raw_frame0 is not None else None
         self._discard_recolor_preview()
         if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
@@ -921,7 +1030,7 @@ class TeamColorApp:
             def worker() -> object:
                 self._ensure_sam_session(checkpoint, device_name)
                 self.sam_session.set_frame0_mask(initial_mask, self._queue_status)
-                return self.sam_session.track_across_frames(self._queue_status)
+                return self.sam_session.track_across_frames_logits(self._queue_status)
 
             self._start_task("track", "Preparing selection mask for propagation...", worker)
             return
@@ -931,7 +1040,7 @@ class TeamColorApp:
         self._start_task(
             "track",
             "Starting mask propagation...",
-            lambda: self.sam_session.track_across_frames(self._queue_status),
+            lambda: self.sam_session.track_across_frames_logits(self._queue_status),
         )
 
     def _ensure_sam_session(self, checkpoint: Path, device_name: str) -> None:
@@ -949,8 +1058,8 @@ class TeamColorApp:
         if self.masks is None or self.layout is None:
             messagebox.showerror("Tracking required", "Track the mask across frames first.")
             return
-        if self.raw_masks is not None:
-            self.masks = self._derive_active_masks(self.raw_masks)
+        if self.sam_raw_logits is not None:
+            self._rebuild_masks_from_logits()
             self._refresh_cleanup_info()
         try:
             target = parse_team_color(self.color_preset.get(), self.custom_color.get())
@@ -1062,6 +1171,52 @@ class TeamColorApp:
             self.review_window = None
             review.destroy()
 
+    def _tracked_mask_contact(self) -> Image.Image:
+        if self.masks is None:
+            raise RuntimeError("No tracked masks are available")
+        overlays = [
+            make_mask_overlay(frame, mask)
+            for frame, mask in zip(self.frames, self.masks, strict=True)
+        ]
+        labels = [Path(name).stem for name in frame_output_names(len(overlays))]
+        return make_contact_sheet(overlays, labels, columns=min(5, len(overlays)))
+
+    def _open_tracked_mask_preview(self) -> None:
+        if self.masks is None:
+            return
+        self._close_tracked_mask_preview()
+        self.tracked_mask_window = TrackedMaskPreviewWindow(self)
+
+    def _refresh_tracked_mask_preview(self) -> None:
+        if self.masks is None:
+            self.tracked_mask_info.set("Total mask pixels: 0")
+            return
+        total = sum(int(mask.sum()) for mask in self.masks)
+        self.tracked_mask_info.set(f"Total mask pixels: {total}")
+        if self.tracked_mask_window is not None and self.tracked_mask_window.exists():
+            self.tracked_mask_window.set_contact(self._tracked_mask_contact())
+
+    def _close_tracked_mask_preview(self) -> None:
+        if self.tracked_mask_window is not None:
+            preview = self.tracked_mask_window
+            self.tracked_mask_window = None
+            preview.destroy()
+
+    def _tracked_mask_window_closed(self, preview: "TrackedMaskPreviewWindow") -> None:
+        if self.tracked_mask_window is preview:
+            self.tracked_mask_window = None
+
+    def _use_tracked_masks(self) -> None:
+        if self._pending_threshold_update is not None:
+            self.root.after_cancel(self._pending_threshold_update)
+            self._pending_threshold_update = None
+            self._apply_threshold_update()
+        threshold = validate_mask_threshold(self.mask_threshold.get())
+        self.status.set(
+            f"Using tracked masks at threshold {threshold:+.2f}; choose a color and Recolor."
+        )
+        self._close_tracked_mask_preview()
+
     def _start_task(self, name: str, status: str, worker: Callable[[], object]) -> None:
         if self._busy:
             return
@@ -1106,25 +1261,26 @@ class TeamColorApp:
 
     def _handle_success(self, name: str, result: object) -> None:
         if name == "generate":
-            self.quick_frame0_mask = result.copy()
+            generated_mask, raw_logits = result
+            self.quick_frame0_mask = generated_mask.copy()
+            self.quick_frame0_logits = raw_logits
             self.raw_masks = None
+            self.sam_raw_logits = None
             self.masks = None
-            self._sync_quick_mask()
+            self._rebuild_quick_frame0_from_logits()
             self.status.set("Frame 0 mask ready. Review the overlay, then track across frames.")
             self._refresh_cleanup_info()
             self._redraw_prompt()
         elif name == "track":
-            self.raw_masks = [mask.copy() for mask in result]
-            if self.raw_masks and self._tracking_raw_frame0 is not None:
-                self.raw_masks[0] = self._tracking_raw_frame0.copy()
-            self._tracking_raw_frame0 = None
-            self.masks = self._derive_active_masks(self.raw_masks)
-            if self.masks:
-                self.frame0_mask = self.masks[0].copy()
+            self.sam_raw_logits = list(result)
+            self._rebuild_masks_from_logits()
             self._refresh_cleanup_info()
             self._redraw_prompt()
             self._refresh_mask_editor()
-            self.status.set(f"Tracking complete for {len(self.masks)} frames. Choose a color and Recolor.")
+            self._open_tracked_mask_preview()
+            self.status.set(
+                f"Tracking complete for {len(self.masks)} frames. Review tracked masks before Recolor."
+            )
         elif name == "recolor":
             self.recolored_frames, self.recolored_contact, self.recolor_target = result
             self.review_state.begin(self.recolored_frames, self.recolored_contact)
@@ -1154,6 +1310,7 @@ class TeamColorApp:
         self.track_button.configure(state="disabled" if disabled or self.frame0_mask is None else "normal")
         self.recolor_button.configure(state="disabled" if disabled or self.masks is None else "normal")
         self.cleanup_checkbox.configure(state="disabled" if disabled or not self.frames else "normal")
+        self.threshold_scale.configure(state="disabled" if disabled or not self.frames else "normal")
         self.open_mask_editor_button.configure(
             state="disabled"
             if disabled or not self.frames or self.selection_mode.get() != "area"
@@ -1187,9 +1344,14 @@ class TeamColorApp:
         self.sam_session = None
         self.session_checkpoint = None
         self.session_device_name = None
+        self.sam_raw_logits = None
+        self.raw_masks = None
+        self.masks = None
+        self.quick_frame0_logits = None
 
     def _on_close(self) -> None:
         self._discard_recolor_preview()
+        self._close_tracked_mask_preview()
         self._close_mask_editor()
         self._close_session()
         self.root.destroy()
@@ -1507,6 +1669,195 @@ class MaskEditorWindow:
         )
 
 
+class ZoomPanImageView:
+    """Shared nearest-neighbor zoom/pan canvas for review windows."""
+
+    def __init__(self, parent: tk.Misc, window: tk.Toplevel, image: Image.Image, zoom: int = 1) -> None:
+        self.window = window
+        self.image = image.copy()
+        self.zoom = clamp_zoom(zoom)
+        self.zoom_text = tk.StringVar(value=f"Zoom: {self.zoom}x")
+        self._photo: ImageTk.PhotoImage | None = None
+
+        self.frame = ttk.Frame(parent)
+        self.canvas = tk.Canvas(self.frame, background="#181818", highlightthickness=0)
+        vertical = ttk.Scrollbar(self.frame, orient="vertical", command=self.canvas.yview)
+        horizontal = ttk.Scrollbar(self.frame, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        self.frame.rowconfigure(0, weight=1)
+        self.frame.columnconfigure(0, weight=1)
+
+        self.canvas.bind("<Control-MouseWheel>", self._on_zoom_wheel)
+        self.canvas.bind("<MouseWheel>", self._on_vertical_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self._on_horizontal_wheel)
+        for sequence in ("<KeyPress-plus>", "<KeyPress-equal>", "<KeyPress-KP_Add>"):
+            self.window.bind(sequence, lambda _event: self._zoom_key(1))
+        for sequence in ("<KeyPress-minus>", "<KeyPress-KP_Subtract>"):
+            self.window.bind(sequence, lambda _event: self._zoom_key(-1))
+        self.window.bind("<Left>", lambda _event: self._arrow_pan(-1, 0))
+        self.window.bind("<Right>", lambda _event: self._arrow_pan(1, 0))
+        self.window.bind("<Up>", lambda _event: self._arrow_pan(0, -1))
+        self.window.bind("<Down>", lambda _event: self._arrow_pan(0, 1))
+        self.redraw()
+
+    def _view_size(self) -> tuple[int, int]:
+        return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
+
+    def _content_size(self) -> tuple[int, int]:
+        return self.image.width * self.zoom, self.image.height * self.zoom
+
+    def _set_scroll(self, offset: tuple[float, float]) -> None:
+        content = self._content_size()
+        self.canvas.xview_moveto(offset[0] / content[0] if content[0] else 0)
+        self.canvas.yview_moveto(offset[1] / content[1] if content[1] else 0)
+
+    def set_image(self, image: Image.Image) -> None:
+        scroll = (self.canvas.canvasx(0), self.canvas.canvasy(0))
+        self.image = image.copy()
+        self.redraw()
+        self._set_scroll(scroll)
+
+    def change_zoom(self, step: int, cursor: tuple[float, float] | None = None) -> None:
+        old_zoom = self.zoom
+        new_zoom = clamp_zoom(old_zoom + step, MIN_ZOOM, MAX_ZOOM)
+        if new_zoom == old_zoom:
+            return
+        viewport = self._view_size()
+        if cursor is None:
+            cursor = (viewport[0] / 2, viewport[1] / 2)
+        new_scroll = cursor_centered_zoom_offset(
+            cursor,
+            old_zoom,
+            new_zoom,
+            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+            viewport,
+            self.image.size,
+        )
+        self.zoom = new_zoom
+        self.zoom_text.set(f"Zoom: {new_zoom}x")
+        self.redraw()
+        self._set_scroll(new_scroll)
+
+    def _on_zoom_wheel(self, event: tk.Event) -> str:
+        self.change_zoom(1 if event.delta > 0 else -1, (event.x, event.y))
+        return "break"
+
+    def _zoom_key(self, step: int) -> str:
+        self.change_zoom(step)
+        return "break"
+
+    @staticmethod
+    def _wheel_units(delta: int) -> int:
+        amount = max(1, abs(delta) // 120)
+        return -amount if delta > 0 else amount
+
+    def _on_vertical_wheel(self, event: tk.Event) -> str:
+        self.canvas.yview_scroll(self._wheel_units(event.delta), "units")
+        return "break"
+
+    def _on_horizontal_wheel(self, event: tk.Event) -> str:
+        self.canvas.xview_scroll(self._wheel_units(event.delta), "units")
+        return "break"
+
+    def _arrow_pan(self, horizontal: int, vertical: int) -> str:
+        step = max(16, self.zoom * 4)
+        offset = pan_scroll_offset(
+            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
+            (horizontal * step, vertical * step),
+            self._content_size(),
+            self._view_size(),
+        )
+        self._set_scroll(offset)
+        return "break"
+
+    def redraw(self) -> None:
+        display = self.image.resize(self._content_size(), Image.Resampling.NEAREST)
+        self._photo = ImageTk.PhotoImage(display)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+        self.canvas.configure(scrollregion=(0, 0, display.width, display.height))
+
+
+class TrackedMaskPreviewWindow:
+    """Review active tracked masks while rethresholding retained SAM logits."""
+
+    def __init__(self, app: TeamColorApp) -> None:
+        self.app = app
+        self.window = tk.Toplevel(app.root)
+        self.window.title("Tracked Mask Preview")
+        width = min(max(1, app.screen_size[0] - 40), max(480, int(app.screen_size[0] * 0.8)))
+        height = min(max(1, app.screen_size[1] - 80), max(360, int(app.screen_size[1] * 0.8)))
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(560, width), min(360, height))
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        contact = app._tracked_mask_contact()
+        initial_zoom = max(1, min(2, (width - 50) // contact.width, (height - 210) // contact.height))
+
+        header = ttk.Frame(self.window, padding=8)
+        header.pack(fill="x")
+        ttk.Label(header, text="Tracked Mask Preview").pack(side="left")
+
+        controls = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+        controls.pack(fill="x")
+        ttk.Label(controls, text="Mask Threshold:").grid(row=0, column=0, sticky="w")
+        ttk.Scale(
+            controls,
+            from_=MIN_MASK_THRESHOLD,
+            to=MAX_MASK_THRESHOLD,
+            variable=app.mask_threshold,
+            command=app._schedule_threshold_update,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 6))
+        ttk.Label(controls, textvariable=app.mask_threshold_text, width=7).grid(row=0, column=2)
+        ttk.Label(controls, text="Lower = more inclusive").grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(
+            controls,
+            text="Fill enclosed holes",
+            variable=app.fill_enclosed_holes,
+            command=app._on_cleanup_toggle,
+        ).grid(row=1, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(controls, textvariable=app.tracked_mask_info).grid(row=1, column=2, sticky="e")
+        controls.columnconfigure(1, weight=1)
+
+        viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+        viewport.pack(fill="both", expand=True)
+        self.image_view = ZoomPanImageView(viewport, self.window, contact, initial_zoom)
+        self.image_view.frame.pack(fill="both", expand=True)
+        ttk.Button(header, text="Zoom +", command=lambda: self.image_view.change_zoom(1)).pack(side="right")
+        ttk.Button(header, text="Zoom -", command=lambda: self.image_view.change_zoom(-1)).pack(
+            side="right", padx=(6, 0)
+        )
+        ttk.Label(header, textvariable=self.image_view.zoom_text).pack(side="right", padx=(12, 0))
+
+        actions = ttk.Frame(self.window, padding=8)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Use These Masks", command=app._use_tracked_masks).pack(side="right")
+        ttk.Button(actions, text="Close", command=self.close).pack(side="right", padx=(0, 8))
+
+        app._refresh_tracked_mask_preview()
+        self.window.after(50, self.image_view.canvas.focus_set)
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def set_contact(self, contact: Image.Image) -> None:
+        self.image_view.set_image(contact)
+
+    def destroy(self) -> None:
+        if self.exists():
+            self.window.destroy()
+
+    def close(self) -> None:
+        self.app._tracked_mask_window_closed(self)
+        self.destroy()
+
+
 class RecolorReviewWindow:
     """Zoomable in-memory preview that exports only after explicit acceptance."""
 
@@ -1527,20 +1878,15 @@ class RecolorReviewWindow:
         self.strength_text = tk.StringVar()
         self.protection_text = tk.StringVar()
         self._update_setting_labels()
-        self.zoom = max(
+        initial_zoom = max(
             1,
             min(2, (width - 50) // self.contact.width, (height - 230) // self.contact.height),
         )
-        self.zoom_text = tk.StringVar(value=f"Zoom: {self.zoom}x")
-        self._photo: ImageTk.PhotoImage | None = None
 
         header = ttk.Frame(self.window, padding=8)
         header.pack(fill="x")
         ttk.Label(header, text="Recolor Preview").pack(side="left")
         ttk.Label(header, text="No files are written until Accept & Export.").pack(side="left", padx=(12, 0))
-        ttk.Button(header, text="Zoom +", command=lambda: self.change_zoom(1)).pack(side="right")
-        ttk.Button(header, text="Zoom -", command=lambda: self.change_zoom(-1)).pack(side="right", padx=(6, 0))
-        ttk.Label(header, textvariable=self.zoom_text).pack(side="right", padx=(12, 0))
 
         settings = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         settings.pack(fill="x")
@@ -1579,35 +1925,20 @@ class RecolorReviewWindow:
 
         viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         viewport.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(viewport, background="#181818", highlightthickness=0)
-        vertical = ttk.Scrollbar(viewport, orient="vertical", command=self.canvas.yview)
-        horizontal = ttk.Scrollbar(viewport, orient="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        vertical.grid(row=0, column=1, sticky="ns")
-        horizontal.grid(row=1, column=0, sticky="ew")
-        viewport.rowconfigure(0, weight=1)
-        viewport.columnconfigure(0, weight=1)
-
-        self.canvas.bind("<Control-MouseWheel>", self._on_zoom_wheel)
-        self.canvas.bind("<MouseWheel>", self._on_vertical_wheel)
-        self.canvas.bind("<Shift-MouseWheel>", self._on_horizontal_wheel)
-        for sequence in ("<KeyPress-plus>", "<KeyPress-equal>", "<KeyPress-KP_Add>"):
-            self.window.bind(sequence, lambda _event: self._zoom_key(1))
-        for sequence in ("<KeyPress-minus>", "<KeyPress-KP_Subtract>"):
-            self.window.bind(sequence, lambda _event: self._zoom_key(-1))
-        self.window.bind("<Left>", lambda _event: self._arrow_pan(-1, 0))
-        self.window.bind("<Right>", lambda _event: self._arrow_pan(1, 0))
-        self.window.bind("<Up>", lambda _event: self._arrow_pan(0, -1))
-        self.window.bind("<Down>", lambda _event: self._arrow_pan(0, 1))
+        self.image_view = ZoomPanImageView(viewport, self.window, self.contact, initial_zoom)
+        self.image_view.frame.pack(fill="both", expand=True)
+        ttk.Button(header, text="Zoom +", command=lambda: self.image_view.change_zoom(1)).pack(side="right")
+        ttk.Button(header, text="Zoom -", command=lambda: self.image_view.change_zoom(-1)).pack(
+            side="right", padx=(6, 0)
+        )
+        ttk.Label(header, textvariable=self.image_view.zoom_text).pack(side="right", padx=(12, 0))
 
         actions = ttk.Frame(self.window, padding=8)
         actions.pack(fill="x")
         ttk.Button(actions, text="Accept & Export...", command=self._accept_current_preview).pack(side="right")
         ttk.Button(actions, text="Reject", command=app._reject_recolor_preview).pack(side="right", padx=(0, 8))
 
-        self.redraw()
-        self.window.after(50, self.canvas.focus_set)
+        self.window.after(50, self.image_view.canvas.focus_set)
 
     def exists(self) -> bool:
         try:
@@ -1653,81 +1984,8 @@ class RecolorReviewWindow:
         self.app._accept_recolor_preview()
 
     def set_contact(self, contact: Image.Image) -> None:
-        scroll = (self.canvas.canvasx(0), self.canvas.canvasy(0))
         self.contact = contact.copy()
-        self.redraw()
-        self._set_scroll(scroll)
-
-    def _view_size(self) -> tuple[int, int]:
-        return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
-
-    def _content_size(self) -> tuple[int, int]:
-        return self.contact.width * self.zoom, self.contact.height * self.zoom
-
-    def _set_scroll(self, offset: tuple[float, float]) -> None:
-        content = self._content_size()
-        self.canvas.xview_moveto(offset[0] / content[0] if content[0] else 0)
-        self.canvas.yview_moveto(offset[1] / content[1] if content[1] else 0)
-
-    def change_zoom(self, step: int, cursor: tuple[float, float] | None = None) -> None:
-        old_zoom = self.zoom
-        new_zoom = clamp_zoom(old_zoom + step, MIN_ZOOM, MAX_ZOOM)
-        if new_zoom == old_zoom:
-            return
-        viewport = self._view_size()
-        if cursor is None:
-            cursor = (viewport[0] / 2, viewport[1] / 2)
-        new_scroll = cursor_centered_zoom_offset(
-            cursor,
-            old_zoom,
-            new_zoom,
-            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
-            viewport,
-            self.contact.size,
-        )
-        self.zoom = new_zoom
-        self.zoom_text.set(f"Zoom: {new_zoom}x")
-        self.redraw()
-        self._set_scroll(new_scroll)
-
-    def _on_zoom_wheel(self, event: tk.Event) -> str:
-        self.change_zoom(1 if event.delta > 0 else -1, (event.x, event.y))
-        return "break"
-
-    def _zoom_key(self, step: int) -> str:
-        self.change_zoom(step)
-        return "break"
-
-    @staticmethod
-    def _wheel_units(delta: int) -> int:
-        amount = max(1, abs(delta) // 120)
-        return -amount if delta > 0 else amount
-
-    def _on_vertical_wheel(self, event: tk.Event) -> str:
-        self.canvas.yview_scroll(self._wheel_units(event.delta), "units")
-        return "break"
-
-    def _on_horizontal_wheel(self, event: tk.Event) -> str:
-        self.canvas.xview_scroll(self._wheel_units(event.delta), "units")
-        return "break"
-
-    def _arrow_pan(self, horizontal: int, vertical: int) -> str:
-        step = max(16, self.zoom * 4)
-        offset = pan_scroll_offset(
-            (self.canvas.canvasx(0), self.canvas.canvasy(0)),
-            (horizontal * step, vertical * step),
-            self._content_size(),
-            self._view_size(),
-        )
-        self._set_scroll(offset)
-        return "break"
-
-    def redraw(self) -> None:
-        display = self.contact.resize(self._content_size(), Image.Resampling.NEAREST)
-        self._photo = ImageTk.PhotoImage(display)
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
-        self.canvas.configure(scrollregion=(0, 0, display.width, display.height))
+        self.image_view.set_image(contact)
 
 
 def main() -> int:

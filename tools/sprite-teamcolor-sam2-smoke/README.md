@@ -193,11 +193,14 @@ be visually checked on a local desktop.
    holes** enabled unless comparing the raw mask. There is no Generate Mask step
    for Select Area.
 9. Select the SAM 2.1 checkpoint, click **Track Across Frames**, and wait for
-   propagation to finish.
-10. Choose Red, Blue, Green, Yellow, or enter a custom color.
-11. Click **Recolor** and review the contact sheet in the resizable preview
+   propagation to finish. The **Tracked Mask Preview** opens automatically.
+10. Inspect all tracked overlays. If needed, adjust **SAM Mask Threshold** and
+    compare with **Fill enclosed holes** on or off, then choose **Use These
+    Masks**.
+11. Choose Red, Blue, Green, Yellow, or enter a custom color.
+12. Click **Recolor** and review the contact sheet in the resizable preview
     window.
-12. Click **Accept & Export...** to choose an output directory, or **Reject** to
+13. Click **Accept & Export...** to choose an output directory, or **Reject** to
     discard only the recolor candidate.
 
 **Select Area** is the recommended mode. Its binary selection mask is registered on
@@ -244,9 +247,43 @@ Cleanup is applied to the visible frame 0 result and to every tracked mask used
 by Recolor and Accept & Export. The raw Quick Select or tracked masks remain in
 memory, so clearing the checkbox immediately derives and displays their unfilled
 versions without retracking. Re-enabling it reapplies the idempotent hole fill.
-The main window reports **Mask pixels: before → after (+N filled)** to show the
-effect. This is intended for cases where SAM 2 captures a part's outline but
-leaves internal holes; turn it off to compare the untouched mask.
+The main window reports **Mask pixels: raw → active** and identifies whether
+alpha clipping plus hole fill or alpha clipping alone produced the active mask.
+This is intended for cases where SAM 2 captures a part's outline but leaves
+internal holes; turn cleanup off to compare the unfilled, alpha-clipped mask.
+
+### Tracked Mask Preview and diagnostic threshold
+
+After **Track Across Frames** completes, **Tracked Mask Preview** automatically
+shows the source frames with the current active masks as translucent overlays,
+labelled `frame_000` through the selected frame count. It reports the total mask
+pixel count and uses the same nearest-neighbor 1x–16x navigation as Recolor
+Preview: Ctrl+wheel or touchpad pinch and +/- for zoom, wheel/Shift+wheel and
+arrow keys for pan, plus horizontal and vertical scrollbars. **Use These Masks**
+confirms the visible choice; **Close** only closes the window and does not discard
+tracking data.
+
+**SAM Mask Threshold** is a diagnostic control from -2.0 through +2.0, in 0.05
+steps. Its default is **0.0**, which is pixel-for-pixel compatible with the
+previous fixed `mask_logits > 0` behavior. Lower values are more inclusive;
+higher values are more restrictive. The main window and Tracked Mask Preview
+share one value. After tracking, moving the slider thresholds the retained CPU
+raw logits, resizes with nearest-neighbor, clips to frame alpha, and reapplies
+optional enclosed-hole filling. It does **not** rerun SAM 2 inference or video
+propagation.
+
+For **Quick Select**, threshold changes also update the frame 0 point-prompt
+overlay. For **Select Area**, the explicit Freehand/Rectangle/Ellipse frame 0
+mask remains authoritative. For **Select All**, the frame 0 alpha-support mask
+remains authoritative. In both latter modes, the threshold applies to tracked
+frames 1 onward.
+
+For the current Melee shield diagnosis, start at 0.0 and try -0.1, -0.2, or
+-0.3 gradually while watching partially visible frames such as 2–4 and 12.
+Those are comparison candidates, not universal recommended values: a useful
+setting must recover target pixels without unacceptable body, weapon, or
+background spill. This manual control is for diagnosis; automatic threshold
+selection remains future work.
 
 ### Zoom and Mask Editor
 
