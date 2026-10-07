@@ -38,6 +38,10 @@ LOGIT_DIAGNOSTIC_THRESHOLDS = (
 )
 LOGIT_DIAGNOSTIC_PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
 CONTINUOUS_LOGIT_UNIQUE_MIN = 16
+PRE_GATE_PREVIEW_MIN_THRESHOLD = -20.0
+PRE_GATE_PREVIEW_MAX_THRESHOLD = 20.0
+PRE_GATE_PREVIEW_DEFAULT_THRESHOLD = 0.0
+PRE_GATE_DIAGNOSTIC_THRESHOLDS = (0.0, -5.0, -10.0, 5.0)
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,37 @@ class SamLogitDiagnostics:
     has_continuous_values: bool
     threshold_zero_compatible: bool
     monotonic_nonincreasing: bool
+
+
+@dataclass(frozen=True)
+class SamPreGateDecoderCapture:
+    decoder_call_index: int
+    low_res_multimasks: np.ndarray
+    ious: np.ndarray
+    object_score_logits: np.ndarray
+    best_mask_index: int
+    best_iou: float
+    object_score_logit: float
+    pre_gate_logits: np.ndarray
+
+
+@dataclass(frozen=True)
+class SamPreGateFrameDiagnostics:
+    frame_index: int
+    capture_status: str
+    captures: tuple[SamPreGateDecoderCapture, ...]
+    capture_errors: tuple[str, ...]
+    post_gate_is_no_obj: bool
+    post_gate_min: float
+    post_gate_max: float
+
+    @property
+    def decoder_call_count(self) -> int:
+        return len(self.captures) + len(self.capture_errors)
+
+    @property
+    def capture(self) -> SamPreGateDecoderCapture | None:
+        return self.captures[0] if self.capture_status == "captured" else None
 
 
 class PromptState:
@@ -653,6 +688,143 @@ def format_sam_logit_diagnostics(diagnostics: SamLogitDiagnostics) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+class SamPreGateHookCollector:
+    """Observe SAM mask-decoder returns without replacing or mutating them."""
+
+    def __init__(self, image_size: int) -> None:
+        if image_size <= 0:
+            raise ValueError("SAM image size must be positive")
+        self.image_size = int(image_size)
+        self._next_call_index = 0
+        self._captures: list[SamPreGateDecoderCapture] = []
+        self._errors: list[str] = []
+
+    def hook(self, _module: object, _inputs: object, output: object) -> None:
+        call_index = self._next_call_index
+        self._next_call_index += 1
+        try:
+            import torch
+            import torch.nn.functional as functional
+
+            if not isinstance(output, (tuple, list)) or len(output) < 4:
+                raise ValueError("SAM mask decoder output must contain four tensors")
+            low_res_source, iou_source, _sam_tokens, object_score_source = output[:4]
+            if not all(torch.is_tensor(value) for value in (low_res_source, iou_source, object_score_source)):
+                raise ValueError("SAM mask decoder diagnostics require tensor outputs")
+            low_res = low_res_source.detach().float().cpu().clone()
+            ious = iou_source.detach().float().cpu().clone()
+            object_scores = object_score_source.detach().float().cpu().clone()
+            if low_res.ndim != 4 or ious.ndim != 2:
+                raise ValueError(
+                    f"Unexpected decoder shapes: masks {tuple(low_res.shape)}, ious {tuple(ious.shape)}"
+                )
+            if low_res.shape[0] != 1 or ious.shape[0] != 1 or object_scores.shape[0] != 1:
+                raise ValueError("Pre-gate diagnostics currently require decoder batch size 1")
+            if low_res.shape[1] != ious.shape[1]:
+                raise ValueError("Mask candidate and IoU counts do not match")
+            best_index = 0 if low_res.shape[1] == 1 else int(torch.argmax(ious[0]).item())
+            best_low_res = low_res[0, best_index].unsqueeze(0).unsqueeze(0)
+            pre_gate = functional.interpolate(
+                best_low_res,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0]
+            self._captures.append(
+                SamPreGateDecoderCapture(
+                    decoder_call_index=call_index,
+                    low_res_multimasks=low_res.numpy().copy(),
+                    ious=ious.numpy().copy(),
+                    object_score_logits=object_scores.numpy().copy(),
+                    best_mask_index=best_index,
+                    best_iou=float(ious[0, best_index].item()),
+                    object_score_logit=float(object_scores.reshape(1, -1)[0, 0].item()),
+                    pre_gate_logits=pre_gate.numpy().astype(np.float32, copy=True),
+                )
+            )
+        except Exception as error:
+            self._errors.append(f"decoder call {call_index}: {error}")
+        return None
+
+    def drain(self) -> tuple[tuple[SamPreGateDecoderCapture, ...], tuple[str, ...]]:
+        captures = tuple(self._captures)
+        errors = tuple(self._errors)
+        self._captures.clear()
+        self._errors.clear()
+        return captures, errors
+
+    def clear(self) -> None:
+        self._captures.clear()
+        self._errors.clear()
+
+
+def map_pre_gate_frame_diagnostics(
+    frame_index: int,
+    captures: Sequence[SamPreGateDecoderCapture],
+    capture_errors: Sequence[str],
+    post_gate_logits: np.ndarray,
+) -> SamPreGateFrameDiagnostics:
+    """Associate captures observed since the previous predictor yield with one frame."""
+    capture_tuple = tuple(captures)
+    error_tuple = tuple(capture_errors)
+    call_count = len(capture_tuple) + len(error_tuple)
+    if call_count == 0:
+        status = "no_capture"
+    elif call_count == 1 and len(capture_tuple) == 1:
+        status = "captured"
+    elif call_count >= 2:
+        status = "ambiguous_multiple_decoder_calls"
+    else:
+        status = "capture_error"
+    post_gate = np.asarray(post_gate_logits)
+    return SamPreGateFrameDiagnostics(
+        frame_index=int(frame_index),
+        capture_status=status,
+        captures=capture_tuple,
+        capture_errors=error_tuple,
+        post_gate_is_no_obj=bool(post_gate.size and np.all(post_gate == -1024.0)),
+        post_gate_min=float(np.min(post_gate)),
+        post_gate_max=float(np.max(post_gate)),
+    )
+
+
+def propagate_sam2_logits_with_pre_gate(
+    predictor: object,
+    inference_state: object,
+) -> tuple[dict[int, np.ndarray], list[SamPreGateFrameDiagnostics]]:
+    """Run standard propagation while observing pre-gate decoder outputs."""
+    decoder = getattr(predictor, "sam_mask_decoder", None)
+    if decoder is None or not hasattr(decoder, "register_forward_hook"):
+        raise RuntimeError("SAM predictor does not expose a hookable sam_mask_decoder")
+    image_size = int(getattr(predictor, "image_size", 0))
+    collector = SamPreGateHookCollector(image_size)
+    handle = decoder.register_forward_hook(collector.hook)
+    propagated: dict[int, np.ndarray] = {}
+    diagnostics: list[SamPreGateFrameDiagnostics] = []
+    try:
+        from smoke import validate_sam2_logits
+
+        for frame_index, object_ids, mask_logits in predictor.propagate_in_video(inference_state):
+            captures, errors = collector.drain()
+            object_id_list = [int(object_id) for object_id in object_ids]
+            object_index = object_id_list.index(1)
+            post_gate = validate_sam2_logits(mask_logits[object_index])
+            normalized_frame_index = int(frame_index)
+            propagated[normalized_frame_index] = post_gate
+            diagnostics.append(
+                map_pre_gate_frame_diagnostics(
+                    normalized_frame_index,
+                    captures,
+                    errors,
+                    post_gate,
+                )
+            )
+    finally:
+        handle.remove()
+        collector.clear()
+    return propagated, diagnostics
+
+
 def make_mask_overlay(
     frame: Image.Image,
     mask: np.ndarray,
@@ -689,6 +861,141 @@ def make_selection_overlay(
     boundary = np.logical_and(selected, ~interior)
     output[boundary, :3] = np.asarray(outline, dtype=np.uint8)
     return Image.fromarray(output)
+
+
+def pre_gate_preview_mask(
+    diagnostics: SamPreGateFrameDiagnostics,
+    frame: Image.Image,
+    threshold: float = PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
+    fill_holes: bool = False,
+) -> np.ndarray | None:
+    """Derive a diagnostic-only mask without touching standard tracked masks."""
+    threshold = float(threshold)
+    if not PRE_GATE_PREVIEW_MIN_THRESHOLD <= threshold <= PRE_GATE_PREVIEW_MAX_THRESHOLD:
+        raise ValueError(
+            "Pre-gate preview threshold must be between "
+            f"{PRE_GATE_PREVIEW_MIN_THRESHOLD:g} and {PRE_GATE_PREVIEW_MAX_THRESHOLD:g}"
+        )
+    capture = diagnostics.capture
+    if capture is None:
+        return None
+    from smoke import threshold_sam2_logits
+
+    resized = threshold_sam2_logits(capture.pre_gate_logits, frame.size, threshold)
+    alpha_clipped = clip_mask_to_frame(resized, frame)
+    return apply_mask_cleanup(alpha_clipped, fill_holes)
+
+
+def make_pre_gate_contact_sheet(
+    frames: Sequence[Image.Image],
+    diagnostics: Sequence[SamPreGateFrameDiagnostics],
+    threshold: float = PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
+    fill_holes: bool = False,
+    columns: int = 5,
+) -> Image.Image:
+    if len(frames) != len(diagnostics):
+        raise ValueError("Frame and pre-gate diagnostic counts do not match")
+    overlays: list[Image.Image] = []
+    labels: list[str] = []
+    for frame, diagnostic in zip(frames, diagnostics, strict=True):
+        mask = pre_gate_preview_mask(diagnostic, frame, threshold, fill_holes)
+        if mask is not None:
+            overlay = make_mask_overlay(frame, mask, color=(255, 170, 0), opacity=0.6)
+        else:
+            overlay = frame.convert("RGBA").copy()
+            draw = ImageDraw.Draw(overlay)
+            message = (
+                "NO CAPTURE"
+                if diagnostic.capture_status == "no_capture"
+                else "AMBIGUOUS"
+                if diagnostic.capture_status == "ambiguous_multiple_decoder_calls"
+                else "CAPTURE ERROR"
+            )
+            draw.rectangle((0, 0, overlay.width - 1, 13), fill=(32, 32, 32, 220))
+            draw.text((2, 2), message, fill=(255, 220, 0, 255))
+        overlays.append(overlay)
+        labels.append(f"frame_{diagnostic.frame_index:03}")
+    return make_contact_sheet(overlays, labels, columns=columns)
+
+
+def format_pre_gate_diagnostics(
+    frames: Sequence[Image.Image],
+    diagnostics: Sequence[SamPreGateFrameDiagnostics],
+) -> str:
+    """Render captured pre-gate candidates and object scores as copyable text."""
+    if len(frames) != len(diagnostics):
+        raise ValueError("Frame and pre-gate diagnostic counts do not match")
+
+    def number(value: float) -> str:
+        return f"{value:.7g}"
+
+    from smoke import threshold_sam2_logits
+
+    lines = [
+        "SAM pre-gate mask candidate diagnostics",
+        "Observation only: standard post-gate masks, tracking, Recolor, and Export are unchanged.",
+        "Preview/count pipeline: threshold -> nearest resize -> alpha clip (Hole Fill excluded).",
+        "",
+    ]
+    absent_with_candidate: list[int] = []
+    for frame, diagnostic in zip(frames, diagnostics, strict=True):
+        lines.extend(
+            [
+                f"frame_{diagnostic.frame_index:03}",
+                f"  capture status: {diagnostic.capture_status}",
+                f"  decoder call count: {diagnostic.decoder_call_count}",
+                f"  post-gate NO_OBJ_SCORE: {'YES' if diagnostic.post_gate_is_no_obj else 'NO'}",
+                f"  post-gate min/max: {number(diagnostic.post_gate_min)} / {number(diagnostic.post_gate_max)}",
+            ]
+        )
+        if diagnostic.capture_errors:
+            for error in diagnostic.capture_errors:
+                lines.append(f"  capture error: {error}")
+        if not diagnostic.captures:
+            lines.append("  pre-gate candidate: unavailable / conditioning frame")
+            lines.append("")
+            continue
+        for capture_position, capture in enumerate(diagnostic.captures):
+            prefix = "  " if len(diagnostic.captures) == 1 else f"  capture {capture_position}: "
+            values = capture.pre_gate_logits
+            lines.extend(
+                [
+                    f"{prefix}decoder call index: {capture.decoder_call_index}",
+                    f"{prefix}object score logit: {number(capture.object_score_logit)}",
+                    f"{prefix}object absent gate: {'YES' if capture.object_score_logit <= 0 else 'NO'}",
+                    f"{prefix}best mask index: {capture.best_mask_index}",
+                    f"{prefix}best IoU estimate: {number(capture.best_iou)}",
+                    f"{prefix}pre-gate shape: {values.shape}",
+                    f"{prefix}min: {number(float(np.min(values)))}",
+                    f"{prefix}max: {number(float(np.max(values)))}",
+                    f"{prefix}mean: {number(float(np.mean(values)))}",
+                    f"{prefix}unique values: {int(np.unique(values).size)}",
+                ]
+            )
+            counts: dict[float, int] = {}
+            for threshold in PRE_GATE_DIAGNOSTIC_THRESHOLDS:
+                resized = threshold_sam2_logits(capture.pre_gate_logits, frame.size, threshold)
+                count = int(clip_mask_to_frame(resized, frame).sum())
+                counts[threshold] = count
+                lines.append(f"{prefix}threshold {threshold:+g}: {count} px")
+            if (
+                diagnostic.capture_status == "captured"
+                and capture.object_score_logit <= 0
+                and counts[0.0] > 0
+            ):
+                absent_with_candidate.append(diagnostic.frame_index)
+                lines.append(
+                    f"{prefix}summary: object absent gate with {counts[0.0]} pre-gate pixels at threshold 0"
+                )
+        lines.append("")
+    frame_list = ", ".join(f"frame_{index:03}" for index in absent_with_candidate) or "none"
+    lines.extend(
+        [
+            "Summary",
+            f"  object absent gate with non-empty threshold-0 pre-gate candidate: {frame_list}",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def recolor_frame_sequence(
@@ -818,6 +1125,7 @@ class Sam2GuiSession:
         self.sam_frame0_prediction: np.ndarray | None = None
         self.frame0_logits: np.ndarray | None = None
         self.raw_logits: list[np.ndarray] | None = None
+        self.pre_gate_diagnostics: list[SamPreGateFrameDiagnostics] | None = None
         self.masks: list[np.ndarray] | None = None
 
     def _ensure_ready(self, progress: ProgressCallback) -> None:
@@ -865,6 +1173,7 @@ class Sam2GuiSession:
         self.sam_frame0_prediction = raw_mask.copy()
         self.frame0_mask = clip_mask_to_frame(raw_mask, self.frames[0])
         self.raw_logits = None
+        self.pre_gate_diagnostics = None
         self.masks = None
         return self.frame0_mask.copy()
 
@@ -898,6 +1207,7 @@ class Sam2GuiSession:
         # for subsequent frames, while alpha clipping remains authoritative here.
         self.frame0_mask = clipped
         self.raw_logits = None
+        self.pre_gate_diagnostics = None
         self.masks = None
         return self.frame0_mask.copy()
 
@@ -908,14 +1218,18 @@ class Sam2GuiSession:
         """Run propagation once and retain owned CPU raw logits for every frame."""
         if self.frame0_mask is None or self.predictor is None or self.inference_state is None:
             raise RuntimeError("Generate and review the frame 0 mask before tracking")
-        from smoke import propagate_sam2_logits
-
         progress("Propagating mask across frames...")
-        propagated = propagate_sam2_logits(self.predictor, self.inference_state)
+        propagated, diagnostics = propagate_sam2_logits_with_pre_gate(
+            self.predictor,
+            self.inference_state,
+        )
         expected = list(range(len(self.frames)))
         if sorted(propagated) != expected:
             raise RuntimeError(f"Expected propagated frames {expected}, got {sorted(propagated)}")
+        if [diagnostic.frame_index for diagnostic in diagnostics] != expected:
+            raise RuntimeError("Pre-gate diagnostic frame mapping does not match propagated frames")
         self.raw_logits = [propagated[index].copy() for index in expected]
+        self.pre_gate_diagnostics = list(diagnostics)
         return list(self.raw_logits)
 
     def track_across_frames(
@@ -942,6 +1256,7 @@ class Sam2GuiSession:
         self.sam_frame0_prediction = None
         self.frame0_logits = None
         self.raw_logits = None
+        self.pre_gate_diagnostics = None
         self.frame0_mask = None
         self.masks = None
         shutil.rmtree(self.temp_dir, ignore_errors=True)

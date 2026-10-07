@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import torch
 
 from gui_controller import (
     DEFAULT_MASK_THRESHOLD,
@@ -37,6 +38,8 @@ class FakeTensor:
 class CountingPredictor:
     def __init__(self, logits: list[np.ndarray]) -> None:
         self.logits = logits
+        self.image_size = 2
+        self.sam_mask_decoder = torch.nn.Identity()
         self.point_calls = 0
         self.mask_calls = 0
         self.propagate_calls = 0

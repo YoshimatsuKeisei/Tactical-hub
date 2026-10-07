@@ -23,7 +23,11 @@ from gui_controller import (
     MAX_MASK_THRESHOLD,
     MIN_ZOOM,
     MIN_MASK_THRESHOLD,
+    PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
+    PRE_GATE_PREVIEW_MAX_THRESHOLD,
+    PRE_GATE_PREVIEW_MIN_THRESHOLD,
     RecolorPreviewState,
+    SamPreGateFrameDiagnostics,
     TEAM_COLOR_NAMES,
     PromptState,
     Sam2GuiSession,
@@ -39,8 +43,10 @@ from gui_controller import (
     extract_row_frames,
     frame_output_names,
     format_sam_logit_diagnostics,
+    format_pre_gate_diagnostics,
     load_sprite_png,
     make_mask_overlay,
+    make_pre_gate_contact_sheet,
     make_selection_overlay,
     pan_scroll_offset,
     parse_team_color,
@@ -110,6 +116,7 @@ class TeamColorApp:
         self.masks: list[np.ndarray] | None = None
         self.raw_masks: list[np.ndarray] | None = None
         self.sam_raw_logits: list[np.ndarray] | None = None
+        self.pre_gate_diagnostics: list[SamPreGateFrameDiagnostics] | None = None
         self.quick_frame0_logits: np.ndarray | None = None
         self.recolored_frames: list[Image.Image] = []
         self.recolored_contact: Image.Image | None = None
@@ -130,6 +137,7 @@ class TeamColorApp:
         self.review_window: RecolorReviewWindow | None = None
         self.tracked_mask_window: TrackedMaskPreviewWindow | None = None
         self.logit_diagnostics_window: LogitDiagnosticsWindow | None = None
+        self.pre_gate_diagnostics_window: PreGateDiagnosticsWindow | None = None
         self._pending_threshold_update: str | None = None
         self._busy = False
         self._events: queue.Queue[tuple] = queue.Queue()
@@ -433,6 +441,7 @@ class TeamColorApp:
         self._discard_recolor_preview()
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
+        self._clear_pre_gate_diagnostics()
         self._close_session()
         self.sprite = sprite
         self.layout = layout
@@ -463,6 +472,7 @@ class TeamColorApp:
         self.masks = None
         self.raw_masks = None
         self.sam_raw_logits = None
+        self.pre_gate_diagnostics = None
         self.quick_frame0_logits = None
         self.recolored_frames = []
         self.recolored_contact = None
@@ -694,6 +704,7 @@ class TeamColorApp:
         self.masks = None
         self.raw_masks = None
         self.sam_raw_logits = None
+        self._clear_pre_gate_diagnostics()
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._discard_recolor_preview()
@@ -877,6 +888,7 @@ class TeamColorApp:
         self.masks = None
         self.raw_masks = None
         self.sam_raw_logits = None
+        self._clear_pre_gate_diagnostics()
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._discard_recolor_preview()
@@ -950,6 +962,7 @@ class TeamColorApp:
         self.masks = None
         self.raw_masks = None
         self.sam_raw_logits = None
+        self._clear_pre_gate_diagnostics()
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._discard_recolor_preview()
@@ -1030,6 +1043,7 @@ class TeamColorApp:
             return
         self._discard_recolor_preview()
         self._close_logit_diagnostics()
+        self._clear_pre_gate_diagnostics()
         if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
             device_name = self.device.get()
@@ -1243,6 +1257,31 @@ class TeamColorApp:
         if self.logit_diagnostics_window is diagnostics:
             self.logit_diagnostics_window = None
 
+    def _open_pre_gate_diagnostics(self) -> None:
+        if self.pre_gate_diagnostics is None or not self.frames:
+            messagebox.showerror(
+                "Diagnostics unavailable",
+                "Track masks before opening pre-gate diagnostics.",
+            )
+            return
+        self._close_pre_gate_diagnostics()
+        self.pre_gate_diagnostics_window = PreGateDiagnosticsWindow(self)
+        self.status.set("Pre-gate diagnostics ready. Standard tracked masks are unchanged.")
+
+    def _close_pre_gate_diagnostics(self) -> None:
+        if self.pre_gate_diagnostics_window is not None:
+            diagnostics = self.pre_gate_diagnostics_window
+            self.pre_gate_diagnostics_window = None
+            diagnostics.destroy()
+
+    def _clear_pre_gate_diagnostics(self) -> None:
+        self._close_pre_gate_diagnostics()
+        self.pre_gate_diagnostics = None
+
+    def _pre_gate_diagnostics_window_closed(self, diagnostics: "PreGateDiagnosticsWindow") -> None:
+        if self.pre_gate_diagnostics_window is diagnostics:
+            self.pre_gate_diagnostics_window = None
+
     def _tracked_mask_window_closed(self, preview: "TrackedMaskPreviewWindow") -> None:
         if self.tracked_mask_window is preview:
             self.tracked_mask_window = None
@@ -1307,6 +1346,7 @@ class TeamColorApp:
             self.quick_frame0_logits = raw_logits
             self.raw_masks = None
             self.sam_raw_logits = None
+            self.pre_gate_diagnostics = None
             self.masks = None
             self._rebuild_quick_frame0_from_logits()
             self.status.set("Frame 0 mask ready. Review the overlay, then track across frames.")
@@ -1314,6 +1354,7 @@ class TeamColorApp:
             self._redraw_prompt()
         elif name == "track":
             self.sam_raw_logits = list(result)
+            self.pre_gate_diagnostics = list(self.sam_session.pre_gate_diagnostics or ())
             self._rebuild_masks_from_logits()
             self._refresh_cleanup_info()
             self._redraw_prompt()
@@ -1386,6 +1427,7 @@ class TeamColorApp:
         self.session_checkpoint = None
         self.session_device_name = None
         self.sam_raw_logits = None
+        self.pre_gate_diagnostics = None
         self.raw_masks = None
         self.masks = None
         self.quick_frame0_logits = None
@@ -1394,6 +1436,7 @@ class TeamColorApp:
         self._discard_recolor_preview()
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
+        self._close_pre_gate_diagnostics()
         self._close_mask_editor()
         self._close_session()
         self.root.destroy()
@@ -1847,6 +1890,11 @@ class TrackedMaskPreviewWindow:
             text="Logit Diagnostics...",
             command=app._open_logit_diagnostics,
         ).pack(side="left", padx=(12, 0))
+        ttk.Button(
+            header,
+            text="Pre-Gate Diagnostics...",
+            command=app._open_pre_gate_diagnostics,
+        ).pack(side="left", padx=(8, 0))
 
         controls = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         controls.pack(fill="x")
@@ -1957,6 +2005,126 @@ class LogitDiagnosticsWindow:
 
     def close(self) -> None:
         self.app._logit_diagnostics_window_closed(self)
+        self.destroy()
+
+
+class PreGateDiagnosticsWindow:
+    """Diagnostic-only pre-object-gate candidate overlay and text report."""
+
+    def __init__(self, app: TeamColorApp) -> None:
+        if app.pre_gate_diagnostics is None:
+            raise RuntimeError("No pre-gate diagnostics are available")
+        self.app = app
+        self.diagnostics = tuple(app.pre_gate_diagnostics)
+        self.threshold = tk.DoubleVar(value=PRE_GATE_PREVIEW_DEFAULT_THRESHOLD)
+        self.threshold_text = tk.StringVar(value=f"{PRE_GATE_PREVIEW_DEFAULT_THRESHOLD:+.1f}")
+        self.fill_holes = tk.BooleanVar(value=False)
+        self._pending_update: str | None = None
+        self.report = format_pre_gate_diagnostics(app.frames, self.diagnostics)
+        contact = make_pre_gate_contact_sheet(app.frames, self.diagnostics, columns=5)
+
+        self.window = tk.Toplevel(app.root)
+        self.window.title("SAM Pre-Gate Diagnostics")
+        width = min(max(1, app.screen_size[0] - 60), max(640, int(app.screen_size[0] * 0.85)))
+        height = min(max(1, app.screen_size[1] - 100), max(480, int(app.screen_size[1] * 0.85)))
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(640, width), min(480, height))
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        header = ttk.Frame(self.window, padding=8)
+        header.pack(fill="x")
+        ttk.Label(header, text="Pre-Gate Diagnostics").pack(side="left")
+        ttk.Label(
+            header,
+            text="Observation only — standard masks and Recolor are unchanged.",
+        ).pack(side="left", padx=(12, 0))
+        ttk.Button(header, text="Copy All", command=self.copy_all).pack(side="right")
+        ttk.Button(header, text="Close", command=self.close).pack(side="right", padx=(0, 8))
+
+        controls = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+        controls.pack(fill="x")
+        ttk.Label(controls, text="Pre-Gate Preview Threshold:").grid(row=0, column=0, sticky="w")
+        ttk.Scale(
+            controls,
+            from_=PRE_GATE_PREVIEW_MIN_THRESHOLD,
+            to=PRE_GATE_PREVIEW_MAX_THRESHOLD,
+            variable=self.threshold,
+            command=self._schedule_update,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 6))
+        ttk.Label(controls, textvariable=self.threshold_text, width=7).grid(row=0, column=2)
+        ttk.Checkbutton(
+            controls,
+            text="Apply hole fill for diagnostic view",
+            variable=self.fill_holes,
+            command=self._update_contact,
+        ).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        controls.columnconfigure(1, weight=1)
+
+        image_viewport = ttk.Frame(self.window, padding=(8, 0, 8, 4))
+        image_viewport.pack(fill="both", expand=True)
+        self.image_view = ZoomPanImageView(image_viewport, self.window, contact, zoom=1)
+        self.image_view.frame.pack(fill="both", expand=True)
+
+        text_viewport = ttk.LabelFrame(self.window, text="Text diagnostics", padding=(8, 4))
+        text_viewport.pack(fill="both", padx=8, pady=(0, 8))
+        self.text = tk.Text(text_viewport, height=12, wrap="none", font="TkFixedFont")
+        text_vertical = ttk.Scrollbar(text_viewport, orient="vertical", command=self.text.yview)
+        text_horizontal = ttk.Scrollbar(text_viewport, orient="horizontal", command=self.text.xview)
+        self.text.configure(yscrollcommand=text_vertical.set, xscrollcommand=text_horizontal.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        text_vertical.grid(row=0, column=1, sticky="ns")
+        text_horizontal.grid(row=1, column=0, sticky="ew")
+        text_viewport.rowconfigure(0, weight=1)
+        text_viewport.columnconfigure(0, weight=1)
+        self.text.insert("1.0", self.report)
+        self.text.configure(state="disabled")
+        self.window.after(50, self.image_view.canvas.focus_set)
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _schedule_update(self, value: str) -> None:
+        rounded = max(
+            PRE_GATE_PREVIEW_MIN_THRESHOLD,
+            min(PRE_GATE_PREVIEW_MAX_THRESHOLD, round(float(value) * 2.0) / 2.0),
+        )
+        self.threshold.set(rounded)
+        self.threshold_text.set(f"{rounded:+.1f}")
+        if self._pending_update is not None:
+            self.window.after_cancel(self._pending_update)
+        self._pending_update = self.window.after(75, self._update_contact)
+
+    def _update_contact(self) -> None:
+        self._pending_update = None
+        contact = make_pre_gate_contact_sheet(
+            self.app.frames,
+            self.diagnostics,
+            threshold=self.threshold.get(),
+            fill_holes=self.fill_holes.get(),
+            columns=5,
+        )
+        self.image_view.set_image(contact)
+        self.app.status.set(
+            f"Pre-gate diagnostic preview updated at {self.threshold.get():+.1f}; standard masks unchanged."
+        )
+
+    def copy_all(self) -> None:
+        self.window.clipboard_clear()
+        self.window.clipboard_append(self.report)
+        self.app.status.set("Pre-gate diagnostics copied to the clipboard.")
+
+    def destroy(self) -> None:
+        if self._pending_update is not None and self.exists():
+            self.window.after_cancel(self._pending_update)
+            self._pending_update = None
+        if self.exists():
+            self.window.destroy()
+
+    def close(self) -> None:
+        self.app._pre_gate_diagnostics_window_closed(self)
         self.destroy()
 
 

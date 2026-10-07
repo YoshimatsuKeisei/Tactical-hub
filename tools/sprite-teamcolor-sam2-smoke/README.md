@@ -304,6 +304,35 @@ excluded**. Use **Copy All** to place the complete report on the clipboard for
 comparison. The GUI slider remains -2.0 through +2.0 until real-data diagnostics
 justify a different fixed or adaptive range.
 
+### Pre-Gate Diagnostics
+
+**Pre-Gate Diagnostics...** is a development-only view for frames where SAM 2.1
+may replace its mask with `NO_OBJ_SCORE` after deciding that the object is
+absent. During the normal `propagate_in_video` call, the tool temporarily adds an
+observation-only PyTorch forward hook to `predictor.sam_mask_decoder`. The hook
+copies the decoder's low-resolution mask candidates, IoU estimates, and object
+score logit before the object-presence gate, and is always removed when
+propagation finishes or raises an exception. The official SAM 2 source, config,
+checkpoint, decoder output, and standard post-gate tracking result are not
+modified.
+
+After tracking, open **Pre-Gate Diagnostics...** separately from **Logit
+Diagnostics...**. It shows a 5-column contact sheet with orange overlays for
+unambiguous pre-gate candidates and a copyable text report. Conditioning frames
+without a decoder call are labelled `NO CAPTURE`; multiple decoder calls between
+predictor yields are labelled `AMBIGUOUS` and are not guessed into one overlay.
+The report includes decoder call count, object score logit, object-absent gate
+status, best IoU candidate, candidate statistics, post-gate `NO_OBJ_SCORE`
+status, and pixel counts at 0, -5, -10, and +5.
+
+**Pre-Gate Preview Threshold** ranges from -20 through +20 in 0.5 steps and
+defaults to 0. It only re-renders retained CPU diagnostic data using threshold,
+nearest-neighbor resize, and frame-alpha clipping. The optional diagnostic hole
+fill starts off. Neither control reruns SAM 2 or changes the standard masks.
+Pre-gate candidates are never passed to Recolor or Export and are not used as an
+automatic fallback. This diagnostic exists only to decide whether a future
+fallback is technically justified after Windows visual review.
+
 ### Zoom and Mask Editor
 
 The main frame-0 canvas supports integer zoom from 1x through 16x while retaining
