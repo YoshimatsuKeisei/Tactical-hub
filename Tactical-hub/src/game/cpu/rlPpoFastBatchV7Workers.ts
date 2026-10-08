@@ -456,8 +456,9 @@ export async function runPpoFastBatchV7WorkersSmoke(
     let replayedSamples = 0;
     const replayStarted = performance.now();
 
-    const validationRollouts: PpoReplayValidationRollout[] = (
-      learnableRollouts.map((rollout) => ({
+    const validationRollouts: PpoReplayValidationRollout[] = skipValidation
+      ? []
+      : learnableRollouts.map((rollout) => ({
         seed: rollout.seed,
         terminal: rollout.terminal,
         endReason: rollout.endReason,
@@ -472,8 +473,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
           selectedActionIndex: step.selectedActionIndex,
           selectedActionKey: step.selectedActionKey,
         })),
-      }))
-    );
+      }));
 
     const parallelValidationPromise = !skipValidation && validationWorkerCount > 0
       ? validatePpoRolloutsParallel({
