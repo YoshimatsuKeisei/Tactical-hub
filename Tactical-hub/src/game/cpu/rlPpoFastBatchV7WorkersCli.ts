@@ -75,6 +75,8 @@ const result = await runPpoFastBatchV7WorkersSmoke({
       ? positiveInteger("--validation-workers", 2)
       : 0,
 
+  skipValidation: args.includes("--skip-validation"),
+
   battleAdvantageShapingBeta:
     parseBattleAdvantageShapingBeta(args),
   shapingDiagnostics:
