@@ -74,6 +74,7 @@ const checkpoint = required("--checkpoint");
 const expectedSha = required("--sha256").toLowerCase();
 const outputPath = value("--output");
 const resumePath = value("--resume");
+const legacyProductionOnly = args.includes("--legacy-production-only");
 const actualSha = await sha256(checkpoint);
 if (actualSha !== expectedSha) {
   throw new Error(`checkpoint SHA mismatch expected=${expectedSha} actual=${actualSha}`);
@@ -85,6 +86,16 @@ const maxTurns = integer("--max-turns", 1000, 1);
 const maxDecisions = integer("--max-decisions", 100000, 1);
 const device = parseRlTorchDevice(value("--device") ?? "auto");
 const teamIds = ["team-1", "team-2", "team-3", "team-4"] as const;
+const LEGACY_UNIT_TYPES = new Set(["infantry", "cavalry", "archer"]);
+const filterPpoLegalActions = <T extends { actionType: string; unitType?: string }>(actions: readonly T[]): readonly T[] => {
+  if (!legacyProductionOnly) return actions;
+  return actions.filter((action) => {
+    if ((action.actionType === "production" || action.actionType === "reward") && action.unitType) {
+      return LEGACY_UNIT_TYPES.has(action.unitType);
+    }
+    return true;
+  });
+};
 
 type MatchStatus = "victory" | "limit_reached";
 type MatchResult = {
@@ -126,6 +137,7 @@ type PersistedResult = {
     maxTurns: number;
     maxDecisions: number;
     limitHandling: string;
+    productionMode: "all_units" | "legacy_three_only";
   };
   progress: {
     completedMatches: number;
@@ -195,6 +207,7 @@ function buildResult(matches: MatchResult[]): PersistedResult {
       maxTurns,
       maxDecisions,
       limitHandling: "continue; limit-reached counts as non-win in the primary conservative win-rate test",
+      productionMode: legacyProductionOnly ? "legacy_three_only" : "all_units",
     },
     progress: {
       completedMatches: matches.length,
@@ -226,6 +239,7 @@ if (resumePath && existsSync(resumePath)) {
     || resumed.design?.seedCount !== seedCount
     || resumed.design?.maxTurns !== maxTurns
     || resumed.design?.maxDecisions !== maxDecisions
+    || resumed.design?.productionMode !== (legacyProductionOnly ? "legacy_three_only" : "all_units")
   ) {
     throw new Error("resume file evaluation design mismatch");
   }
@@ -273,9 +287,9 @@ for (let seedOffset = 0; seedOffset < seedCount; seedOffset += 1) {
 
       const before = environment.getProgressHash();
       if (actorTeamId === ppoTeamId) {
-        const legalActions = environment.getLegalActionsForEncoding(actorTeamId);
+        const legalActions = filterPpoLegalActions(environment.getLegalActionsForEncoding(actorTeamId));
         if (!legalActions.length) {
-          throw new Error(`mixed evaluation has no legal PPO actions for ${actorTeamId}`);
+          throw new Error(`mixed evaluation has no legal PPO actions for ${actorTeamId} productionMode=${legacyProductionOnly ? "legacy_three_only" : "all_units"}`);
         }
         const selected = await client.act(
           encodeRlObservationV2(observation, encoderCache),
