@@ -71,6 +71,7 @@ export type PpoFastBatchV7WorkersInput = {
   replayChunkSize?: number;
   memoryLogInterval?: number;
   validationWorkerCount?: number;
+  skipValidation?: boolean;
   rolloutWorkerCount?: number;
   client?: PythonPpoClient;
 };
@@ -145,6 +146,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
   const replayChunkSize = input.replayChunkSize ?? 32;
   const memoryLogInterval = input.memoryLogInterval ?? 5_000;
   const validationWorkerCount = input.validationWorkerCount ?? 0;
+  const skipValidation = input.skipValidation ?? false;
   const rolloutWorkerCount = input.rolloutWorkerCount ?? 4;
 
   for (const [name, value] of [
@@ -473,7 +475,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       }))
     );
 
-    const parallelValidationPromise = validationWorkerCount > 0
+    const parallelValidationPromise = !skipValidation && validationWorkerCount > 0
       ? validatePpoRolloutsParallel({
           rollouts: validationRollouts,
           workerCount: validationWorkerCount,
@@ -486,7 +488,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
         )
       : undefined;
 
-    if (!parallelValidationPromise) {
+    if (!skipValidation && !parallelValidationPromise) {
       for (const rollout of validationRollouts) {
         validatedSamples += await validatePpoTrajectoryReplay({
           rollout,
@@ -586,12 +588,13 @@ export async function runPpoFastBatchV7WorkersSmoke(
     replayMs = performance.now() - replayStarted;
 
     if (
-      validatedSamples !== totalSamples
+      (!skipValidation && validatedSamples !== totalSamples)
       || replayedSamples !== totalSamples
     ) {
       throw new Error(
-        `PPO fast batch replay mismatch validated=${validatedSamples} `
-        + `replayed=${replayedSamples} total=${totalSamples}`,
+        `PPO fast batch replay mismatch validationSkipped=${skipValidation} `
+        + `validated=${validatedSamples} replayed=${replayedSamples} `
+        + `total=${totalSamples}`,
       );
     }
 
@@ -637,6 +640,8 @@ export async function runPpoFastBatchV7WorkersSmoke(
       drawEpisodeCount,
       truncatedEpisodeCount,
       replayedSamples,
+      validatedSamples,
+      validationSkipped: skipValidation,
       validationWorkerCount,
       rolloutWorkerCount,
     };
@@ -695,6 +700,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       truncatedEpisodeCount,
       replayedSamples,
       validatedSamples,
+      validationSkipped: skipValidation,
       validationWorkerCount,
       rolloutWorkerCount,
       parallelValidation,
