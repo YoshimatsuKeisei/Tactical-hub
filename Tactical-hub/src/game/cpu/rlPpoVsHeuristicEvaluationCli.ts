@@ -78,7 +78,7 @@ if (actualSha !== expectedSha) {
 }
 
 const seedStart = integer("--seed-start", 1000, 0);
-const seedCount = integer("--seed-count", 25, 1);
+const seedCount = integer("--seed-count", 100, 1);
 const maxTurns = integer("--max-turns", 1000, 1);
 const maxDecisions = integer("--max-decisions", 50000, 1);
 const device = parseRlTorchDevice(value("--device") ?? "auto");
@@ -108,9 +108,9 @@ const matches: MatchResult[] = [];
 
 for (let seedOffset = 0; seedOffset < seedCount; seedOffset += 1) {
   const seed = seedStart + seedOffset;
-  for (let rotationIndex = 0; rotationIndex < teamIds.length; rotationIndex += 1) {
-    const ppoTeamId = teamIds[rotationIndex];
-    const environment = new RlEnvironmentV2();
+  const rotationIndex = seedOffset % teamIds.length;
+  const ppoTeamId = teamIds[rotationIndex];
+  const environment = new RlEnvironmentV2();
     const firstObservation = environment.reset(seed, 4);
     const featureSpec = createRlFeatureSpecV2(firstObservation);
     const client = new PythonPpoClient({ device });
@@ -193,12 +193,11 @@ for (let seedOffset = 0; seedOffset < seedCount; seedOffset += 1) {
         },
       });
       process.stderr.write(
-        `[ppo-vs-heuristic] completed ${matches.length}/${seedCount * 4} seed=${seed} seat=${ppoTeamId} win=${result.winnerTeamId === ppoTeamId} turn=${turnDiagnostics.finalStateTurnNumber}\n`,
+        `[ppo-vs-heuristic] completed ${matches.length}/${seedCount} seed=${seed} seat=${ppoTeamId} win=${result.winnerTeamId === ppoTeamId} turn=${turnDiagnostics.finalStateTurnNumber}\n`,
       );
     } finally {
       await client.close();
     }
-  }
 }
 
 const winCount = matches.filter((match) => match.ppoWon).length;
@@ -223,7 +222,8 @@ process.stdout.write(JSON.stringify({
   design: {
     seedStart,
     seedCount,
-    seatRotationsPerSeed: 4,
+    seatAssignment: "balanced_cycle_team1_team2_team3_team4",
+    independentSeedPerMatch: true,
     matchCount,
     ppoSeatsPerMatch: 1,
     heuristicSeatsPerMatch: 3,
