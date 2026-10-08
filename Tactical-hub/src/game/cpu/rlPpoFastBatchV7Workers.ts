@@ -660,6 +660,131 @@ export async function runPpoFastBatchV7WorkersSmoke(
       )
       : undefined;
 
+    const productionUnitTypes = [
+      "infantry",
+      "cavalry",
+      "archer",
+      "engineer",
+      "ninja",
+      "strategist",
+    ] as const;
+    const strategistRoles = [
+      "encourage",
+      "builder",
+      "teleporter",
+    ] as const;
+    const productionCounts = Object.fromEntries(
+      productionUnitTypes.map((unitType) => [unitType, 0]),
+    ) as Record<(typeof productionUnitTypes)[number], number>;
+    const strategistRoleCounts = Object.fromEntries(
+      strategistRoles.map((role) => [role, 0]),
+    ) as Record<(typeof strategistRoles)[number], number>;
+    let productionSelectionCount = 0;
+    let productionPassCount = 0;
+    let mergeInfantrySelectedCount = 0;
+    const perMatchBalance = Array.from(
+      { length: environmentCount },
+      (_, environmentIndex) => {
+        const summary = summaryByEnvironment.get(environmentIndex)!;
+        const rollout = rolloutByEnvironment.get(environmentIndex);
+        const matchProductionCounts = Object.fromEntries(
+          productionUnitTypes.map((unitType) => [unitType, 0]),
+        ) as Record<(typeof productionUnitTypes)[number], number>;
+        const matchStrategistRoleCounts = Object.fromEntries(
+          strategistRoles.map((role) => [role, 0]),
+        ) as Record<(typeof strategistRoles)[number], number>;
+        let matchProductionSelections = 0;
+        let matchProductionPasses = 0;
+        let matchMergeInfantrySelected = 0;
+        for (const step of rollout?.trajectory ?? []) {
+          const key = step.selectedActionKey;
+          if (key.startsWith("production:")) {
+            if (key.endsWith(":pass")) {
+              productionPassCount += 1;
+              matchProductionPasses += 1;
+              continue;
+            }
+            const unitType = productionUnitTypes.find((candidate) =>
+              key.includes(`:${candidate}:`) || key.endsWith(`:${candidate}`),
+            );
+            if (unitType) {
+              productionCounts[unitType] += 1;
+              matchProductionCounts[unitType] += 1;
+              productionSelectionCount += 1;
+              matchProductionSelections += 1;
+              if (unitType === "strategist") {
+                const role = strategistRoles.find((candidate) =>
+                  key.endsWith(`:${candidate}`),
+                );
+                if (role) {
+                  strategistRoleCounts[role] += 1;
+                  matchStrategistRoleCounts[role] += 1;
+                }
+              }
+            }
+          } else if (key.startsWith("merge_infantry:")) {
+            mergeInfantrySelectedCount += 1;
+            matchMergeInfantrySelected += 1;
+          }
+        }
+        return {
+          environmentIndex,
+          seed: summary.seed,
+          outcomeKind: summary.outcomeKind,
+          winnerTeamId: summary.environmentResult.winnerTeamId,
+          decisionCount: summary.decisionCount,
+          finalTurnNumber: summary.turnDiagnostics.finalStateTurnNumber,
+          productionSelectionCount: matchProductionSelections,
+          productionPassCount: matchProductionPasses,
+          productionCounts: matchProductionCounts,
+          strategistRoleCounts: matchStrategistRoleCounts,
+          mergeInfantrySelectedCount: matchMergeInfantrySelected,
+        };
+      },
+    );
+    const balanceAnalysis = {
+      productionSelectionCount,
+      productionPassCount,
+      productionCounts,
+      productionShares: Object.fromEntries(
+        productionUnitTypes.map((unitType) => [
+          unitType,
+          productionSelectionCount
+            ? productionCounts[unitType] / productionSelectionCount
+            : 0,
+        ]),
+      ),
+      specialProductionCount:
+        productionCounts.engineer
+        + productionCounts.ninja
+        + productionCounts.strategist,
+      specialProductionShare: productionSelectionCount
+        ? (
+            productionCounts.engineer
+            + productionCounts.ninja
+            + productionCounts.strategist
+          ) / productionSelectionCount
+        : 0,
+      strategistRoleCounts,
+      strategistRoleShares: Object.fromEntries(
+        strategistRoles.map((role) => [
+          role,
+          productionCounts.strategist
+            ? strategistRoleCounts[role] / productionCounts.strategist
+            : 0,
+        ]),
+      ),
+      mergeInfantry: {
+        legalActionCount: mergeLegalActionCount,
+        selectedCount: mergeInfantrySelectedCount,
+        selectedPerLegalAction: mergeLegalActionCount
+          ? mergeInfantrySelectedCount / mergeLegalActionCount
+          : 0,
+      },
+      finalTurns: perMatchBalance.map((match) => match.finalTurnNumber),
+      perMatch: perMatchBalance,
+    };
+
     const finalRetentionStats = await client.retentionStats();
     const diagnostics = await client.diagnostics();
     const totalMs = performance.now() - started;
@@ -711,6 +836,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
         cpuTotals: rolloutWorkerCpuTiming,
       },
       mergeLegalActionCount,
+      balanceAnalysis,
       update,
       saved,
       bestSaved,
