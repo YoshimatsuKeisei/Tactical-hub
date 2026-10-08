@@ -790,7 +790,8 @@ def main():
                         )
                         retention_totals[
                             "currentRetainedBytes"
-                        ] -= len(record["compressed"])
+                        ] -= retained_payload_size(record)
+                        cleanup_retention_record(record)
                 response = {
                     "type": "updateChunkAccepted",
                     "requestId": message["requestId"],
@@ -830,7 +831,17 @@ def main():
                 for record in records:
                     if record["batchSize"] != 1:
                         raise ValueError("PPO retained act record must have batchSize=1")
-                    raw = bytearray(zlib.decompress(record["compressed"], wbits=-zlib.MAX_WBITS))
+                    stored_payload = load_retention_payload(record)
+                    raw = (
+                        bytearray(stored_payload)
+                        if record.get("storageMode") == "raw"
+                        else bytearray(
+                            zlib.decompress(
+                                stored_payload,
+                                wbits=-zlib.MAX_WBITS,
+                            )
+                        )
+                    )
                     if len(raw) != record["rawByteLength"] or hashlib.sha256(raw).hexdigest() != record["rawSha256"]:
                         raise ValueError("PPO retained payload integrity mismatch")
                     decoded_records.append(decode_packed_views(record["header"], raw))
