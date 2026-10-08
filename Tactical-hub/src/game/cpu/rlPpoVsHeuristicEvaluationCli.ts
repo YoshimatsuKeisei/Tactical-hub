@@ -87,8 +87,11 @@ const maxDecisions = integer("--max-decisions", 100000, 1);
 const device = parseRlTorchDevice(value("--device") ?? "auto");
 const teamIds = ["team-1", "team-2", "team-3", "team-4"] as const;
 const LEGACY_UNIT_TYPES = new Set(["infantry", "cavalry", "archer"]);
-const filterPpoLegalActions = <T extends { actionType: string; unitType?: string }>(actions: readonly T[]): readonly T[] => {
-  if (!legacyProductionOnly) return actions;
+export const filterPpoLegalActionsForEvaluation = <T extends { actionType: string; unitType?: string }>(
+  actions: readonly T[],
+  legacyOnly: boolean,
+): readonly T[] => {
+  if (!legacyOnly) return actions;
   return actions.filter((action) => {
     if ((action.actionType === "production" || action.actionType === "reward") && action.unitType) {
       return LEGACY_UNIT_TYPES.has(action.unitType);
@@ -287,7 +290,10 @@ for (let seedOffset = 0; seedOffset < seedCount; seedOffset += 1) {
 
       const before = environment.getProgressHash();
       if (actorTeamId === ppoTeamId) {
-        const legalActions = filterPpoLegalActions(environment.getLegalActionsForEncoding(actorTeamId));
+        const legalActions = filterPpoLegalActionsForEvaluation(
+          environment.getLegalActionsForEncoding(actorTeamId),
+          legacyProductionOnly,
+        );
         if (!legalActions.length) {
           throw new Error(`mixed evaluation has no legal PPO actions for ${actorTeamId} productionMode=${legacyProductionOnly ? "legacy_three_only" : "all_units"}`);
         }
