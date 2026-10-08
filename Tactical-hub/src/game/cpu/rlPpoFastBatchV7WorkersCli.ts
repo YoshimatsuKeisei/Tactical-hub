@@ -34,6 +34,10 @@ if (args.includes("--equivalence-diagnostics")) {
 }
 
 const python = value("--python") ?? "python";
+const retentionStorageMode =
+  process.env.PPO_RETENTION_STORAGE_MODE ?? "raw";
+const retentionDiskDir =
+  process.env.PPO_RETENTION_DISK_DIR;
 
 const result = await runPpoFastBatchV7WorkersSmoke({
   seed: positiveInteger("--seed", 7),
@@ -93,13 +97,18 @@ const result = await runPpoFastBatchV7WorkersSmoke({
     env: {
       PPO_PACKED_PREPARE_MODE: "fast_batch_v2",
       PPO_SPARSE_ACTION_TRANSPORT: "1",
-      PPO_RETENTION_STORAGE_MODE: "raw",
+      PPO_RETENTION_STORAGE_MODE: retentionStorageMode,
+      ...(retentionDiskDir
+        ? { PPO_RETENTION_DISK_DIR: retentionDiskDir }
+        : {}),
       PPO_PERSISTENT_ACT_H2D: "1",
       PPO_ACT_CUDA_GRAPH_HOT: "1",
       PPO_ACT_CUDA_GRAPH_MIN_HITS: "2",
       PPO_ACT_CUDA_GRAPH_MAX_ENTRIES: "32",
       PPO_PERSISTENT_REPLAY_H2D: "1",
-      PPO_IMMUTABLE_RAW_RETENTION: "1",
+      ...(retentionStorageMode === "raw"
+        ? { PPO_IMMUTABLE_RAW_RETENTION: "1" }
+        : {}),
     },
   }),
 });

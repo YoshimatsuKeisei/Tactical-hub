@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -55,10 +56,22 @@ def main():
         raise ValueError(
             "PPO_IMMUTABLE_RAW_RETENTION requires raw retention storage"
         )
-    if retention_storage_mode not in ("deflate", "raw"):
+    if retention_storage_mode not in ("deflate", "deflate_disk", "raw"):
         raise ValueError(
             f"Unsupported PPO_RETENTION_STORAGE_MODE: {retention_storage_mode}"
         )
+    retention_disk_dir = None
+    retention_disk_dir_owned = False
+    if retention_storage_mode == "deflate_disk":
+        configured_retention_dir = os.environ.get("PPO_RETENTION_DISK_DIR")
+        if configured_retention_dir:
+            retention_disk_dir = os.path.abspath(configured_retention_dir)
+            os.makedirs(retention_disk_dir, exist_ok=True)
+        else:
+            retention_disk_dir = tempfile.mkdtemp(
+                prefix="tactical-hub-ppo-retention-"
+            )
+            retention_disk_dir_owned = True
     packed_prepare_mode = os.environ.get("PPO_PACKED_PREPARE_MODE", "default")
     if packed_prepare_mode not in ("default", "grouped_h2d", "grouped_h2d_persistent", "grouped_h2d_skip_empty", "grouped_h2d_valid_prefix", "grouped_h2d_skip_empty_fast_guards", "grouped_h2d_skip_empty_manual_categorical", "grouped_h2d_skip_empty_manual_categorical_state_cache", "fast_batch_v1", "fast_batch_v2"):
         raise ValueError(f"Unsupported PPO_PACKED_PREPARE_MODE: {packed_prepare_mode}")
@@ -88,6 +101,53 @@ def main():
     def deflate_raw(payload):
         compressor = zlib.compressobj(level=1, wbits=-zlib.MAX_WBITS)
         return compressor.compress(payload) + compressor.flush()
+
+    def store_retention_payload(retention_id, payload):
+        if retention_storage_mode != "deflate_disk":
+            return {
+                "compressed": payload,
+                "storedByteLength": len(payload),
+            }
+        if retention_disk_dir is None:
+            raise RuntimeError("PPO disk retention directory is not initialized")
+        filename = hashlib.sha256(
+            retention_id.encode("utf-8")
+        ).hexdigest() + ".deflate"
+        final_path = os.path.join(retention_disk_dir, filename)
+        temporary_path = final_path + ".tmp"
+        with open(temporary_path, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, final_path)
+        return {
+            "compressedPath": final_path,
+            "storedByteLength": len(payload),
+        }
+
+    def load_retention_payload(record):
+        if record.get("storageMode") != "deflate_disk":
+            return record["compressed"]
+        path = record.get("compressedPath")
+        if not path:
+            raise ValueError("PPO disk retention record is missing compressedPath")
+        with open(path, "rb") as handle:
+            payload = handle.read()
+        if len(payload) != int(record.get("storedByteLength", -1)):
+            raise ValueError("PPO disk retention stored byte length mismatch")
+        return payload
+
+    def retained_payload_size(record):
+        if "storedByteLength" in record:
+            return int(record["storedByteLength"])
+        return len(record["compressed"])
+
+    def cleanup_retention_record(record):
+        if record.get("storageMode") != "deflate_disk":
+            return
+        path = record.get("compressedPath")
+        if path and os.path.exists(path):
+            os.remove(path)
 
     def check_retention_worker_error():
         error = retention_worker_error[0]
@@ -130,10 +190,14 @@ def main():
                         raise ValueError(
                             "PPO retained batch selected-action count mismatch"
                         )
+                    storage = store_retention_payload(
+                        retention_id,
+                        stored_payload,
+                    )
                     with retention_lock:
                         retained_chunks[retention_id] = {
                             "header": task["header"],
-                            "compressed": stored_payload,
+                            **storage,
                             "storageMode": retention_storage_mode,
                             "rawByteLength": len(raw),
                             "rawSha256": raw_sha256,
@@ -415,6 +479,8 @@ def main():
             return {
                 "currentChunks": len(retained_chunks),
                 "pendingChunks": len(pending_retention_ids),
+                "storageMode": retention_storage_mode,
+                "diskBacked": retention_storage_mode == "deflate_disk",
                 **retention_totals,
             }
 
@@ -560,12 +626,13 @@ def main():
                 selected_action_groups = []
                 template_descriptors = records[0]["header"]["tensors"]
                 for record in records:
+                    stored_payload = load_retention_payload(record)
                     raw = (
-                        record["compressed"]
+                        stored_payload
                         if record.get("storageMode") == "raw"
                         else bytearray(
                             zlib.decompress(
-                                record["compressed"],
+                                stored_payload,
                                 wbits=-zlib.MAX_WBITS,
                             )
                         )
@@ -803,7 +870,8 @@ def main():
                     for retention_id, record in zip(retention_ids, records):
                         retained_chunks.pop(retention_id, None)
                         consumed_retention_ids.add(retention_id)
-                        retention_totals["currentRetainedBytes"] -= len(record["compressed"])
+                        retention_totals["currentRetainedBytes"] -= retained_payload_size(record)
+                        cleanup_retention_record(record)
                 response = {"type": "updateChunkAccepted", "requestId": message["requestId"], **result}
                 if feature_audit is not None:
                     response["featureAudit"] = feature_audit
@@ -817,7 +885,8 @@ def main():
                         record = retained_chunks.pop(retention_id, None)
                         pending_retention_ids.discard(retention_id)
                         if record is not None:
-                            retention_totals["currentRetainedBytes"] -= len(record["compressed"])
+                            retention_totals["currentRetainedBytes"] -= retained_payload_size(record)
+                            cleanup_retention_record(record)
                             discarded_count += 1
                 send({"type": "retentionDiscarded", "requestId": message["requestId"], "discardedCount": discarded_count})
             elif kind == "retentionStats":
@@ -1046,6 +1115,21 @@ def main():
                 retention_queue.put(None)
                 retention_queue.join()
                 retention_thread.join(timeout=5)
+                with retention_lock:
+                    remaining_records = list(retained_chunks.values())
+                    retained_chunks.clear()
+                    retention_totals["currentRetainedBytes"] = 0
+                for record in remaining_records:
+                    cleanup_retention_record(record)
+                if (
+                    retention_disk_dir_owned
+                    and retention_disk_dir
+                    and os.path.isdir(retention_disk_dir)
+                ):
+                    try:
+                        os.rmdir(retention_disk_dir)
+                    except OSError:
+                        pass
                 if profile:
                     summary = {name: {"count": item["count"], "totalMs": round(item["totalMs"], 2), "avgMs": round(item["totalMs"] / item["count"], 3)} for name, item in timings.items()}
                     legal_summary = {
