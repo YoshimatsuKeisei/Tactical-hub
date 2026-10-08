@@ -738,14 +738,18 @@ describe("battle", () => {
     expect(getBaseAttackDenominator("infantry", "cavalry", normal)).toBe(7);
     expect(getBaseAttackDenominator("infantry", "infantry", normal)).toBe(6);
     expect(getBaseAttackDenominator("archer", "cavalry", normal)).toBe(5);
+    expect(getBaseAttackDenominator("archer", "ninja", normal)).toBe(7);
     expect(getBaseAttackDenominator("cavalry", "infantry", normal)).toBe(5);
     expect(getBaseAttackDenominator("ninja", "infantry", normal)).toBe(7);
+    expect(getBaseAttackDenominator("ninja", "archer", normal)).toBe(3);
+    expect(getBaseAttackDenominator("ninja", "engineer", normal)).toBe(5);
     expect(getBaseAttackDenominator("ninja", "strategist", normal)).toBe(5);
     expect(getBaseAttackDenominator("king", "infantry", normal)).toBe(5);
     expect(getBaseAttackDenominator("king", "king", normal)).toBe(6);
     expect(
       getBaseAttackDenominator("strategist", "infantry", normal),
     ).toBeNull();
+    expect(getBaseAttackDenominator("strategist", "ninja", normal)).toBeNull();
   });
 
   it("limits engineers to siege attacks and allows kings inside bases", () => {
@@ -781,7 +785,13 @@ describe("battle", () => {
       getBaseAttackDenominator("engineer", "king", { targetInBase: true }),
     ).toBe(5);
     expect(
+      getBaseAttackDenominator("engineer", "ninja", { targetInBase: true }),
+    ).toBe(5);
+    expect(
       getBaseAttackDenominator("engineer", "infantry", { targetInBase: false }),
+    ).toBeNull();
+    expect(
+      getBaseAttackDenominator("engineer", "ninja", { targetInBase: false }),
     ).toBeNull();
   });
 
@@ -837,6 +847,12 @@ describe("battle", () => {
         encouraged: true,
       }),
     ).toBe(4);
+    expect(
+      getFinalAttackDenominator("ninja", "archer", {
+        targetInBase: false,
+        encouraged: true,
+      }),
+    ).toBe(2);
     expect(
       applyEncouragementToDenominator(
         applyEncouragementToDenominator(5, true),

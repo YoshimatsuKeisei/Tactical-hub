@@ -50,7 +50,7 @@ const SUCCESS_DENOMINATORS: Partial<
     cavalry: 5,
     archer: 6,
     strategist: 5,
-    ninja: 5,
+    ninja: 7,
     king: 7,
     engineer: 5,
     apprentice_ninja: 5,
@@ -67,7 +67,7 @@ const SUCCESS_DENOMINATORS: Partial<
   },
   ninja: {
     infantry: 7,
-    archer: 7,
+    archer: 3,
     cavalry: 7,
     strategist: 5,
     ninja: 6,

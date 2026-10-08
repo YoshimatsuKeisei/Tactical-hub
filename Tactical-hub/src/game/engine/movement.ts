@@ -160,6 +160,53 @@ function positionForTile(
   return isLegalDestination(state, unit, position) ? position : undefined;
 }
 
+function hasActiveObstacleAt(state: GameState, x: number, y: number) {
+  return state.constructions.some(
+    (entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((cell) => cell.x === x && cell.y === y),
+  );
+}
+
+function groundPositionIgnoringObstacle(
+  state: GameState,
+  x: number,
+  y: number,
+): Extract<UnitPosition, { kind: "tile" | "bridge" }> | undefined {
+  const bridge = getBridgePositionAt(state, x, y);
+  if (bridge) return bridge;
+  const tile = getTile(state.map.tiles, x, y);
+  return tile && ["road", "baseGate", "reorganize"].includes(tile.terrain)
+    ? { kind: "tile", x, y }
+    : undefined;
+}
+
+function getNinjaObstacleJumpDestinations(
+  state: GameState,
+  unit: Unit,
+  from: Extract<UnitPosition, { kind: "tile" | "bridge" }>,
+  dx: number,
+  dy: number,
+): UnitPosition[] {
+  const fromCoord = getPositionCoord(state, from);
+  if (!fromCoord) return [];
+  const obstacleX = fromCoord.x + dx;
+  const obstacleY = fromCoord.y + dy;
+  if (!hasActiveObstacleAt(state, obstacleX, obstacleY) || getUnitAtBoardCell(state, obstacleX, obstacleY)) return [];
+
+  const obstaclePosition = groundPositionIgnoringObstacle(state, obstacleX, obstacleY);
+  if (!obstaclePosition || !canMoveBetweenGroundPositions(state, from, obstaclePosition)) return [];
+
+  const destinationX = obstacleX + dx;
+  const destinationY = obstacleY + dy;
+  const base = getBaseAtTile(state.bases, destinationX, destinationY);
+  if (base) {
+    if (obstaclePosition.kind === "tile" && !isGroundPositionConnectedToBase(state, obstaclePosition, base.id)) return [];
+    return emptyBasePositions(state, base.id).filter((position) => isLegalDestination(state, unit, position));
+  }
+
+  const destination = positionForTile(state, unit, destinationX, destinationY);
+  return destination && canMoveBetweenGroundPositions(state, obstaclePosition, destination) ? [destination] : [];
+}
+
 export function isLegalDestination(
   state: GameState,
   unit: Unit,
@@ -306,12 +353,28 @@ export function getMovementPaths(
 
     const currentCoord = getPositionCoord(state, current.position);
     if (!currentCoord) continue;
+    const canJumpObstacleFromCurrent = current.position.kind !== "water"
+      && Boolean(groundPositionIgnoringObstacle(state, currentCoord.x, currentCoord.y));
 
     for (const { dx, dy } of directions) {
       const x = currentCoord.x + dx;
       const y = currentCoord.y + dy;
       const key = tileKey(x, y);
       const nextCost = current.cost + 1;
+
+      if (unit.type === "ninja" && canJumpObstacleFromCurrent && current.position.kind !== "water" && hasActiveObstacleAt(state, x, y)) {
+        for (const destination of getNinjaObstacleJumpDestinations(state, unit, current.position, dx, dy)) {
+          results.set(positionKey(destination), {
+            destination,
+            cost: nextCost,
+            steps: [
+              ...current.steps,
+              { kind: "ground", from: current.position, to: destination },
+            ],
+          });
+        }
+        continue;
+      }
 
       const base = getBaseAtTile(state.bases, x, y);
 
