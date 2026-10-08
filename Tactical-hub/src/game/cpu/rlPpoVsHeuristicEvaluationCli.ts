@@ -14,6 +14,7 @@ import { DEFAULT_PPO_HYPERPARAMETERS } from "./rlPpoSelfPlay";
 import { createPpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
 import { PythonPpoClient } from "./pythonPpoClient";
 import { parseRlTorchDevice } from "./rlTorchDevice";
+import { filterPpoLegalActionsForEvaluation } from "./rlPpoEvaluationActionFilter";
 
 const args = process.argv.slice(2);
 const value = (name: string) => {
@@ -86,19 +87,6 @@ const maxTurns = integer("--max-turns", 1000, 1);
 const maxDecisions = integer("--max-decisions", 100000, 1);
 const device = parseRlTorchDevice(value("--device") ?? "auto");
 const teamIds = ["team-1", "team-2", "team-3", "team-4"] as const;
-const LEGACY_UNIT_TYPES = new Set(["infantry", "cavalry", "archer"]);
-export const filterPpoLegalActionsForEvaluation = <T extends { actionType: string; unitType?: string }>(
-  actions: readonly T[],
-  legacyOnly: boolean,
-): readonly T[] => {
-  if (!legacyOnly) return actions;
-  return actions.filter((action) => {
-    if ((action.actionType === "production" || action.actionType === "reward") && action.unitType) {
-      return LEGACY_UNIT_TYPES.has(action.unitType);
-    }
-    return true;
-  });
-};
 
 type MatchStatus = "victory" | "limit_reached";
 type MatchResult = {
