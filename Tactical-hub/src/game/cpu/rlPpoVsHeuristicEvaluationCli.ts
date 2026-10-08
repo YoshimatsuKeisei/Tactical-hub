@@ -215,6 +215,7 @@ const confidence95 = wilsonInterval(winCount, matchCount);
 
 process.stdout.write(JSON.stringify({
   probe: "ppo_v10_vs_heuristic_1v3",
+  allExact: true,
   checkpoint: {
     path: checkpoint,
     sha256: actualSha,
