@@ -192,8 +192,17 @@ export async function replayPpoTrajectory(input: {
   const environment = new RlEnvironmentV2(
     undefined,
     input.fastRlMovement ?? false,
-    input.fastRlPhaseTransitions
-      ? { cpuStep: { rlInPlacePhaseTransitions: true } }
+    input.fastRlMovement || input.fastRlPhaseTransitions
+      ? {
+          cpuStep: {
+            ...(input.fastRlMovement
+              ? { rlPrevalidatedMovement: true }
+              : {}),
+            ...(input.fastRlPhaseTransitions
+              ? { rlInPlacePhaseTransitions: true }
+              : {}),
+          },
+        }
       : undefined,
   );
   environment.reset(rollout.seed, 4);
@@ -305,8 +314,17 @@ export async function validatePpoTrajectoryReplay(input: {
   const environment = new RlEnvironmentV2(
     undefined,
     input.fastRlMovement ?? false,
-    input.fastRlPhaseTransitions
-      ? { cpuStep: { rlInPlacePhaseTransitions: true } }
+    input.fastRlMovement || input.fastRlPhaseTransitions
+      ? {
+          cpuStep: {
+            ...(input.fastRlMovement
+              ? { rlPrevalidatedMovement: true }
+              : {}),
+            ...(input.fastRlPhaseTransitions
+              ? { rlInPlacePhaseTransitions: true }
+              : {}),
+          },
+        }
       : undefined,
   );
   environment.reset(rollout.seed, 4);
