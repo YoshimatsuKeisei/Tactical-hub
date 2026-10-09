@@ -427,11 +427,12 @@ different body part, weapon, or effect. Final quality—especially whether the
 middle false positives disappear without losing the partially visible target—
 must be checked on Windows with the actual Melee selection.
 
-### Identity Global (Experimental)
+### Identity Global v1 (SAM-only)
 
-Tracked Mask Preview now has two independent composition modes. **Legacy Source
+Tracked Mask Preview has three independent composition modes. **Legacy Source
 Union** preserves the existing Regular/Pre-Gate/Temporal Filter/Reverse union
-pixel-for-pixel. **Identity Global (Experimental)** instead treats Regular,
+pixel-for-pixel. **Identity Global v1 (SAM-only)** retains the original Identity
+Global scoring and treats Regular,
 cached Reverse, and every captured Forward Pre-Gate multimask as candidates. It
 does not OR those sources together.
 
@@ -463,7 +464,7 @@ bounding-box, and temporal-appearance terms provide continuity without rejecting
 a visually matching large movement. OCCLUDED can transition back to a distant,
 strong identity match. Frame 0 is always the exact authoritative user mask.
 
-Open **Identity Global Diagnostics...** for a green selected-path contact sheet
+Open **Identity Global v1 Diagnostics...** for a green selected-path contact sheet
 and copyable text. The report includes the chosen feature level/shape/dtype/cache
 size, target descriptor norm, all candidates and components, target/temporal
 cosines, geometry penalties, node and best-DP scores, OCCLUDED score, and the
@@ -482,6 +483,69 @@ descriptors, and the path are cleared. Loading another sheet or row, changing
 layout/frame count/checkpoint/device/model, closing the session, or exiting clears
 the feature cache. This is a comparison experiment, not a quality PASS: sword,
 shield, occlusion, and reappearance behavior still require Windows visual review.
+
+### Identity Global v2 (Fused Experimental)
+
+**Identity Global v2 (Fused Experimental)** uses the exact same authoritative
+frame-0 mask and candidate masks as v1. It changes only identity evidence and the
+node score used by a separate Global DP/Viterbi pass. Legacy and v1 remain
+available for pixel-level regression comparison.
+
+The first v2 selection prepares a target-independent, read-only multi-scale SAM
+feature cache in the background using the already loaded predictor/model. Levels
+are selected dynamically from the actual FPN shapes and `float16` byte counts:
+the highest spatial-resolution level is prioritized, followed by the deepest
+semantic level, and additional levels are retained only when the total stays at
+or below 96 MiB. For the observed tiny-model shapes `(32,256,256)`,
+`(64,128,128)`, and `(256,64,64)`, this selects levels 0 and 2 for 90 MiB across
+15 frames. The choice is not hard-coded to those indices or shapes. A level-0
+array already cached by v1 is shared rather than duplicated.
+
+For each selected level, v2 coverage-pools and L2-normalizes a positive target
+descriptor from the authoritative frame-0 mask. It also derives an automatic
+negative context ring from visible (`alpha > 0`) unselected sprite pixels around
+the target. The ring radius is based on target-bbox diagonal, bounded by named
+minimum/maximum constants, expands when support is sparse, and can fall back to
+visible unselected pixels in the local bbox neighborhood. Transparent background
+is never used to manufacture negative evidence; if visible support remains too
+small, that negative modality is disabled.
+
+Candidate evidence uses the contrastive margin
+`cos(candidate, positive) - cos(candidate, negative)`, normalized by the
+frame-0 reference separation `1 - cos(positive, negative)` and clamped. Levels
+whose reference separation is too small are disabled, while valid levels are
+fused independently using separation-based weights. A weak local-context signal
+compares candidate foreground-minus-ring contrast to frame-0 target contrast.
+Lightweight native-pixel evidence uses RGB mean/std, luminance mean/std, and
+luminance/saturation histograms; it is also positive-versus-negative and is not
+allowed to dominate SAM features. A soft shape score compares log area ratio,
+aspect ratio, bbox fill, and compactness. Extreme expansion is penalized but
+never hard-rejected.
+
+The fused identity node combines SAM contrastive, local-context, native-pixel,
+and shape scores through named weights. A soft top-1/top-2 ambiguity penalty lets
+the existing **OCCLUDED** state win when candidates are similarly weak, while
+the constant frame-0 reference allows reacquisition after occlusion. Existing
+soft temporal appearance, motion, area, and bbox transitions remain; position is
+not a hard gate.
+
+Open **Identity Global v2 Diagnostics...** for a magenta selected-path contact
+sheet and **Copy All** report. It lists selected levels, shapes, dtype, per-level
+and total cache MiB, negative-ring radius/support/fallback, reference separation,
+active modalities, top three identity candidates and margin per frame, every
+candidate's per-level positive/negative cosine and normalized margin, fused SAM,
+local-context, pixel and shape scores, ambiguity/transition penalties, node/DP
+scores, OCCLUDED score, and final selection.
+
+Changing among Legacy, v1, and v2 updates only the preview. **Use These Masks**
+is still required before Recolor/Export, and adopting one mode never writes its
+pixels into another source. A frame-0 target change clears positive/negative,
+pixel, shape, candidate-score, and v2-path state while retaining the same-row
+multi-scale feature cache. Pre-Gate threshold or hole-fill changes rebuild masks,
+descriptors, and both identity paths without SAM propagation. Sheet, row,
+layout/frame-count, checkpoint, device/model, session-close, and application-exit
+changes discard the multi-scale cache. v2 remains experimental and requires
+Windows visual review; Cloud technical tests are not a quality PASS.
 
 ### Zoom and Mask Editor
 

@@ -6,7 +6,7 @@ from collections import deque
 import math
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -24,6 +24,14 @@ from identity_tracking import (
     make_appearance_feature_cache,
     pool_mask_descriptor,
     select_identity_global_path,
+)
+from identity_tracking_v2 import (
+    FusedIdentityResult,
+    MultiScaleFeatureCache,
+    choose_multiscale_feature_levels,
+    format_fused_identity_diagnostics,
+    make_multiscale_feature_cache,
+    select_fused_identity_path,
 )
 from recolor import DEFAULT_TARGETS, make_contact_sheet, parse_target_color, recolor_masked
 
@@ -1234,6 +1242,7 @@ class MaskSourceState:
         self.filtered_pre_gate_masks: list[np.ndarray] | None = None
         self.reverse_masks: list[np.ndarray] | None = None
         self.identity_masks: list[np.ndarray] | None = None
+        self.identity_v2_masks: list[np.ndarray] | None = None
         self.preview_mode = "legacy"
         self.include_pre_gate = False
         self.include_reverse = False
@@ -1273,17 +1282,29 @@ class MaskSourceState:
         self.identity_masks = self._replace_source(masks, "Identity Global")
         self.rebuild_preview()
 
+    def set_identity_v2_masks(self, masks: Sequence[np.ndarray]) -> None:
+        self.identity_v2_masks = self._replace_source(masks, "Identity Global v2")
+        self.rebuild_preview()
+
     def clear_identity_masks(self) -> None:
         self.identity_masks = None
-        if self.preview_mode == "identity":
+        if self.preview_mode in ("identity", "identity_v1"):
+            self.preview_mode = "legacy"
+        self.rebuild_preview()
+
+    def clear_identity_v2_masks(self) -> None:
+        self.identity_v2_masks = None
+        if self.preview_mode == "identity_v2":
             self.preview_mode = "legacy"
         self.rebuild_preview()
 
     def set_preview_mode(self, mode: str) -> None:
-        if mode not in ("legacy", "identity"):
-            raise ValueError("Preview mode must be 'legacy' or 'identity'")
-        if mode == "identity" and self.identity_masks is None:
+        if mode not in ("legacy", "identity", "identity_v1", "identity_v2"):
+            raise ValueError("Unknown preview mode")
+        if mode in ("identity", "identity_v1") and self.identity_masks is None:
             raise ValueError("Identity Global masks are not available")
+        if mode == "identity_v2" and self.identity_v2_masks is None:
+            raise ValueError("Identity Global v2 masks are not available")
         self.preview_mode = mode
         self.rebuild_preview()
 
@@ -1305,10 +1326,14 @@ class MaskSourceState:
         self.rebuild_preview()
 
     def rebuild_preview(self) -> list[np.ndarray]:
-        if self.preview_mode == "identity":
+        if self.preview_mode in ("identity", "identity_v1"):
             if self.identity_masks is None:
                 raise ValueError("Identity Global masks are not available")
             self.preview_masks = [mask.copy() for mask in self.identity_masks]
+        elif self.preview_mode == "identity_v2":
+            if self.identity_v2_masks is None:
+                raise ValueError("Identity Global v2 masks are not available")
+            self.preview_masks = [mask.copy() for mask in self.identity_v2_masks]
         else:
             self.preview_masks = combine_mask_sources(
                 self.regular_masks,
@@ -1332,8 +1357,10 @@ class MaskSourceState:
 
     @property
     def source_label(self) -> str:
-        if self.preview_mode == "identity":
-            return "Identity Global (Experimental)"
+        if self.preview_mode in ("identity", "identity_v1"):
+            return "Identity Global v1 (SAM-only)"
+        if self.preview_mode == "identity_v2":
+            return "Identity Global v2 (Fused Experimental)"
         sources = ["Regular"]
         if self.include_pre_gate:
             mode = "Auto-filtered" if self.use_filtered_pre_gate else "Raw"
@@ -1872,6 +1899,51 @@ def build_identity_global_result(
     )
 
 
+def build_fused_identity_global_result(
+    frames: Sequence[Image.Image],
+    authoritative_frame0_mask: np.ndarray,
+    regular_masks: Sequence[np.ndarray],
+    pre_gate_diagnostics: Sequence[SamPreGateFrameDiagnostics],
+    feature_cache: MultiScaleFeatureCache,
+    *,
+    reverse_masks: Sequence[np.ndarray] | None = None,
+    pre_gate_threshold: float = PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
+    pre_gate_fill_holes: bool = False,
+    reverse_warning: str | None = None,
+) -> FusedIdentityResult:
+    """Build the unchanged v1 candidate bank, then apply v2-only scoring."""
+    primary_level = feature_cache.selected_levels[0]
+    primary_cache = AppearanceFeatureCache(
+        primary_level,
+        feature_cache.level_shapes,
+        feature_cache.level_features(primary_level),
+    )
+    authoritative = clip_mask_to_frame(authoritative_frame0_mask, frames[0])
+    invalid_descriptors: list[str] = []
+    bank = build_identity_candidate_bank(
+        frames,
+        authoritative,
+        regular_masks,
+        pre_gate_diagnostics,
+        primary_cache,
+        reverse_masks=reverse_masks,
+        pre_gate_threshold=pre_gate_threshold,
+        pre_gate_fill_holes=pre_gate_fill_holes,
+        invalid_descriptors=invalid_descriptors,
+    )
+    result = select_fused_identity_path(
+        frames,
+        bank,
+        authoritative,
+        feature_cache,
+        reverse_warning=reverse_warning,
+    )
+    return replace(
+        result,
+        invalid_descriptors=tuple(invalid_descriptors) + result.invalid_descriptors,
+    )
+
+
 def identity_global_missing_prerequisites(
     *,
     sam_session: object | None,
@@ -1907,6 +1979,24 @@ def make_identity_global_contact_sheet(
         raise ValueError("Frame and Identity Global mask counts do not match")
     overlays = [
         make_mask_overlay(frame, mask, color=(40, 220, 100), opacity=0.62)
+        for frame, mask in zip(frames, result.masks, strict=True)
+    ]
+    labels = [
+        f"frame_{index:03} {diagnostic.selected_label}"
+        for index, diagnostic in enumerate(result.frames)
+    ]
+    return make_contact_sheet(overlays, labels, columns=columns)
+
+
+def make_fused_identity_contact_sheet(
+    frames: Sequence[Image.Image],
+    result: FusedIdentityResult,
+    columns: int = 5,
+) -> Image.Image:
+    if len(frames) != len(result.masks):
+        raise ValueError("Frame and Identity Global v2 mask counts do not match")
+    overlays = [
+        make_mask_overlay(frame, mask, color=(225, 70, 235), opacity=0.62)
         for frame, mask in zip(frames, result.masks, strict=True)
     ]
     labels = [
@@ -2144,6 +2234,7 @@ class Sam2GuiSession:
         self.pre_gate_diagnostics: list[SamPreGateFrameDiagnostics] | None = None
         self.masks: list[np.ndarray] | None = None
         self.appearance_feature_cache: AppearanceFeatureCache | None = None
+        self.multi_scale_feature_cache: MultiScaleFeatureCache | None = None
 
     def _ensure_ready(self, progress: ProgressCallback) -> None:
         if self.predictor is None:
@@ -2418,6 +2509,93 @@ class Sam2GuiSession:
         self.appearance_feature_cache = cache
         return cache
 
+    def extract_multiscale_appearance_features(
+        self,
+        progress: ProgressCallback = lambda _message: None,
+    ) -> MultiScaleFeatureCache:
+        """Cache dynamic high-resolution/deep-semantic SAM levels within 96 MiB."""
+        if self.multi_scale_feature_cache is not None:
+            return self.multi_scale_feature_cache
+        if self.predictor is None or self.device is None or self.sam_frames_dir is None:
+            raise RuntimeError("Complete Regular tracking before extracting appearance features")
+        try:
+            import torch
+            from smoke import initialize_sam2_state
+        except ImportError as error:
+            raise RuntimeError("SAM 2 and PyTorch are required for appearance features") from error
+
+        progress("Initializing fresh multi-scale feature-only SAM 2 state...")
+        feature_state = initialize_sam2_state(
+            self.predictor,
+            self.sam_frames_dir,
+            self.device,
+        )
+        retained_by_level: dict[int, list[np.ndarray]] = {}
+        level_shapes: tuple[tuple[int, int, int], ...] | None = None
+        selected_levels: tuple[int, ...] | None = None
+        try:
+            images = feature_state["images"]
+            for frame_index in range(len(self.frames)):
+                progress(
+                    "Preparing multi-scale identity features: "
+                    f"frame {frame_index + 1}/{len(self.frames)}..."
+                )
+                with torch.inference_mode():
+                    image = images[frame_index].to(self.device).float().unsqueeze(0)
+                    backbone_out = self.predictor.forward_image(image)
+                    levels = backbone_out["backbone_fpn"]
+                inspected = tuple(tuple(int(value) for value in level.shape[1:]) for level in levels)
+                if level_shapes is None:
+                    level_shapes = inspected
+                    selected_levels = choose_multiscale_feature_levels(
+                        inspected,
+                        len(self.frames),
+                        MAX_APPEARANCE_FEATURE_CACHE_BYTES,
+                    )
+                    retained_by_level = {level: [] for level in selected_levels}
+                elif inspected != level_shapes:
+                    raise RuntimeError("SAM appearance feature shapes changed between frames")
+                assert selected_levels is not None
+                for level_index in selected_levels:
+                    shared = None
+                    if (
+                        self.appearance_feature_cache is not None
+                        and self.appearance_feature_cache.level_index == level_index
+                    ):
+                        shared = self.appearance_feature_cache.features[frame_index]
+                    if shared is not None:
+                        retained_by_level[level_index].append(shared)
+                    else:
+                        retained_by_level[level_index].append(
+                            levels[level_index][0]
+                            .detach()
+                            .to(device="cpu", dtype=torch.float16)
+                            .numpy()
+                            .copy()
+                        )
+        finally:
+            reset_state = getattr(self.predictor, "reset_state", None)
+            if callable(reset_state):
+                reset_state(feature_state)
+        if level_shapes is None or selected_levels is None:
+            raise RuntimeError("SAM returned no appearance features")
+        cache = make_multiscale_feature_cache(
+            selected_levels,
+            level_shapes,
+            retained_by_level,
+        )
+        if cache.total_bytes > MAX_APPEARANCE_FEATURE_CACHE_BYTES:
+            raise MemoryError("Retained multi-scale SAM features exceed the configured cache limit")
+        self.multi_scale_feature_cache = cache
+        if self.appearance_feature_cache is None:
+            primary = cache.selected_levels[0]
+            self.appearance_feature_cache = AppearanceFeatureCache(
+                primary,
+                cache.level_shapes,
+                cache.level_features(primary),
+            )
+        return cache
+
     def track_across_frames(
         self,
         progress: ProgressCallback = lambda _message: None,
@@ -2438,6 +2616,7 @@ class Sam2GuiSession:
     def close(self) -> None:
         self.reset_tracking_state()
         self.appearance_feature_cache = None
+        self.multi_scale_feature_cache = None
         self.predictor = None
         self.device = None
         self.sam_frames_dir = None
