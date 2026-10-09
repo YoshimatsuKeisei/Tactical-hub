@@ -14,6 +14,7 @@ import {
   type PpoEpisodeOutcomeKind,
 } from "./rlPpoTerminalOutcome";
 import type { PpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
+import type { PpoCombatDiagnostics } from "./rlPpoCombatDiagnostics";
 
 export type PpoRolloutWorkerV7EpisodeSummary = {
   environmentIndex: number;
@@ -26,6 +27,7 @@ export type PpoRolloutWorkerV7EpisodeSummary = {
   reason: string;
   limitReason?: PpoTimeLimitReason;
   adjudication?: PpoTeamAdjudication[];
+  combatDiagnostics: PpoCombatDiagnostics;
 };
 export type PpoRolloutWorkerV7Finalized = {
   environmentIndex: number;
