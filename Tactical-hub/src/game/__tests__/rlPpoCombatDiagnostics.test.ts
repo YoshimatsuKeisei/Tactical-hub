@@ -4,6 +4,7 @@ import {
   capturePpoCombatSnapshot,
   createPpoCombatDiagnostics,
   observePpoBattleDefeats,
+  shouldCapturePpoCombatDiagnostics,
 } from "../cpu/rlPpoCombatDiagnostics";
 
 function state(input: {
@@ -45,6 +46,12 @@ function state(input: {
 }
 
 describe("PPO combat defeat diagnostics", () => {
+  it("captures around attack_input because battle resolution is automatic", () => {
+    expect(shouldCapturePpoCombatDiagnostics("attack_input")).toBe(true);
+    expect(shouldCapturePpoCombatDiagnostics("production")).toBe(false);
+    expect(shouldCapturePpoCombatDiagnostics("movement_input")).toBe(false);
+  });
+
   it("separates heavy infantry and splits shared defeat credit", () => {
     const before = state({
       units: [
