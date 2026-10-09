@@ -50,6 +50,7 @@ import {
   clonePpoCombatDiagnostics,
   createPpoCombatDiagnostics,
   observePpoBattleDefeats,
+  shouldCapturePpoCombatDiagnostics,
   type PpoCombatDiagnostics,
 } from "./rlPpoCombatDiagnostics";
 
@@ -507,7 +508,7 @@ async function applyRound(
       );
     }
 
-    const combatBefore = action.actionKey.startsWith("resolve_battle:")
+    const combatBefore = shouldCapturePpoCombatDiagnostics(pending.phase)
       ? capturePpoCombatSnapshot(slot.environment.getStateForValidation())
       : undefined;
     measure(
