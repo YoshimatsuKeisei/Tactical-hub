@@ -45,6 +45,13 @@ import {
   createFinalDuelDrawPpoRewards,
 } from "./rlPpoTerminalOutcome";
 import { createPpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
+import {
+  capturePpoCombatSnapshot,
+  clonePpoCombatDiagnostics,
+  createPpoCombatDiagnostics,
+  observePpoBattleDefeats,
+  type PpoCombatDiagnostics,
+} from "./rlPpoCombatDiagnostics";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -69,6 +76,7 @@ type WorkerSlot = {
   shapingRuntime?: PpoBattleAdvantageShapingRuntime;
   generation: number;
   defeatDiagnosticTracker?: PpoDefeatDiagnosticTrackerV8;
+  combatDiagnostics: PpoCombatDiagnostics;
   finished: boolean;
   reason?: string;
   pending?: PendingDecision;
@@ -202,6 +210,7 @@ async function finalizeSlot(
     turnDiagnostics,
     outcomeKind: "abnormal_truncated",
     reason: reason ?? result.endReason,
+    combatDiagnostics: clonePpoCombatDiagnostics(slot.combatDiagnostics),
   };
   let baseRewards: Record<string, number> | undefined;
   const terminalOutcome = classifyPpoGameTerminalOutcome(result, reason);
@@ -279,6 +288,7 @@ async function finalizeSlot(
       hyperparameters.gamma,
     );
     slot.generation += 1;
+    slot.combatDiagnostics = createPpoCombatDiagnostics();
     if (defeatDiagnostics) {
       slot.defeatDiagnosticTracker =
         createPpoDefeatDiagnosticTrackerV8(
@@ -327,6 +337,7 @@ async function handleInit(
         hyperparameters!.gamma,
       ),
       generation: 0,
+      combatDiagnostics: createPpoCombatDiagnostics(),
       finished: false,
     };
     if (defeatDiagnostics) {
@@ -496,11 +507,21 @@ async function applyRound(
       );
     }
 
+    const combatBefore = action.actionKey.startsWith("resolve_battle:")
+      ? capturePpoCombatSnapshot(slot.environment.getStateForValidation())
+      : undefined;
     measure(
       stageTiming,
       "gameStepMs",
       () => slot.environment.stepWithoutObservation(action.actionKey),
     );
+    if (combatBefore) {
+      observePpoBattleDefeats(
+        slot.combatDiagnostics,
+        combatBefore,
+        slot.environment.getStateForValidation(),
+      );
+    }
     const step: PpoTrajectoryStep = {
       decisionIndex: pending.decisionIndex,
       turnNumber: pending.turnNumber,
