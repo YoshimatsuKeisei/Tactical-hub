@@ -27,7 +27,7 @@ export type PpoRolloutWorkerV7EpisodeSummary = {
   reason: string;
   limitReason?: PpoTimeLimitReason;
   adjudication?: PpoTeamAdjudication[];
-  combatDiagnostics: PpoCombatDiagnostics;
+  combatDiagnostics?: PpoCombatDiagnostics;
 };
 export type PpoRolloutWorkerV7Finalized = {
   environmentIndex: number;
