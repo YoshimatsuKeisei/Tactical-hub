@@ -29,6 +29,7 @@ from gui_controller import (
     MaskSourceState,
     RecolorPreviewState,
     SamPreGateFrameDiagnostics,
+    TemporalPreGateFilterResult,
     TEAM_COLOR_NAMES,
     PromptState,
     Sam2GuiSession,
@@ -47,9 +48,11 @@ from gui_controller import (
     frame_output_names,
     format_sam_logit_diagnostics,
     format_pre_gate_diagnostics,
+    format_temporal_filter_diagnostics,
     load_sprite_png,
     make_mask_overlay,
     make_pre_gate_contact_sheet,
+    make_temporal_filter_contact_sheet,
     make_selection_overlay,
     pan_scroll_offset,
     parse_team_color,
@@ -59,6 +62,7 @@ from gui_controller import (
     save_results,
     select_all_mask,
     shape_bounds,
+    temporal_filter_pre_gate_masks,
     viewport_to_frame,
     validate_mask_threshold,
 )
@@ -101,6 +105,7 @@ class TeamColorApp:
         self.mask_adoption_info = tk.StringVar(value="")
         self.add_pre_gate_source = tk.BooleanVar(value=False)
         self.add_reverse_source = tk.BooleanVar(value=False)
+        self.auto_filter_pre_gate = tk.BooleanVar(value=False)
         self.pre_gate_threshold = tk.DoubleVar(value=PRE_GATE_PREVIEW_DEFAULT_THRESHOLD)
         self.pre_gate_threshold_text = tk.StringVar(
             value=f"{PRE_GATE_PREVIEW_DEFAULT_THRESHOLD:+.1f}"
@@ -132,6 +137,8 @@ class TeamColorApp:
         self.regular_raw_masks: list[np.ndarray] | None = None
         self.regular_masks: list[np.ndarray] | None = None
         self.pre_gate_masks: list[np.ndarray] | None = None
+        self.filtered_pre_gate_masks: list[np.ndarray] | None = None
+        self.temporal_filter_result: TemporalPreGateFilterResult | None = None
         self.reverse_raw_logits: list[np.ndarray] | None = None
         self.reverse_raw_masks: list[np.ndarray] | None = None
         self.reverse_masks: list[np.ndarray] | None = None
@@ -158,6 +165,7 @@ class TeamColorApp:
         self.tracked_mask_window: TrackedMaskPreviewWindow | None = None
         self.logit_diagnostics_window: LogitDiagnosticsWindow | None = None
         self.pre_gate_diagnostics_window: PreGateDiagnosticsWindow | None = None
+        self.temporal_filter_diagnostics_window: TemporalFilterDiagnosticsWindow | None = None
         self._pending_threshold_update: str | None = None
         self._pending_pre_gate_update: str | None = None
         self._busy = False
@@ -806,9 +814,13 @@ class TeamColorApp:
     def _reset_mask_sources(self, clear_active: bool = True) -> None:
         self.add_pre_gate_source.set(False)
         self.add_reverse_source.set(False)
+        self.auto_filter_pre_gate.set(False)
         self.regular_raw_masks = None
         self.regular_masks = None
         self.pre_gate_masks = None
+        self.filtered_pre_gate_masks = None
+        self.temporal_filter_result = None
+        self._close_temporal_filter_diagnostics()
         self.reverse_raw_logits = None
         self.reverse_raw_masks = None
         self.reverse_masks = None
@@ -873,6 +885,7 @@ class TeamColorApp:
             self.reverse_raw_masks = reverse_raw
             self.reverse_masks = reverse
             self.mask_source_state.set_reverse_masks(reverse)
+        self._recompute_temporal_filter()
         self.mask_source_state.set_enabled(
             pre_gate=self.add_pre_gate_source.get(),
             reverse=self.add_reverse_source.get(),
@@ -880,6 +893,33 @@ class TeamColorApp:
         self._sync_mask_source_preview()
         if regular:
             self.frame0_mask = regular[0].copy()
+
+    def _recompute_temporal_filter(self) -> None:
+        if self.mask_source_state is None:
+            return
+        if not self.auto_filter_pre_gate.get():
+            self.mask_source_state.set_pre_gate_filter_enabled(False)
+            return
+        if (
+            self.regular_masks is None
+            or self.pre_gate_masks is None
+            or self.reverse_masks is None
+        ):
+            return
+        result = temporal_filter_pre_gate_masks(
+            self.regular_masks,
+            self.pre_gate_masks,
+            self.reverse_masks,
+        )
+        self.temporal_filter_result = result
+        self.filtered_pre_gate_masks = [mask.copy() for mask in result.filtered_masks]
+        self.mask_source_state.set_filtered_pre_gate_masks(self.filtered_pre_gate_masks)
+        self.mask_source_state.set_pre_gate_filter_enabled(True)
+        if (
+            self.temporal_filter_diagnostics_window is not None
+            and self.temporal_filter_diagnostics_window.exists()
+        ):
+            self.temporal_filter_diagnostics_window.update_result(result)
 
     def _rebuild_quick_frame0_from_logits(self) -> None:
         if self.quick_frame0_logits is None or not self.frames:
@@ -1347,30 +1387,50 @@ class TeamColorApp:
             self.mask_source_state.set_enabled(reverse=True)
             self._mark_mask_source_preview_changed()
             return
+        if not self._start_reverse_generation():
+            self.add_reverse_source.set(False)
+
+    def _start_reverse_generation(self) -> bool:
         if self.sam_session is None or self.regular_masks is None:
-            self.add_reverse_source.set(False)
             messagebox.showerror("Reverse unavailable", "Complete Regular tracking first.")
-            return
+            return False
         if len(self.regular_masks) <= 14:
-            self.add_reverse_source.set(False)
             messagebox.showerror(
                 "Reverse unavailable",
                 "Reverse tracking requires frames 000 through 014.",
             )
-            return
+            return False
         if not self.regular_masks[14].any():
-            self.add_reverse_source.set(False)
             messagebox.showerror(
                 "Reverse unavailable",
                 "Reverse requires a non-empty Regular mask on frame 014.",
             )
-            return
+            return False
         regular_snapshot = [mask.copy() for mask in self.regular_masks]
         self._start_task(
             "reverse",
             "Generating reverse tracking from frame 014...",
             lambda: self.sam_session.track_reverse_logits(regular_snapshot, self._queue_status),
         )
+        return True
+
+    def _on_auto_filter_pre_gate_toggle(self) -> None:
+        if self._busy or self.mask_source_state is None:
+            return
+        if not self.auto_filter_pre_gate.get():
+            self.mask_source_state.set_pre_gate_filter_enabled(False)
+            self._mark_mask_source_preview_changed()
+            return
+        if not self.add_pre_gate_source.get():
+            self.auto_filter_pre_gate.set(False)
+            messagebox.showerror("Pre-Gate required", "Enable Add Pre-Gate before Auto-filter.")
+            return
+        if self.reverse_masks is None:
+            if not self._start_reverse_generation():
+                self.auto_filter_pre_gate.set(False)
+            return
+        self._recompute_temporal_filter()
+        self._mark_mask_source_preview_changed()
 
     def _schedule_pre_gate_update(self, value: str) -> None:
         rounded = max(
@@ -1395,6 +1455,7 @@ class TeamColorApp:
         )
         if self.mask_source_state is not None:
             self.mask_source_state.set_pre_gate_masks(self.pre_gate_masks)
+            self._recompute_temporal_filter()
             self._sync_mask_source_preview()
             self._refresh_tracked_mask_preview()
             if self.add_pre_gate_source.get():
@@ -1471,6 +1532,30 @@ class TeamColorApp:
         if self.pre_gate_diagnostics_window is diagnostics:
             self.pre_gate_diagnostics_window = None
 
+    def _open_temporal_filter_diagnostics(self) -> None:
+        if self.temporal_filter_result is None:
+            messagebox.showerror(
+                "Diagnostics unavailable",
+                "Enable Add Pre-Gate and Auto-filter Pre-Gate after Reverse cache is ready.",
+            )
+            return
+        self._close_temporal_filter_diagnostics()
+        self.temporal_filter_diagnostics_window = TemporalFilterDiagnosticsWindow(self)
+        self.status.set("Temporal Pre-Gate Filter diagnostics ready.")
+
+    def _close_temporal_filter_diagnostics(self) -> None:
+        if self.temporal_filter_diagnostics_window is not None:
+            diagnostics = self.temporal_filter_diagnostics_window
+            self.temporal_filter_diagnostics_window = None
+            diagnostics.destroy()
+
+    def _temporal_filter_diagnostics_window_closed(
+        self,
+        diagnostics: "TemporalFilterDiagnosticsWindow",
+    ) -> None:
+        if self.temporal_filter_diagnostics_window is diagnostics:
+            self.temporal_filter_diagnostics_window = None
+
     def _tracked_mask_window_closed(self, preview: "TrackedMaskPreviewWindow") -> None:
         if self.tracked_mask_window is preview:
             self.tracked_mask_window = None
@@ -1528,13 +1613,18 @@ class TeamColorApp:
                     self._busy = False
                     if name == "reverse":
                         self.add_reverse_source.set(False)
+                        self.auto_filter_pre_gate.set(False)
                         self.reverse_raw_logits = None
                         self.reverse_raw_masks = None
                         self.reverse_masks = None
+                        self.filtered_pre_gate_masks = None
+                        self.temporal_filter_result = None
+                        self._close_temporal_filter_diagnostics()
                         if self.sam_session is not None:
                             self.sam_session.reverse_raw_logits = None
                         if self.mask_source_state is not None:
                             self.mask_source_state.set_enabled(reverse=False)
+                            self.mask_source_state.set_pre_gate_filter_enabled(False)
                             self._sync_mask_source_preview()
                             self._refresh_tracked_mask_preview()
                     print(details, file=sys.stderr)
@@ -1579,13 +1669,22 @@ class TeamColorApp:
             if self.mask_source_state is None or self.reverse_masks is None:
                 raise RuntimeError("Reverse masks were not retained after propagation")
             self.mask_source_state.set_reverse_masks(self.reverse_masks)
-            self.mask_source_state.set_enabled(reverse=True)
+            self.mask_source_state.set_enabled(reverse=self.add_reverse_source.get())
+            self._recompute_temporal_filter()
             self._sync_mask_source_preview()
             self._refresh_tracked_mask_preview()
-            self.status.set(
-                "Reverse tracking ready and added to the Combined preview. "
-                "Click Use These Masks to apply."
-            )
+            if self.auto_filter_pre_gate.get():
+                self.status.set(
+                    "Reverse cache ready; Temporal Pre-Gate Filter updated. "
+                    "Click Use These Masks to apply."
+                )
+            elif self.add_reverse_source.get():
+                self.status.set(
+                    "Reverse tracking ready and added to the Combined preview. "
+                    "Click Use These Masks to apply."
+                )
+            else:
+                self.status.set("Reverse cache ready.")
         elif name == "recolor":
             self.recolored_frames, self.recolored_contact, self.recolor_target = result
             self.review_state.begin(self.recolored_frames, self.recolored_contact)
@@ -1659,6 +1758,8 @@ class TeamColorApp:
         self.regular_raw_masks = None
         self.regular_masks = None
         self.pre_gate_masks = None
+        self.filtered_pre_gate_masks = None
+        self.temporal_filter_result = None
         self.reverse_raw_logits = None
         self.reverse_raw_masks = None
         self.reverse_masks = None
@@ -1673,6 +1774,7 @@ class TeamColorApp:
         self._close_tracked_mask_preview()
         self._close_logit_diagnostics()
         self._close_pre_gate_diagnostics()
+        self._close_temporal_filter_diagnostics()
         self._close_mask_editor()
         self._close_session()
         self.root.destroy()
@@ -2131,6 +2233,12 @@ class TrackedMaskPreviewWindow:
             text="Pre-Gate Diagnostics...",
             command=app._open_pre_gate_diagnostics,
         ).pack(side="left", padx=(8, 0))
+        self.temporal_diagnostics_button = ttk.Button(
+            header,
+            text="Temporal Filter Diagnostics...",
+            command=app._open_temporal_filter_diagnostics,
+        )
+        self.temporal_diagnostics_button.pack(side="left", padx=(8, 0))
 
         controls = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         controls.pack(fill="x")
@@ -2163,20 +2271,27 @@ class TrackedMaskPreviewWindow:
             command=app._on_pre_gate_source_toggle,
         )
         self.pre_gate_checkbox.grid(row=0, column=1, sticky="w", padx=(16, 0))
+        self.auto_filter_checkbox = ttk.Checkbutton(
+            sources,
+            text="Auto-filter Pre-Gate",
+            variable=app.auto_filter_pre_gate,
+            command=app._on_auto_filter_pre_gate_toggle,
+        )
+        self.auto_filter_checkbox.grid(row=0, column=2, sticky="w", padx=(16, 0))
         self.reverse_checkbox = ttk.Checkbutton(
             sources,
             text="Add Reverse",
             variable=app.add_reverse_source,
             command=app._on_reverse_source_toggle,
         )
-        self.reverse_checkbox.grid(row=0, column=2, sticky="w", padx=(16, 0))
+        self.reverse_checkbox.grid(row=0, column=3, sticky="w", padx=(16, 0))
         ttk.Label(sources, textvariable=app.mask_sources_info).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
+            row=1, column=0, columnspan=3, sticky="w", pady=(4, 0)
         )
         ttk.Label(sources, textvariable=app.mask_adoption_info).grid(
-            row=1, column=2, sticky="e", pady=(4, 0)
+            row=1, column=3, sticky="e", pady=(4, 0)
         )
-        sources.columnconfigure(2, weight=1)
+        sources.columnconfigure(3, weight=1)
 
         viewport = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         viewport.pack(fill="both", expand=True)
@@ -2217,6 +2332,15 @@ class TrackedMaskPreviewWindow:
             if disabled or self.app.pre_gate_diagnostics is None
             else "normal"
         )
+        self.auto_filter_checkbox.configure(
+            state="disabled"
+            if (
+                disabled
+                or self.app.pre_gate_diagnostics is None
+                or not self.app.add_pre_gate_source.get()
+            )
+            else "normal"
+        )
         reverse_ready = (
             self.app.regular_masks is not None
             and len(self.app.regular_masks) > 14
@@ -2227,6 +2351,9 @@ class TrackedMaskPreviewWindow:
         )
         self.use_button.configure(
             state="disabled" if disabled or self.app.combined_preview_masks is None else "normal"
+        )
+        self.temporal_diagnostics_button.configure(
+            state="disabled" if self.app.temporal_filter_result is None else "normal"
         )
 
     def destroy(self) -> None:
@@ -2394,6 +2521,88 @@ class PreGateDiagnosticsWindow:
 
     def close(self) -> None:
         self.app._pre_gate_diagnostics_window_closed(self)
+        self.destroy()
+
+
+class TemporalFilterDiagnosticsWindow:
+    """Filtered Pre-Gate overlay plus copyable per-frame geometry diagnostics."""
+
+    def __init__(self, app: TeamColorApp) -> None:
+        if app.temporal_filter_result is None:
+            raise RuntimeError("No Temporal Pre-Gate Filter result is available")
+        self.app = app
+        self.result = app.temporal_filter_result
+        self.report = format_temporal_filter_diagnostics(self.result)
+        contact = make_temporal_filter_contact_sheet(app.frames, self.result, columns=5)
+
+        self.window = tk.Toplevel(app.root)
+        self.window.title("Temporal Pre-Gate Filter Diagnostics")
+        width = min(max(1, app.screen_size[0] - 60), max(640, int(app.screen_size[0] * 0.85)))
+        height = min(max(1, app.screen_size[1] - 100), max(480, int(app.screen_size[1] * 0.85)))
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(640, width), min(480, height))
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        header = ttk.Frame(self.window, padding=8)
+        header.pack(fill="x")
+        ttk.Label(header, text="Temporal Pre-Gate Filter Diagnostics").pack(side="left")
+        ttk.Label(
+            header,
+            text="Green = accepted filtered Pre-Gate pixels; trusted frames stay clear.",
+        ).pack(side="left", padx=(12, 0))
+        ttk.Button(header, text="Copy All", command=self.copy_all).pack(side="right")
+        ttk.Button(header, text="Close", command=self.close).pack(side="right", padx=(0, 8))
+
+        image_viewport = ttk.Frame(self.window, padding=(8, 0, 8, 4))
+        image_viewport.pack(fill="both", expand=True)
+        self.image_view = ZoomPanImageView(image_viewport, self.window, contact, zoom=1)
+        self.image_view.frame.pack(fill="both", expand=True)
+
+        text_viewport = ttk.LabelFrame(self.window, text="Text diagnostics", padding=(8, 4))
+        text_viewport.pack(fill="both", padx=8, pady=(0, 8))
+        self.text = tk.Text(text_viewport, height=14, wrap="none", font="TkFixedFont")
+        vertical = ttk.Scrollbar(text_viewport, orient="vertical", command=self.text.yview)
+        horizontal = ttk.Scrollbar(text_viewport, orient="horizontal", command=self.text.xview)
+        self.text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        text_viewport.rowconfigure(0, weight=1)
+        text_viewport.columnconfigure(0, weight=1)
+        self._replace_report()
+        self.window.after(50, self.image_view.canvas.focus_set)
+
+    def _replace_report(self) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", self.report)
+        self.text.configure(state="disabled")
+
+    def update_result(self, result: TemporalPreGateFilterResult) -> None:
+        self.result = result
+        self.report = format_temporal_filter_diagnostics(result)
+        self.image_view.set_image(
+            make_temporal_filter_contact_sheet(self.app.frames, result, columns=5)
+        )
+        self._replace_report()
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def copy_all(self) -> None:
+        self.window.clipboard_clear()
+        self.window.clipboard_append(self.report)
+        self.app.status.set("Temporal Pre-Gate Filter diagnostics copied to the clipboard.")
+
+    def destroy(self) -> None:
+        if self.exists():
+            self.window.destroy()
+
+    def close(self) -> None:
+        self.app._temporal_filter_diagnostics_window_closed(self)
         self.destroy()
 
 

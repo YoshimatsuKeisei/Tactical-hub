@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+import math
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -43,6 +44,18 @@ PRE_GATE_PREVIEW_MAX_THRESHOLD = 20.0
 PRE_GATE_PREVIEW_DEFAULT_THRESHOLD = 0.0
 PRE_GATE_DIAGNOSTIC_THRESHOLDS = (0.0, -5.0, -10.0, 5.0)
 REVERSE_ANCHOR_FRAME_INDEX = 14
+
+# Temporal Pre-Gate continuity policy. Distances are normalized by the previous
+# accepted bbox diagonal so the same policy applies to different sprite sizes.
+MAX_NORMALIZED_CENTER_SHIFT = 2.5
+MIN_AREA_RATIO = 0.20
+MAX_AREA_GROWTH_RATIO = 3.0
+MAX_BBOX_SCALE_CHANGE = 2.5
+PROXIMITY_MARGIN_DIAGONAL_FACTOR = 1.25
+MIN_CONTINUITY_SCORE = 0.35
+BIDIRECTIONAL_MIN_IOU = 0.05
+BIDIRECTIONAL_MAX_NORMALIZED_CENTER_DISTANCE = 0.75
+BIDIRECTIONAL_BBOX_CENTER_DISTANCE = 1.5
 
 
 @dataclass(frozen=True)
@@ -141,6 +154,64 @@ class SamPreGateFrameDiagnostics:
     @property
     def capture(self) -> SamPreGateDecoderCapture | None:
         return self.captures[0] if self.capture_status == "captured" else None
+
+
+@dataclass(frozen=True)
+class MaskComponent:
+    label: int
+    area: int
+    centroid: tuple[float, float]
+    bbox: tuple[int, int, int, int]
+    width: int
+    height: int
+    diagonal: float
+    mask: np.ndarray
+
+
+@dataclass(frozen=True)
+class ContinuityEvaluation:
+    component_index: int
+    center_shift: float
+    normalized_center_shift: float
+    predicted_center: tuple[float, float]
+    predicted_center_distance: float
+    normalized_predicted_distance: float
+    area_ratio: float
+    width_ratio: float
+    height_ratio: float
+    diagonal_ratio: float
+    spatially_proximate: bool
+    continuity_score: float
+    accepted: bool
+    rejection_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TemporalPassFrameDiagnostics:
+    direction: str
+    candidate_component_count: int
+    selected_component: MaskComponent | None
+    evaluation: ContinuityEvaluation | None
+    result: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TemporalFilterFrameDiagnostics:
+    frame_index: int
+    trusted_anchor: bool
+    raw_pre_gate_pixels: int
+    left: TemporalPassFrameDiagnostics | None
+    right: TemporalPassFrameDiagnostics | None
+    final_result: str
+    final_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TemporalPreGateFilterResult:
+    trusted_masks: tuple[np.ndarray, ...]
+    filtered_masks: tuple[np.ndarray, ...]
+    frames: tuple[TemporalFilterFrameDiagnostics, ...]
 
 
 class PromptState:
@@ -633,20 +704,498 @@ def _copy_mask_source(
     return copied
 
 
+def connected_components_8(mask: np.ndarray) -> tuple[MaskComponent, ...]:
+    """Split a binary mask into owned 8-neighbor components."""
+    source = np.asarray(mask, dtype=bool)
+    if source.ndim != 2 or source.shape[0] <= 0 or source.shape[1] <= 0:
+        raise ValueError("Connected-component source must be a non-empty 2D mask")
+    visited = np.zeros(source.shape, dtype=bool)
+    height, width = source.shape
+    components: list[MaskComponent] = []
+    neighbors = tuple(
+        (dy, dx)
+        for dy in (-1, 0, 1)
+        for dx in (-1, 0, 1)
+        if not (dy == 0 and dx == 0)
+    )
+    for start_y in range(height):
+        for start_x in range(width):
+            if not source[start_y, start_x] or visited[start_y, start_x]:
+                continue
+            pending = deque([(start_y, start_x)])
+            visited[start_y, start_x] = True
+            points: list[tuple[int, int]] = []
+            while pending:
+                y, x = pending.popleft()
+                points.append((y, x))
+                for dy, dx in neighbors:
+                    next_y, next_x = y + dy, x + dx
+                    if (
+                        0 <= next_y < height
+                        and 0 <= next_x < width
+                        and source[next_y, next_x]
+                        and not visited[next_y, next_x]
+                    ):
+                        visited[next_y, next_x] = True
+                        pending.append((next_y, next_x))
+            component_mask = np.zeros(source.shape, dtype=bool)
+            ys = np.fromiter((point[0] for point in points), dtype=np.int32)
+            xs = np.fromiter((point[1] for point in points), dtype=np.int32)
+            component_mask[ys, xs] = True
+            x0, x1 = int(xs.min()), int(xs.max())
+            y0, y1 = int(ys.min()), int(ys.max())
+            component_width = x1 - x0 + 1
+            component_height = y1 - y0 + 1
+            components.append(
+                MaskComponent(
+                    label=len(components),
+                    area=len(points),
+                    centroid=(float(xs.mean()), float(ys.mean())),
+                    bbox=(x0, y0, x1, y1),
+                    width=component_width,
+                    height=component_height,
+                    diagonal=math.hypot(component_width, component_height),
+                    mask=component_mask,
+                )
+            )
+    return tuple(components)
+
+
+def mask_geometry(mask: np.ndarray, label: int = -1) -> MaskComponent:
+    """Measure one possibly-disconnected trusted mask as a single target geometry."""
+    source = np.asarray(mask, dtype=bool)
+    if source.ndim != 2 or not source.any():
+        raise ValueError("Mask geometry requires a non-empty 2D mask")
+    ys, xs = np.nonzero(source)
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    width = x1 - x0 + 1
+    height = y1 - y0 + 1
+    return MaskComponent(
+        label=label,
+        area=int(source.sum()),
+        centroid=(float(xs.mean()), float(ys.mean())),
+        bbox=(x0, y0, x1, y1),
+        width=width,
+        height=height,
+        diagonal=math.hypot(width, height),
+        mask=source.copy(),
+    )
+
+
+def _distance(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return math.hypot(left[0] - right[0], left[1] - right[1])
+
+
+def _scale_change(ratio: float) -> float:
+    return max(ratio, 1.0 / ratio) if ratio > 0 else math.inf
+
+
+def _bbox_overlaps(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> bool:
+    return not (
+        left[2] < right[0]
+        or right[2] < left[0]
+        or left[3] < right[1]
+        or right[3] < left[1]
+    )
+
+
+def evaluate_component_continuity(
+    accepted_history: Sequence[MaskComponent],
+    candidate: MaskComponent,
+    component_index: int | None = None,
+) -> ContinuityEvaluation:
+    """Score one component against accepted geometry and return explicit reasons."""
+    if not accepted_history:
+        raise ValueError("Continuity evaluation requires an accepted anchor")
+    previous = accepted_history[-1]
+    if len(accepted_history) >= 2:
+        older = accepted_history[-2]
+        predicted_center = (
+            previous.centroid[0] + previous.centroid[0] - older.centroid[0],
+            previous.centroid[1] + previous.centroid[1] - older.centroid[1],
+        )
+    else:
+        predicted_center = previous.centroid
+
+    normalization = max(previous.diagonal, 1.0)
+    center_shift = _distance(previous.centroid, candidate.centroid)
+    predicted_distance = _distance(predicted_center, candidate.centroid)
+    normalized_center_shift = center_shift / normalization
+    normalized_predicted_distance = predicted_distance / normalization
+    area_ratio = candidate.area / previous.area
+    width_ratio = candidate.width / previous.width
+    height_ratio = candidate.height / previous.height
+    diagonal_ratio = candidate.diagonal / max(previous.diagonal, 1e-6)
+    margin = max(1.0, previous.diagonal * PROXIMITY_MARGIN_DIAGONAL_FACTOR)
+    x0, y0, x1, y1 = previous.bbox
+    expanded_previous = (
+        math.floor(x0 - margin),
+        math.floor(y0 - margin),
+        math.ceil(x1 + margin),
+        math.ceil(y1 + margin),
+    )
+    spatially_proximate = _bbox_overlaps(expanded_previous, candidate.bbox)
+
+    area_change = _scale_change(area_ratio)
+    bbox_change = max(
+        _scale_change(width_ratio),
+        _scale_change(height_ratio),
+        _scale_change(diagonal_ratio),
+    )
+    center_score = max(
+        0.0,
+        1.0 - normalized_predicted_distance / MAX_NORMALIZED_CENTER_SHIFT,
+    )
+    movement_score = max(
+        0.0,
+        1.0 - normalized_center_shift / MAX_NORMALIZED_CENTER_SHIFT,
+    )
+    area_limit = max(MAX_AREA_GROWTH_RATIO, 1.0 / MIN_AREA_RATIO)
+    area_score = max(0.0, 1.0 - math.log(area_change) / math.log(area_limit))
+    bbox_score = max(
+        0.0,
+        1.0 - math.log(bbox_change) / math.log(MAX_BBOX_SCALE_CHANGE),
+    )
+    continuity_score = (
+        0.35 * center_score
+        + 0.10 * movement_score
+        + 0.25 * area_score
+        + 0.20 * bbox_score
+        + 0.10 * float(spatially_proximate)
+    )
+
+    reasons: list[str] = []
+    if normalized_predicted_distance > MAX_NORMALIZED_CENTER_SHIFT:
+        reasons.append("REJECT_CENTER_SHIFT")
+    if area_ratio > MAX_AREA_GROWTH_RATIO:
+        reasons.append("REJECT_AREA_GROWTH")
+    elif area_ratio < MIN_AREA_RATIO:
+        reasons.append("REJECT_AREA_CHANGE")
+    if bbox_change > MAX_BBOX_SCALE_CHANGE:
+        reasons.append("REJECT_BBOX_CHANGE")
+    if not spatially_proximate:
+        reasons.append("REJECT_SPATIAL_PROXIMITY")
+    if continuity_score < MIN_CONTINUITY_SCORE:
+        reasons.append("REJECT_LOW_SCORE")
+    return ContinuityEvaluation(
+        component_index=candidate.label if component_index is None else component_index,
+        center_shift=center_shift,
+        normalized_center_shift=normalized_center_shift,
+        predicted_center=predicted_center,
+        predicted_center_distance=predicted_distance,
+        normalized_predicted_distance=normalized_predicted_distance,
+        area_ratio=area_ratio,
+        width_ratio=width_ratio,
+        height_ratio=height_ratio,
+        diagonal_ratio=diagonal_ratio,
+        spatially_proximate=spatially_proximate,
+        continuity_score=continuity_score,
+        accepted=not reasons,
+        rejection_reasons=tuple(reasons),
+    )
+
+
+def find_empty_mask_gaps(masks: Sequence[np.ndarray]) -> tuple[tuple[int, int], ...]:
+    """Return inclusive spans of consecutive empty trusted masks."""
+    gaps: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, source in enumerate(masks):
+        empty = not np.asarray(source, dtype=bool).any()
+        if empty and start is None:
+            start = index
+        elif not empty and start is not None:
+            gaps.append((start, index - 1))
+            start = None
+    if start is not None:
+        gaps.append((start, len(masks) - 1))
+    return tuple(gaps)
+
+
+def _directional_gap_pass(
+    raw_pre_gate_masks: Sequence[np.ndarray],
+    frame_indexes: Sequence[int],
+    anchor_mask: np.ndarray | None,
+    direction: str,
+) -> tuple[dict[int, np.ndarray], dict[int, TemporalPassFrameDiagnostics]]:
+    accepted: dict[int, np.ndarray] = {}
+    diagnostics: dict[int, TemporalPassFrameDiagnostics] = {}
+    if anchor_mask is None:
+        for frame_index in frame_indexes:
+            component_count = len(connected_components_8(raw_pre_gate_masks[frame_index]))
+            diagnostics[frame_index] = TemporalPassFrameDiagnostics(
+                direction=direction,
+                candidate_component_count=component_count,
+                selected_component=None,
+                evaluation=None,
+                result="NO_ANCHOR",
+                reasons=("REJECT_NO_TRUSTED_ANCHOR",),
+            )
+        return accepted, diagnostics
+
+    history = [mask_geometry(anchor_mask)]
+    stopped = False
+    for frame_index in frame_indexes:
+        components = connected_components_8(raw_pre_gate_masks[frame_index])
+        if stopped:
+            diagnostics[frame_index] = TemporalPassFrameDiagnostics(
+                direction=direction,
+                candidate_component_count=len(components),
+                selected_component=None,
+                evaluation=None,
+                result="STOPPED",
+                reasons=("STOPPED_AFTER_PREVIOUS_FAILURE",),
+            )
+            continue
+        if not components:
+            diagnostics[frame_index] = TemporalPassFrameDiagnostics(
+                direction=direction,
+                candidate_component_count=0,
+                selected_component=None,
+                evaluation=None,
+                result="REJECT",
+                reasons=("REJECT_NO_COMPONENT",),
+            )
+            stopped = True
+            continue
+
+        evaluations = [
+            evaluate_component_continuity(history, component, component.label)
+            for component in components
+        ]
+        acceptable = [evaluation for evaluation in evaluations if evaluation.accepted]
+        selected_evaluation = max(
+            acceptable if acceptable else evaluations,
+            key=lambda evaluation: evaluation.continuity_score,
+        )
+        selected = components[selected_evaluation.component_index]
+        if selected_evaluation.accepted:
+            accepted[frame_index] = selected.mask.copy()
+            history.append(selected)
+            result = "ACCEPT"
+            reasons: tuple[str, ...] = ()
+        else:
+            result = "REJECT"
+            reasons = selected_evaluation.rejection_reasons
+            stopped = True
+        diagnostics[frame_index] = TemporalPassFrameDiagnostics(
+            direction=direction,
+            candidate_component_count=len(components),
+            selected_component=selected,
+            evaluation=selected_evaluation,
+            result=result,
+            reasons=reasons,
+        )
+    return accepted, diagnostics
+
+
+def _mask_iou(left: np.ndarray, right: np.ndarray) -> float:
+    intersection = int(np.logical_and(left, right).sum())
+    union = int(np.logical_or(left, right).sum())
+    return intersection / union if union else 1.0
+
+
+def bidirectional_components_are_consistent(left: np.ndarray, right: np.ndarray) -> bool:
+    left_geometry = mask_geometry(left)
+    right_geometry = mask_geometry(right)
+    normalization = max(left_geometry.diagonal, right_geometry.diagonal, 1.0)
+    normalized_distance = _distance(left_geometry.centroid, right_geometry.centroid) / normalization
+    bbox_overlap = _bbox_overlaps(left_geometry.bbox, right_geometry.bbox)
+    return bool(
+        _mask_iou(left, right) >= BIDIRECTIONAL_MIN_IOU
+        or normalized_distance <= BIDIRECTIONAL_MAX_NORMALIZED_CENTER_DISTANCE
+        or (bbox_overlap and normalized_distance <= BIDIRECTIONAL_BBOX_CENTER_DISTANCE)
+    )
+
+
+def temporal_filter_pre_gate_masks(
+    regular_masks: Sequence[np.ndarray],
+    raw_pre_gate_masks: Sequence[np.ndarray],
+    reverse_masks: Sequence[np.ndarray] | None = None,
+) -> TemporalPreGateFilterResult:
+    """Filter Pre-Gate components across trusted-mask gaps in both directions."""
+    regular = _copy_mask_source(regular_masks, "Regular")
+    shapes = [mask.shape for mask in regular]
+    if len(raw_pre_gate_masks) != len(regular):
+        raise ValueError("Raw Pre-Gate and Regular mask counts do not match")
+    raw = _copy_mask_source(raw_pre_gate_masks, "Raw Pre-Gate", shapes)
+    if reverse_masks is None:
+        reverse = [np.zeros(shape, dtype=bool) for shape in shapes]
+    else:
+        if len(reverse_masks) != len(regular):
+            raise ValueError("Reverse and Regular mask counts do not match")
+        reverse = _copy_mask_source(reverse_masks, "Reverse", shapes)
+    trusted = [np.logical_or(base, backward) for base, backward in zip(regular, reverse, strict=True)]
+    filtered = [np.zeros(shape, dtype=bool) for shape in shapes]
+    left_diagnostics: dict[int, TemporalPassFrameDiagnostics] = {}
+    right_diagnostics: dict[int, TemporalPassFrameDiagnostics] = {}
+
+    for gap_start, gap_end in find_empty_mask_gaps(trusted):
+        left_anchor = trusted[gap_start - 1] if gap_start > 0 else None
+        right_anchor = trusted[gap_end + 1] if gap_end + 1 < len(trusted) else None
+        left_accepted, left_frames = _directional_gap_pass(
+            raw,
+            tuple(range(gap_start, gap_end + 1)),
+            left_anchor,
+            "left_to_right",
+        )
+        right_accepted, right_frames = _directional_gap_pass(
+            raw,
+            tuple(range(gap_end, gap_start - 1, -1)),
+            right_anchor,
+            "right_to_left",
+        )
+        left_diagnostics.update(left_frames)
+        right_diagnostics.update(right_frames)
+        for frame_index in range(gap_start, gap_end + 1):
+            left_mask = left_accepted.get(frame_index)
+            right_mask = right_accepted.get(frame_index)
+            if left_mask is not None and right_mask is not None:
+                if bidirectional_components_are_consistent(left_mask, right_mask):
+                    filtered[frame_index] = np.logical_or(left_mask, right_mask)
+                continue
+            if left_mask is not None:
+                filtered[frame_index] = left_mask.copy()
+            elif right_mask is not None:
+                filtered[frame_index] = right_mask.copy()
+
+    frame_diagnostics: list[TemporalFilterFrameDiagnostics] = []
+    for frame_index, (trusted_mask, raw_mask, output) in enumerate(
+        zip(trusted, raw, filtered, strict=True)
+    ):
+        if trusted_mask.any():
+            final_result = "TRUSTED_FRAME"
+            final_reasons = ("FILTER_NOT_NEEDED_ON_TRUSTED_FRAME",)
+            left = right = None
+        else:
+            left = left_diagnostics.get(frame_index)
+            right = right_diagnostics.get(frame_index)
+            left_accepted = left is not None and left.result == "ACCEPT"
+            right_accepted = right is not None and right.result == "ACCEPT"
+            if left_accepted and right_accepted:
+                if output.any():
+                    final_result = "ACCEPT_BOTH"
+                    final_reasons = ()
+                else:
+                    final_result = "AMBIGUOUS"
+                    final_reasons = ("REJECT_AMBIGUOUS_DIRECTIONS",)
+            elif left_accepted:
+                final_result = "ACCEPT_LEFT"
+                final_reasons = ()
+            elif right_accepted:
+                final_result = "ACCEPT_RIGHT"
+                final_reasons = ()
+            else:
+                final_result = "REJECT"
+                final_reasons = tuple(
+                    dict.fromkeys(
+                        reason
+                        for diagnostic in (left, right)
+                        if diagnostic is not None
+                        for reason in diagnostic.reasons
+                    )
+                ) or ("REJECT_NO_COMPONENT",)
+        frame_diagnostics.append(
+            TemporalFilterFrameDiagnostics(
+                frame_index=frame_index,
+                trusted_anchor=bool(trusted_mask.any()),
+                raw_pre_gate_pixels=int(raw_mask.sum()),
+                left=left,
+                right=right,
+                final_result=final_result,
+                final_reasons=final_reasons,
+            )
+        )
+    return TemporalPreGateFilterResult(
+        trusted_masks=tuple(mask.copy() for mask in trusted),
+        filtered_masks=tuple(mask.copy() for mask in filtered),
+        frames=tuple(frame_diagnostics),
+    )
+
+
+def format_temporal_filter_diagnostics(result: TemporalPreGateFilterResult) -> str:
+    def describe_pass(diagnostic: TemporalPassFrameDiagnostics | None, indent: str) -> list[str]:
+        if diagnostic is None:
+            return [f"{indent}not evaluated (trusted frame)"]
+        lines = [
+            f"{indent}candidate components: {diagnostic.candidate_component_count}",
+            f"{indent}result: {diagnostic.result}",
+        ]
+        if diagnostic.selected_component is not None:
+            component = diagnostic.selected_component
+            lines.extend(
+                [
+                    f"{indent}selected component: {component.label}",
+                    f"{indent}area: {component.area}",
+                    f"{indent}centroid: ({component.centroid[0]:.3f}, {component.centroid[1]:.3f})",
+                    f"{indent}bbox: {component.bbox}",
+                    f"{indent}bbox size/diagonal: {component.width} x {component.height} / {component.diagonal:.3f}",
+                ]
+            )
+        if diagnostic.evaluation is not None:
+            evaluation = diagnostic.evaluation
+            lines.extend(
+                [
+                    f"{indent}center shift: {evaluation.center_shift:.4f} "
+                    f"(normalized {evaluation.normalized_center_shift:.4f})",
+                    f"{indent}predicted center: ({evaluation.predicted_center[0]:.3f}, "
+                    f"{evaluation.predicted_center[1]:.3f})",
+                    f"{indent}predicted center distance: {evaluation.predicted_center_distance:.4f} "
+                    f"(normalized {evaluation.normalized_predicted_distance:.4f})",
+                    f"{indent}area ratio: {evaluation.area_ratio:.4f}",
+                    f"{indent}bbox width/height/diagonal ratios: {evaluation.width_ratio:.4f} / "
+                    f"{evaluation.height_ratio:.4f} / {evaluation.diagonal_ratio:.4f}",
+                    f"{indent}spatial proximity: {'YES' if evaluation.spatially_proximate else 'NO'}",
+                    f"{indent}continuity score: {evaluation.continuity_score:.4f}",
+                ]
+            )
+        if diagnostic.reasons:
+            lines.append(f"{indent}reasons: {', '.join(diagnostic.reasons)}")
+        return lines
+
+    lines = [
+        "Temporal Pre-Gate Filter diagnostics",
+        "Geometry-only CPU filter; no SAM inference or appearance features are used.",
+        "Trusted mask = Regular OR cached Reverse. Trusted frames emit no Filtered Pre-Gate pixels.",
+        "",
+    ]
+    for frame in result.frames:
+        lines.extend(
+            [
+                f"frame_{frame.frame_index:03}",
+                f"  trusted anchor: {'YES' if frame.trusted_anchor else 'NO'}",
+                f"  raw pre-gate pixels: {frame.raw_pre_gate_pixels}",
+                "  left pass:",
+                *describe_pass(frame.left, "    "),
+                "  right pass:",
+                *describe_pass(frame.right, "    "),
+                f"  final: {frame.final_result}",
+            ]
+        )
+        if frame.final_reasons:
+            lines.append(f"  final reasons: {', '.join(frame.final_reasons)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def combine_mask_sources(
     regular_masks: Sequence[np.ndarray],
     pre_gate_masks: Sequence[np.ndarray] | None = None,
     reverse_masks: Sequence[np.ndarray] | None = None,
+    filtered_pre_gate_masks: Sequence[np.ndarray] | None = None,
     *,
     include_pre_gate: bool = False,
     include_reverse: bool = False,
+    use_filtered_pre_gate: bool = False,
 ) -> list[np.ndarray]:
     """Rebuild a non-destructive Regular-first OR union from selected sources."""
     regular = _copy_mask_source(regular_masks, "Regular")
     shapes = [mask.shape for mask in regular]
     selected: list[list[np.ndarray]] = []
+    selected_pre_gate = filtered_pre_gate_masks if use_filtered_pre_gate else pre_gate_masks
+    pre_gate_name = "Filtered Pre-Gate" if use_filtered_pre_gate else "Raw Pre-Gate"
     for enabled, masks, name in (
-        (include_pre_gate, pre_gate_masks, "Pre-Gate"),
+        (include_pre_gate, selected_pre_gate, pre_gate_name),
         (include_reverse, reverse_masks, "Reverse"),
     ):
         if not enabled:
@@ -670,9 +1219,11 @@ class MaskSourceState:
     def __init__(self, regular_masks: Sequence[np.ndarray]) -> None:
         self.regular_masks = _copy_mask_source(regular_masks, "Regular")
         self.pre_gate_masks: list[np.ndarray] | None = None
+        self.filtered_pre_gate_masks: list[np.ndarray] | None = None
         self.reverse_masks: list[np.ndarray] | None = None
         self.include_pre_gate = False
         self.include_reverse = False
+        self.use_filtered_pre_gate = False
         self.preview_masks = combine_mask_sources(self.regular_masks)
         self.active_masks = [mask.copy() for mask in self.preview_masks]
         self.preview_dirty = False
@@ -696,6 +1247,10 @@ class MaskSourceState:
         self.pre_gate_masks = self._replace_source(masks, "Pre-Gate")
         self.rebuild_preview()
 
+    def set_filtered_pre_gate_masks(self, masks: Sequence[np.ndarray]) -> None:
+        self.filtered_pre_gate_masks = self._replace_source(masks, "Filtered Pre-Gate")
+        self.rebuild_preview()
+
     def set_reverse_masks(self, masks: Sequence[np.ndarray]) -> None:
         self.reverse_masks = self._replace_source(masks, "Reverse")
         self.rebuild_preview()
@@ -711,13 +1266,21 @@ class MaskSourceState:
             self.include_reverse = bool(reverse)
         self.rebuild_preview()
 
+    def set_pre_gate_filter_enabled(self, enabled: bool) -> None:
+        if enabled and self.filtered_pre_gate_masks is None:
+            raise ValueError("Filtered Pre-Gate masks are not available")
+        self.use_filtered_pre_gate = bool(enabled)
+        self.rebuild_preview()
+
     def rebuild_preview(self) -> list[np.ndarray]:
         self.preview_masks = combine_mask_sources(
             self.regular_masks,
             self.pre_gate_masks,
             self.reverse_masks,
+            self.filtered_pre_gate_masks,
             include_pre_gate=self.include_pre_gate,
             include_reverse=self.include_reverse,
+            use_filtered_pre_gate=self.use_filtered_pre_gate,
         )
         self.preview_dirty = any(
             not np.array_equal(preview, active)
@@ -734,7 +1297,8 @@ class MaskSourceState:
     def source_label(self) -> str:
         sources = ["Regular"]
         if self.include_pre_gate:
-            sources.append("Pre-Gate")
+            mode = "Auto-filtered" if self.use_filtered_pre_gate else "Raw"
+            sources.append(f"Pre-Gate ({mode})")
         if self.include_reverse:
             sources.append("Reverse")
         return " + ".join(sources)
@@ -1096,6 +1660,22 @@ def make_pre_gate_contact_sheet(
             draw.text((2, 2), message, fill=(255, 220, 0, 255))
         overlays.append(overlay)
         labels.append(f"frame_{diagnostic.frame_index:03}")
+    return make_contact_sheet(overlays, labels, columns=columns)
+
+
+def make_temporal_filter_contact_sheet(
+    frames: Sequence[Image.Image],
+    result: TemporalPreGateFilterResult,
+    columns: int = 5,
+) -> Image.Image:
+    """Show only Filtered Pre-Gate pixels; trusted frames intentionally stay clear."""
+    if len(frames) != len(result.filtered_masks):
+        raise ValueError("Frame and Temporal Filter result counts do not match")
+    overlays = [
+        make_mask_overlay(frame, mask, color=(80, 220, 120), opacity=0.65)
+        for frame, mask in zip(frames, result.filtered_masks, strict=True)
+    ]
+    labels = [f"frame_{index:03}" for index in range(len(frames))]
     return make_contact_sheet(overlays, labels, columns=columns)
 
 

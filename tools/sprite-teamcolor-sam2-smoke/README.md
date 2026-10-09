@@ -355,7 +355,7 @@ visible result from them:
 The Combined preview is deliberately only this union:
 
 ```text
-Regular OR optional Pre-Gate OR optional Reverse
+Regular OR optional Reverse OR (Raw Pre-Gate or Auto-filtered Pre-Gate)
 ```
 
 Use **Add Pre-Gate** and **Add Reverse** to compare Regular only, Regular +
@@ -375,9 +375,57 @@ Regular. Loading a sheet or row, changing the frame-0 selection or Quick Select
 prompts, rerunning Forward tracking, recreating/closing the SAM session, or
 exiting clears the Reverse cache.
 
-This is a manual comparison facility. It does not implement automatic source or
-frame selection, confidence weighting, intersection, voting, object-score/IoU
-fallback, or Pre-Gate false-positive removal.
+This remains a comparison facility. It does not implement automatic source or
+frame selection, confidence weighting, intersection, voting, or
+object-score/IoU fallback.
+
+### Temporal Pre-Gate Filter (experimental)
+
+Enable **Add Pre-Gate**, then toggle **Auto-filter Pre-Gate** to replace the Raw
+Pre-Gate contribution with a geometry-only filtered contribution. Raw and
+filtered Pre-Gate are independent arrays and are never unioned together. Turning
+Auto-filter off restores the existing Raw Pre-Gate preview; turning Add Pre-Gate
+off excludes both variants. Source changes remain preview-only until **Use These
+Masks** is clicked.
+
+The filter builds a trusted mask at every frame from non-empty Regular or cached
+Reverse post-gate masks. It finds consecutive gaps where that trusted mask is
+empty, splits each Raw Pre-Gate candidate into 8-neighbor connected components,
+and follows one spatially continuous component into each gap independently from
+the left and right trusted anchors. Continuity uses centroid displacement, a
+constant-velocity predicted center when two accepted masks are available, area
+ratio, bounding-box width/height/diagonal ratios, and adaptive spatial
+proximity. If a candidate fails, that directional chain stops instead of
+reacquiring a later unrelated component.
+
+For each frame, a candidate accepted by only one pass is retained. Candidates
+accepted from both directions are unioned only when their IoU, centroid distance,
+or bounding boxes show that they refer to the same spatial target; conflicting
+results are marked `AMBIGUOUS` and excluded. Filtered Pre-Gate is intentionally
+empty on frames already covered by Regular or Reverse. There are no frame-number
+rules and no RGB, texture, model, or appearance comparison.
+
+Auto-filter needs the Reverse cache for its right-side anchors. If the cache does
+not exist when Auto-filter is first enabled, the existing background Reverse
+tracking path creates it once from the Regular `frame_014` mask using a fresh SAM
+state. The **Add Reverse** source does not need to remain enabled: its cached mask
+can provide filter anchors without being added directly to the Combined preview.
+Further filter toggles, Pre-Gate threshold/hole-fill changes, Regular threshold
+changes, and cached Reverse updates recalculate only CPU binary-mask geometry;
+they do not rerun SAM.
+
+Open **Temporal Filter Diagnostics...** from Tracked Mask Preview to inspect a
+green 15-frame Filtered Pre-Gate overlay and a scrollable, copyable report. For
+each frame the report lists trusted status, Raw Pre-Gate pixels, component
+geometry, left/right movement and size metrics, continuity score, pass result,
+final result, and explicit rejection/stop reasons. **Copy All** places the report
+on the clipboard for Windows test feedback.
+
+This filter is experimental. Its purpose is to preserve temporally plausible
+visible target fragments through occlusion while excluding Pre-Gate drift to a
+different body part, weapon, or effect. Final quality—especially whether the
+middle false positives disappear without losing the partially visible target—
+must be checked on Windows with the actual Melee selection.
 
 ### Zoom and Mask Editor
 
