@@ -52,6 +52,7 @@ import {
   observePpoBattleDefeats,
   shouldCapturePpoCombatDiagnostics,
   type PpoCombatDiagnostics,
+  type PpoCombatSnapshot,
 } from "./rlPpoCombatDiagnostics";
 
 if (!parentPort) {
@@ -78,6 +79,7 @@ type WorkerSlot = {
   generation: number;
   defeatDiagnosticTracker?: PpoDefeatDiagnosticTrackerV8;
   combatDiagnostics: PpoCombatDiagnostics;
+  combatBattleSnapshot?: PpoCombatSnapshot;
   finished: boolean;
   reason?: string;
   pending?: PendingDecision;
@@ -278,6 +280,7 @@ async function finalizeSlot(
   }
   slot.finished = true;
   slot.pending = undefined;
+  slot.combatBattleSnapshot = undefined;
 
   if (autoRecycle) {
     slot.seed += recycleSeedStride;
@@ -290,6 +293,7 @@ async function finalizeSlot(
     );
     slot.generation += 1;
     slot.combatDiagnostics = createPpoCombatDiagnostics();
+    slot.combatBattleSnapshot = undefined;
     if (defeatDiagnostics) {
       slot.defeatDiagnosticTracker =
         createPpoDefeatDiagnosticTrackerV8(
@@ -508,20 +512,30 @@ async function applyRound(
       );
     }
 
-    const combatBefore = shouldCapturePpoCombatDiagnostics(pending.phase)
-      ? capturePpoCombatSnapshot(slot.environment.getStateForValidation())
-      : undefined;
+    if (
+      shouldCapturePpoCombatDiagnostics(pending.phase)
+      && !slot.combatBattleSnapshot
+    ) {
+      slot.combatBattleSnapshot = capturePpoCombatSnapshot(
+        slot.environment.getStateForValidation(),
+      );
+    }
     measure(
       stageTiming,
       "gameStepMs",
       () => slot.environment.stepWithoutObservation(action.actionKey),
     );
-    if (combatBefore) {
+    const stateAfterStep = slot.environment.getStateForValidation();
+    if (
+      slot.combatBattleSnapshot
+      && stateAfterStep.phase !== "attack_input"
+    ) {
       observePpoBattleDefeats(
         slot.combatDiagnostics,
-        combatBefore,
-        slot.environment.getStateForValidation(),
+        slot.combatBattleSnapshot,
+        stateAfterStep,
       );
+      slot.combatBattleSnapshot = undefined;
     }
     const step: PpoTrajectoryStep = {
       decisionIndex: pending.decisionIndex,
