@@ -1892,26 +1892,56 @@ class Sam2GuiSession:
         self.masks: list[np.ndarray] | None = None
 
     def _ensure_ready(self, progress: ProgressCallback) -> None:
-        if self.predictor is not None:
-            return
-        try:
-            from smoke import (
-                create_sam2_predictor,
-                initialize_sam2_state,
-                prepare_frame_sequence,
-                resolve_device,
-            )
-        except ImportError as error:
-            raise RuntimeError("Could not import the SAM 2 smoke integration") from error
+        if self.predictor is None:
+            try:
+                from smoke import create_sam2_predictor, prepare_frame_sequence, resolve_device
+            except ImportError as error:
+                raise RuntimeError("Could not import the SAM 2 smoke integration") from error
 
-        progress("Preparing SAM 2 frames...")
-        sam_frames = prepare_frame_sequence(self.frames, self.temp_dir, self.work_size)
-        self.sam_frames_dir = sam_frames
-        progress("Loading SAM 2 model...")
-        self.device = resolve_device(self.device_name)
-        self.predictor = create_sam2_predictor(self.model_config, self.checkpoint_path, self.device)
-        progress("Initializing SAM 2 video state...")
-        self.inference_state = initialize_sam2_state(self.predictor, sam_frames, self.device)
+            progress("Preparing SAM 2 frames...")
+            self.sam_frames_dir = prepare_frame_sequence(
+                self.frames,
+                self.temp_dir,
+                self.work_size,
+            )
+            progress("Loading SAM 2 model...")
+            self.device = resolve_device(self.device_name)
+            self.predictor = create_sam2_predictor(
+                self.model_config,
+                self.checkpoint_path,
+                self.device,
+            )
+
+        if self.inference_state is None:
+            if self.sam_frames_dir is None or self.device is None:
+                raise RuntimeError("SAM 2 prepared frames and device are unavailable")
+            try:
+                from smoke import initialize_sam2_state
+            except ImportError as error:
+                raise RuntimeError("Could not import the SAM 2 smoke integration") from error
+            progress("Initializing fresh SAM 2 video state...")
+            self.inference_state = initialize_sam2_state(
+                self.predictor,
+                self.sam_frames_dir,
+                self.device,
+            )
+
+    def reset_tracking_state(self) -> None:
+        """Discard target-specific state while retaining model and prepared frames."""
+        previous_state = self.inference_state
+        try:
+            reset_state = getattr(self.predictor, "reset_state", None)
+            if previous_state is not None and callable(reset_state):
+                reset_state(previous_state)
+        finally:
+            self.inference_state = None
+            self.frame0_mask = None
+            self.sam_frame0_prediction = None
+            self.frame0_logits = None
+            self.raw_logits = None
+            self.reverse_raw_logits = None
+            self.pre_gate_diagnostics = None
+            self.masks = None
 
     def generate_frame0_mask(
         self,
@@ -1921,6 +1951,7 @@ class Sam2GuiSession:
     ) -> np.ndarray:
         if not any(click.label == 1 for click in clicks):
             raise ValueError("Add at least one positive click before generating a mask")
+        self.reset_tracking_state()
         self._ensure_ready(progress)
         from smoke import PromptPoint, add_sam2_prompts_logits, threshold_sam2_logits
 
@@ -1953,6 +1984,7 @@ class Sam2GuiSession:
         clipped = clip_mask_to_frame(validated, self.frames[0])
         if not clipped.any():
             raise ValueError("The selected area is empty after alpha clipping")
+        self.reset_tracking_state()
         self._ensure_ready(progress)
         from smoke import add_sam2_mask_logits, threshold_sam2_logits
 
@@ -2085,17 +2117,10 @@ class Sam2GuiSession:
         return [mask.copy() for mask in self.masks]
 
     def close(self) -> None:
+        self.reset_tracking_state()
         self.predictor = None
-        self.inference_state = None
         self.device = None
         self.sam_frames_dir = None
-        self.sam_frame0_prediction = None
-        self.frame0_logits = None
-        self.raw_logits = None
-        self.reverse_raw_logits = None
-        self.pre_gate_diagnostics = None
-        self.frame0_mask = None
-        self.masks = None
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
 

@@ -729,6 +729,9 @@ class TeamColorApp:
         if self._busy:
             return
         self._clear_main_draft()
+        self._reset_sam_tracking_target()
+        self.quick_frame0_mask = None
+        self.quick_frame0_logits = None
         self.sam_raw_logits = None
         self._clear_pre_gate_diagnostics()
         self._reset_mask_sources(clear_active=True)
@@ -745,7 +748,10 @@ class TeamColorApp:
         elif self.selection_mode.get() == "quick":
             self._close_mask_editor()
             self._sync_quick_mask()
-            self.status.set("Quick Select: add clicks, then Generate Mask.")
+            self.status.set(
+                "Selection mode changed. Previous tracking state cleared; "
+                "review prompts, then Generate Mask."
+            )
         else:
             self._close_mask_editor()
             self._sync_select_all_mask()
@@ -1020,6 +1026,7 @@ class TeamColorApp:
 
     def _invalidate_after_lasso_change(self) -> None:
         self._sync_lasso_mask()
+        self._reset_sam_tracking_target()
         self.sam_raw_logits = None
         self._clear_pre_gate_diagnostics()
         self._reset_mask_sources(clear_active=True)
@@ -1031,9 +1038,15 @@ class TeamColorApp:
         self._redraw_prompt()
         self._refresh_mask_editor()
         if self.frame0_mask is None:
-            self.status.set("Selection is empty. Use Add and draw around the target area.")
+            self.status.set(
+                "Selection changed. Previous tracking state cleared. "
+                "Use Add and draw around the target area."
+            )
         else:
-            self.status.set("Initial Mask Ready. Review it, then Track Across Frames.")
+            self.status.set(
+                "Selection changed. Previous tracking state cleared. "
+                "Review it, then Track Across Frames."
+            )
         self._update_buttons()
 
     def _undo_lasso(self) -> None:
@@ -1089,6 +1102,7 @@ class TeamColorApp:
             self._invalidate_after_prompt_change()
 
     def _invalidate_after_prompt_change(self) -> None:
+        self._reset_sam_tracking_target()
         self.quick_frame0_mask = None
         self.quick_frame0_logits = None
         self.tracked_mask_info.set("Total mask pixels: 0")
@@ -1102,7 +1116,10 @@ class TeamColorApp:
         self._refresh_prompt_info()
         self._refresh_cleanup_info()
         self._redraw_prompt()
-        self.status.set("Prompts changed. Generate the frame 0 mask again.")
+        self.status.set(
+            "Prompts changed. Previous tracking state cleared. "
+            "Generate the frame 0 mask again."
+        )
         self._update_buttons()
 
     def _refresh_prompt_info(self) -> None:
@@ -1210,6 +1227,10 @@ class TeamColorApp:
             self.sam_session = Sam2GuiSession(self.frames, checkpoint, device_name=device_name)
             self.session_checkpoint = checkpoint
             self.session_device_name = device_name
+
+    def _reset_sam_tracking_target(self) -> None:
+        if self.sam_session is not None:
+            self.sam_session.reset_tracking_state()
 
     def _recolor(self) -> None:
         if self.masks is None or self.layout is None:

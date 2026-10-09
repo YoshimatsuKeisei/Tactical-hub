@@ -43,6 +43,15 @@ class CountingPredictor:
         self.point_calls = 0
         self.mask_calls = 0
         self.propagate_calls = 0
+        self.init_calls = 0
+        self.reset_states: list[object] = []
+
+    def init_state(self, **_kwargs: object) -> dict[str, int]:
+        self.init_calls += 1
+        return {"generation": self.init_calls}
+
+    def reset_state(self, inference_state: object) -> None:
+        self.reset_states.append(inference_state)
 
     def add_new_points_or_box(self, **_kwargs: object) -> tuple[int, list[int], list[FakeTensor]]:
         self.point_calls += 1
@@ -183,6 +192,8 @@ class SamThresholdTests(unittest.TestCase):
             session = Sam2GuiSession([rgba_frame((2, 2)), rgba_frame((2, 2))], checkpoint, work_size=2)
             session.predictor = predictor
             session.inference_state = object()
+            session.device = torch.device("cpu")
+            session.sam_frames_dir = Path(temporary)
             session.reverse_raw_logits = [np.ones((2, 2), dtype=np.float32)]
             session.generate_frame0_mask([PromptClick(0, 0, 1)])
             self.assertIsNone(session.reverse_raw_logits)
