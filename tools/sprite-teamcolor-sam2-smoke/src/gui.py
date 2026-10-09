@@ -50,6 +50,7 @@ from gui_controller import (
     frame_output_names,
     format_sam_logit_diagnostics,
     format_identity_global_diagnostics,
+    format_identity_global_prerequisite_error,
     format_pre_gate_diagnostics,
     format_temporal_filter_diagnostics,
     load_sprite_png,
@@ -58,6 +59,7 @@ from gui_controller import (
     make_pre_gate_contact_sheet,
     make_temporal_filter_contact_sheet,
     make_selection_overlay,
+    identity_global_missing_prerequisites,
     pan_scroll_offset,
     parse_team_color,
     percentage_to_unit,
@@ -1476,16 +1478,17 @@ class TeamColorApp:
         self._begin_identity_global()
 
     def _begin_identity_global(self) -> None:
-        if (
-            self.sam_session is None
-            or self.regular_masks is None
-            or self.pre_gate_diagnostics is None
-            or self.identity_authoritative_frame0_mask is None
-        ):
+        missing = identity_global_missing_prerequisites(
+            sam_session=self.sam_session,
+            regular_masks=self.regular_masks,
+            pre_gate_diagnostics=self.pre_gate_diagnostics,
+            authoritative_frame0_mask=self.identity_authoritative_frame0_mask,
+        )
+        if missing:
             self.preview_mode.set("legacy")
             messagebox.showerror(
                 "Identity Global unavailable",
-                "Complete Regular tracking before selecting Identity Global.",
+                format_identity_global_prerequisite_error(missing),
             )
             return
         if self.reverse_masks is None and self.identity_reverse_warning is None:
@@ -1857,6 +1860,17 @@ class TeamColorApp:
             self.sam_raw_logits = list(result)
             self.pre_gate_diagnostics = list(self.sam_session.pre_gate_diagnostics or ())
             self._rebuild_masks_from_logits()
+            missing = identity_global_missing_prerequisites(
+                sam_session=self.sam_session,
+                regular_masks=self.regular_masks,
+                pre_gate_diagnostics=self.pre_gate_diagnostics,
+                authoritative_frame0_mask=self.identity_authoritative_frame0_mask,
+            )
+            if missing:
+                raise RuntimeError(
+                    "Tracking completed with invalid Identity Global state. "
+                    + format_identity_global_prerequisite_error(missing)
+                )
             self._refresh_cleanup_info()
             self._redraw_prompt()
             self._refresh_mask_editor()
@@ -1998,7 +2012,6 @@ class TeamColorApp:
         self.combined_preview_masks = None
         self.mask_source_state = None
         self.identity_global_result = None
-        self.identity_authoritative_frame0_mask = None
         self.identity_reverse_warning = None
         self.raw_masks = None
         self.masks = None

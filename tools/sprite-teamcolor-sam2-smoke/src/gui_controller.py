@@ -1872,6 +1872,32 @@ def build_identity_global_result(
     )
 
 
+def identity_global_missing_prerequisites(
+    *,
+    sam_session: object | None,
+    regular_masks: Sequence[np.ndarray] | None,
+    pre_gate_diagnostics: Sequence[SamPreGateFrameDiagnostics] | None,
+    authoritative_frame0_mask: np.ndarray | None,
+) -> tuple[str, ...]:
+    """Return individually named state required to start Identity Global."""
+    missing: list[str] = []
+    if sam_session is None:
+        missing.append("SAM session")
+    if regular_masks is None:
+        missing.append("Regular masks")
+    if pre_gate_diagnostics is None:
+        missing.append("Pre-Gate diagnostics")
+    if authoritative_frame0_mask is None:
+        missing.append("Authoritative frame 0 target mask")
+    return tuple(missing)
+
+
+def format_identity_global_prerequisite_error(missing: Sequence[str]) -> str:
+    if not missing:
+        raise ValueError("At least one missing Identity Global prerequisite is required")
+    return "Missing prerequisites:\n" + "\n".join(f"- {item}" for item in missing)
+
+
 def make_identity_global_contact_sheet(
     frames: Sequence[Image.Image],
     result: IdentityGlobalResult,
