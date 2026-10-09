@@ -331,10 +331,10 @@ defaults to 0. It only re-renders retained CPU diagnostic data using threshold,
 nearest-neighbor resize, and frame-alpha clipping. The optional diagnostic hole
 fill starts off. Neither control reruns SAM 2 or changes the standard masks.
 The same threshold and diagnostic hole-fill state are shared with the optional
-Pre-Gate mask source described below. Pre-gate candidates are still never used
-automatically: they reach Recolor or Export only after **Add Pre-Gate** is
-selected and the visible Combined mask is explicitly adopted with **Use These
-Masks**.
+Pre-Gate mask source described below. In Legacy mode they reach Recolor or
+Export only after **Add Pre-Gate** is selected and the visible Combined mask is
+explicitly adopted with **Use These Masks**. Identity Global can evaluate them
+as candidates, but its selected path is likewise preview-only until adoption.
 
 ### Mask Sources and Combined preview
 
@@ -426,6 +426,62 @@ visible target fragments through occlusion while excluding Pre-Gate drift to a
 different body part, weapon, or effect. Final quality—especially whether the
 middle false positives disappear without losing the partially visible target—
 must be checked on Windows with the actual Melee selection.
+
+### Identity Global (Experimental)
+
+Tracked Mask Preview now has two independent composition modes. **Legacy Source
+Union** preserves the existing Regular/Pre-Gate/Temporal Filter/Reverse union
+pixel-for-pixel. **Identity Global (Experimental)** instead treats Regular,
+cached Reverse, and every captured Forward Pre-Gate multimask as candidates. It
+does not OR those sources together.
+
+On first use, the tool reuses the loaded SAM 2.1 tiny predictor and calls its
+official read-only `forward_image()` path in a fresh feature-only inference
+state. The inspected FPN shapes determine which spatial level is cached: the
+highest-resolution level whose 15 CPU `float16` maps fit the named 96 MiB cap is
+chosen. With the fixed tiny model this is currently level 0, `32 x 256 x 256`,
+about 60 MiB for 15 frames. Feature extraction runs in the background and does
+not modify Forward or Reverse tracking state.
+
+The authoritative user mask on frame 0 is coverage-resampled to the selected
+feature resolution and used for weighted feature pooling. The resulting
+L2-normalized SAM appearance descriptor is compared by cosine similarity with
+descriptors pooled from each candidate. Small selections retain at least one
+feature-cell support. Candidate masks come from:
+
+- Regular post-gate masks;
+- Reverse post-gate masks, generated once in the background from frame 14 when
+  not already cached (Identity continues without them if Reverse fails);
+- every captured Pre-Gate `low_res_multimasks` candidate, using the shared
+  Pre-Gate threshold and hole-fill setting.
+
+Each non-empty binary source is alpha-clipped and split into 8-neighbor connected
+components. A full-sequence Dynamic Programming/Viterbi pass then selects one
+candidate or an explicit **OCCLUDED** state per frame. Its primary node signal is
+similarity to the frame-0 target; weak source priors and soft motion, area,
+bounding-box, and temporal-appearance terms provide continuity without rejecting
+a visually matching large movement. OCCLUDED can transition back to a distant,
+strong identity match. Frame 0 is always the exact authoritative user mask.
+
+Open **Identity Global Diagnostics...** for a green selected-path contact sheet
+and copyable text. The report includes the chosen feature level/shape/dtype/cache
+size, target descriptor norm, all candidates and components, target/temporal
+cosines, geometry penalties, node and best-DP scores, OCCLUDED score, and the
+backtracked selection for each frame.
+
+Changing Preview Mode never changes active Recolor/Export masks. Click **Use
+These Masks** to adopt the currently visible Legacy or Identity result; switching
+back to Legacy and adopting restores the Legacy masks without Identity pixels
+being baked into any source. Pre-Gate threshold or hole-fill changes rebuild only
+the candidate bank, descriptors, and DP path from cached features—SAM propagation
+is not rerun.
+
+Image features are target-independent and remain cached when the frame-0 target
+changes within the same loaded row/model. Target descriptors, candidate
+descriptors, and the path are cleared. Loading another sheet or row, changing
+layout/frame count/checkpoint/device/model, closing the session, or exiting clears
+the feature cache. This is a comparison experiment, not a quality PASS: sword,
+shield, occlusion, and reappearance behavior still require Windows visual review.
 
 ### Zoom and Mask Editor
 

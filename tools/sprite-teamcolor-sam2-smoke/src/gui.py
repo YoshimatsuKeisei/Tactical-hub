@@ -26,6 +26,7 @@ from gui_controller import (
     PRE_GATE_PREVIEW_DEFAULT_THRESHOLD,
     PRE_GATE_PREVIEW_MAX_THRESHOLD,
     PRE_GATE_PREVIEW_MIN_THRESHOLD,
+    IdentityGlobalResult,
     MaskSourceState,
     RecolorPreviewState,
     SamPreGateFrameDiagnostics,
@@ -35,6 +36,7 @@ from gui_controller import (
     Sam2GuiSession,
     SheetLayout,
     apply_mask_cleanup,
+    build_identity_global_result,
     choose_display_scale,
     clamp_zoom,
     clip_mask_to_frame,
@@ -47,10 +49,12 @@ from gui_controller import (
     extract_row_frames,
     frame_output_names,
     format_sam_logit_diagnostics,
+    format_identity_global_diagnostics,
     format_pre_gate_diagnostics,
     format_temporal_filter_diagnostics,
     load_sprite_png,
     make_mask_overlay,
+    make_identity_global_contact_sheet,
     make_pre_gate_contact_sheet,
     make_temporal_filter_contact_sheet,
     make_selection_overlay,
@@ -106,6 +110,7 @@ class TeamColorApp:
         self.add_pre_gate_source = tk.BooleanVar(value=False)
         self.add_reverse_source = tk.BooleanVar(value=False)
         self.auto_filter_pre_gate = tk.BooleanVar(value=False)
+        self.preview_mode = tk.StringVar(value="legacy")
         self.pre_gate_threshold = tk.DoubleVar(value=PRE_GATE_PREVIEW_DEFAULT_THRESHOLD)
         self.pre_gate_threshold_text = tk.StringVar(
             value=f"{PRE_GATE_PREVIEW_DEFAULT_THRESHOLD:+.1f}"
@@ -144,6 +149,9 @@ class TeamColorApp:
         self.reverse_masks: list[np.ndarray] | None = None
         self.combined_preview_masks: list[np.ndarray] | None = None
         self.mask_source_state: MaskSourceState | None = None
+        self.identity_global_result: IdentityGlobalResult | None = None
+        self.identity_authoritative_frame0_mask: np.ndarray | None = None
+        self.identity_reverse_warning: str | None = None
         self.quick_frame0_logits: np.ndarray | None = None
         self.recolored_frames: list[Image.Image] = []
         self.recolored_contact: Image.Image | None = None
@@ -166,6 +174,7 @@ class TeamColorApp:
         self.logit_diagnostics_window: LogitDiagnosticsWindow | None = None
         self.pre_gate_diagnostics_window: PreGateDiagnosticsWindow | None = None
         self.temporal_filter_diagnostics_window: TemporalFilterDiagnosticsWindow | None = None
+        self.identity_global_diagnostics_window: IdentityGlobalDiagnosticsWindow | None = None
         self._pending_threshold_update: str | None = None
         self._pending_pre_gate_update: str | None = None
         self._busy = False
@@ -832,6 +841,11 @@ class TeamColorApp:
         self.reverse_masks = None
         self.combined_preview_masks = None
         self.mask_source_state = None
+        self.identity_global_result = None
+        self.identity_authoritative_frame0_mask = None
+        self.identity_reverse_warning = None
+        self.preview_mode.set("legacy")
+        self._close_identity_global_diagnostics()
         self.mask_sources_info.set("Sources: Regular")
         self.mask_adoption_info.set("")
         self.tracked_mask_info.set("Total mask pixels: 0")
@@ -954,7 +968,12 @@ class TeamColorApp:
         self.mask_threshold_text.set(f"{threshold:+.2f}")
         updated_from_logits = False
         if self.sam_raw_logits is not None:
+            rebuild_identity = self.preview_mode.get() == "identity"
+            self._invalidate_identity_global()
             self._rebuild_masks_from_logits()
+            if rebuild_identity:
+                self.preview_mode.set("identity")
+                self._start_identity_feature_or_build()
             updated_from_logits = True
         elif self.selection_mode.get() == "quick" and self.quick_frame0_logits is not None:
             self._rebuild_quick_frame0_from_logits()
@@ -1003,7 +1022,12 @@ class TeamColorApp:
         if self._busy:
             return
         if self.sam_raw_logits is not None:
+            rebuild_identity = self.preview_mode.get() == "identity"
+            self._invalidate_identity_global()
             self._rebuild_masks_from_logits()
+            if rebuild_identity:
+                self.preview_mode.set("identity")
+                self._start_identity_feature_or_build()
         elif self.selection_mode.get() == "quick" and self.quick_frame0_logits is not None:
             self._rebuild_quick_frame0_from_logits()
         else:
@@ -1191,15 +1215,17 @@ class TeamColorApp:
         if self.frame0_mask is None:
             messagebox.showerror("Mask required", "Create and review the frame 0 selection first.")
             return
+        authoritative_frame0 = self.frame0_mask.copy()
         self._discard_recolor_preview()
         self._close_logit_diagnostics()
         self._clear_pre_gate_diagnostics()
         self.sam_raw_logits = None
         self._reset_mask_sources(clear_active=True)
+        self.identity_authoritative_frame0_mask = authoritative_frame0
         if self.selection_mode.get() in ("area", "all"):
             checkpoint = Path(self.checkpoint_path.get()).expanduser().resolve()
             device_name = self.device.get()
-            initial_mask = self.frame0_mask.copy()
+            initial_mask = authoritative_frame0.copy()
 
             def worker() -> object:
                 self._ensure_sam_session(checkpoint, device_name)
@@ -1435,6 +1461,107 @@ class TeamColorApp:
         )
         return True
 
+    def _on_preview_mode_change(self) -> None:
+        if self._busy or self.mask_source_state is None:
+            return
+        if self.preview_mode.get() == "legacy":
+            self.mask_source_state.set_preview_mode("legacy")
+            self._mark_mask_source_preview_changed()
+            return
+        if self.identity_global_result is not None:
+            self.mask_source_state.set_identity_masks(self.identity_global_result.masks)
+            self.mask_source_state.set_preview_mode("identity")
+            self._mark_mask_source_preview_changed()
+            return
+        self._begin_identity_global()
+
+    def _begin_identity_global(self) -> None:
+        if (
+            self.sam_session is None
+            or self.regular_masks is None
+            or self.pre_gate_diagnostics is None
+            or self.identity_authoritative_frame0_mask is None
+        ):
+            self.preview_mode.set("legacy")
+            messagebox.showerror(
+                "Identity Global unavailable",
+                "Complete Regular tracking before selecting Identity Global.",
+            )
+            return
+        if self.reverse_masks is None and self.identity_reverse_warning is None:
+            if len(self.regular_masks) <= 14 or not self.regular_masks[14].any():
+                self.identity_reverse_warning = (
+                    "Reverse requires a non-empty Regular mask on frame 014; "
+                    "continuing with Regular and Pre-Gate candidates."
+                )
+            else:
+                regular_snapshot = [mask.copy() for mask in self.regular_masks]
+                self._start_task(
+                    "identity_reverse",
+                    "Identity Global: generating Reverse candidates from frame 014...",
+                    lambda: self.sam_session.track_reverse_logits(
+                        regular_snapshot, self._queue_status
+                    ),
+                )
+                return
+        self._start_identity_feature_or_build()
+
+    def _start_identity_feature_or_build(self) -> None:
+        if self.sam_session is None:
+            return
+        if self.sam_session.appearance_feature_cache is None:
+            self._start_task(
+                "identity_features",
+                "Identity Global: extracting SAM 2 appearance features...",
+                lambda: self.sam_session.extract_appearance_features(self._queue_status),
+            )
+            return
+        self._start_identity_build()
+
+    def _start_identity_build(self) -> None:
+        if (
+            self.sam_session is None
+            or self.sam_session.appearance_feature_cache is None
+            or self.regular_masks is None
+            or self.pre_gate_diagnostics is None
+            or self.identity_authoritative_frame0_mask is None
+        ):
+            return
+        frames = [frame.copy() for frame in self.frames]
+        authoritative = self.identity_authoritative_frame0_mask.copy()
+        regular = [mask.copy() for mask in self.regular_masks]
+        diagnostics = tuple(self.pre_gate_diagnostics)
+        reverse = None if self.reverse_masks is None else [mask.copy() for mask in self.reverse_masks]
+        cache = self.sam_session.appearance_feature_cache
+        threshold = float(self.pre_gate_threshold.get())
+        fill_holes = bool(self.pre_gate_fill_holes.get())
+        warning = self.identity_reverse_warning
+        self._start_task(
+            "identity_build",
+            "Identity Global: building candidate bank and global path...",
+            lambda: build_identity_global_result(
+                frames,
+                authoritative,
+                regular,
+                diagnostics,
+                cache,
+                reverse_masks=reverse,
+                pre_gate_threshold=threshold,
+                pre_gate_fill_holes=fill_holes,
+                reverse_warning=warning,
+            ),
+        )
+
+    def _invalidate_identity_global(self, rebuild_if_selected: bool = False) -> None:
+        self.identity_global_result = None
+        self._close_identity_global_diagnostics()
+        if self.mask_source_state is not None and self.mask_source_state.identity_masks is not None:
+            self.mask_source_state.clear_identity_masks()
+            self._sync_mask_source_preview()
+            self._refresh_tracked_mask_preview()
+        if rebuild_if_selected and self.preview_mode.get() == "identity" and not self._busy:
+            self._start_identity_feature_or_build()
+
     def _on_auto_filter_pre_gate_toggle(self) -> None:
         if self._busy or self.mask_source_state is None:
             return
@@ -1468,6 +1595,8 @@ class TeamColorApp:
         self._pending_pre_gate_update = None
         if self.pre_gate_diagnostics is None or not self.frames:
             return
+        rebuild_identity = self.preview_mode.get() == "identity"
+        self._invalidate_identity_global()
         self.pre_gate_masks = derive_pre_gate_masks(
             self.pre_gate_diagnostics,
             self.frames,
@@ -1487,6 +1616,9 @@ class TeamColorApp:
             self.status.set("Pre-Gate source preview changed. Click Use These Masks to apply.")
         else:
             self.status.set("Pre-Gate diagnostic preview updated; Combined mask is unchanged.")
+        if rebuild_identity:
+            self.preview_mode.set("identity")
+            self._start_identity_feature_or_build()
         self._update_buttons()
 
     def _close_tracked_mask_preview(self) -> None:
@@ -1577,6 +1709,32 @@ class TeamColorApp:
         if self.temporal_filter_diagnostics_window is diagnostics:
             self.temporal_filter_diagnostics_window = None
 
+    def _open_identity_global_diagnostics(self) -> None:
+        if self.identity_global_result is None:
+            messagebox.showerror(
+                "Diagnostics unavailable",
+                "Build the Identity Global preview first.",
+            )
+            return
+        self._close_identity_global_diagnostics()
+        self.identity_global_diagnostics_window = IdentityGlobalDiagnosticsWindow(
+            self, self.identity_global_result
+        )
+        self.status.set("Identity Global diagnostics ready.")
+
+    def _close_identity_global_diagnostics(self) -> None:
+        if self.identity_global_diagnostics_window is not None:
+            diagnostics = self.identity_global_diagnostics_window
+            self.identity_global_diagnostics_window = None
+            diagnostics.destroy()
+
+    def _identity_global_diagnostics_window_closed(
+        self,
+        diagnostics: "IdentityGlobalDiagnosticsWindow",
+    ) -> None:
+        if self.identity_global_diagnostics_window is diagnostics:
+            self.identity_global_diagnostics_window = None
+
     def _tracked_mask_window_closed(self, preview: "TrackedMaskPreviewWindow") -> None:
         if self.tracked_mask_window is preview:
             self.tracked_mask_window = None
@@ -1632,6 +1790,22 @@ class TeamColorApp:
                 elif event[0] == "error":
                     _kind, name, message, details = event
                     self._busy = False
+                    if name == "identity_reverse":
+                        self.reverse_raw_logits = None
+                        self.reverse_raw_masks = None
+                        self.reverse_masks = None
+                        if self.sam_session is not None:
+                            self.sam_session.reverse_raw_logits = None
+                        self.identity_reverse_warning = (
+                            f"Reverse candidates unavailable: {message}; continuing with "
+                            "Regular and Pre-Gate candidates."
+                        )
+                        print(details, file=sys.stderr)
+                        self.status.set(self.identity_reverse_warning)
+                        messagebox.showwarning("Identity Global Reverse unavailable", message)
+                        self._start_identity_feature_or_build()
+                        self._update_buttons()
+                        continue
                     if name == "reverse":
                         self.add_reverse_source.set(False)
                         self.auto_filter_pre_gate.set(False)
@@ -1646,6 +1820,12 @@ class TeamColorApp:
                         if self.mask_source_state is not None:
                             self.mask_source_state.set_enabled(reverse=False)
                             self.mask_source_state.set_pre_gate_filter_enabled(False)
+                            self._sync_mask_source_preview()
+                            self._refresh_tracked_mask_preview()
+                    if name in ("identity_features", "identity_build"):
+                        self.preview_mode.set("legacy")
+                        if self.mask_source_state is not None:
+                            self.mask_source_state.set_preview_mode("legacy")
                             self._sync_mask_source_preview()
                             self._refresh_tracked_mask_preview()
                     print(details, file=sys.stderr)
@@ -1685,6 +1865,8 @@ class TeamColorApp:
                 f"Tracking complete for {len(self.masks)} frames. Review tracked masks before Recolor."
             )
         elif name == "reverse":
+            rebuild_identity = self.preview_mode.get() == "identity"
+            self._invalidate_identity_global()
             self.reverse_raw_logits = [logits.copy() for logits in result]
             self._rebuild_masks_from_logits()
             if self.mask_source_state is None or self.reverse_masks is None:
@@ -1706,6 +1888,35 @@ class TeamColorApp:
                 )
             else:
                 self.status.set("Reverse cache ready.")
+            if rebuild_identity:
+                self.preview_mode.set("identity")
+                self._start_identity_feature_or_build()
+        elif name == "identity_reverse":
+            self.reverse_raw_logits = [logits.copy() for logits in result]
+            self._rebuild_masks_from_logits()
+            if self.reverse_masks is None:
+                raise RuntimeError("Identity Global Reverse candidates were not retained")
+            self.identity_reverse_warning = None
+            self._start_identity_feature_or_build()
+        elif name == "identity_features":
+            if self.sam_session is None or self.sam_session.appearance_feature_cache is None:
+                raise RuntimeError("SAM appearance feature cache was not retained")
+            self._start_identity_build()
+        elif name == "identity_build":
+            if not isinstance(result, IdentityGlobalResult):
+                raise RuntimeError("Identity Global worker returned an unexpected result")
+            self.identity_global_result = result
+            if self.mask_source_state is None:
+                raise RuntimeError("Tracked mask source state is unavailable")
+            self.mask_source_state.set_identity_masks(result.masks)
+            if self.preview_mode.get() == "identity":
+                self.mask_source_state.set_preview_mode("identity")
+            self._discard_recolor_preview()
+            self._sync_mask_source_preview()
+            self._refresh_tracked_mask_preview()
+            self.status.set(
+                "Identity Global preview ready. Click Use These Masks to apply."
+            )
         elif name == "recolor":
             self.recolored_frames, self.recolored_contact, self.recolor_target = result
             self.review_state.begin(self.recolored_frames, self.recolored_contact)
@@ -1786,6 +1997,9 @@ class TeamColorApp:
         self.reverse_masks = None
         self.combined_preview_masks = None
         self.mask_source_state = None
+        self.identity_global_result = None
+        self.identity_authoritative_frame0_mask = None
+        self.identity_reverse_warning = None
         self.raw_masks = None
         self.masks = None
         self.quick_frame0_logits = None
@@ -1796,6 +2010,7 @@ class TeamColorApp:
         self._close_logit_diagnostics()
         self._close_pre_gate_diagnostics()
         self._close_temporal_filter_diagnostics()
+        self._close_identity_global_diagnostics()
         self._close_mask_editor()
         self._close_session()
         self.root.destroy()
@@ -2260,6 +2475,12 @@ class TrackedMaskPreviewWindow:
             command=app._open_temporal_filter_diagnostics,
         )
         self.temporal_diagnostics_button.pack(side="left", padx=(8, 0))
+        self.identity_diagnostics_button = ttk.Button(
+            header,
+            text="Identity Global Diagnostics...",
+            command=app._open_identity_global_diagnostics,
+        )
+        self.identity_diagnostics_button.pack(side="left", padx=(8, 0))
 
         controls = ttk.Frame(self.window, padding=(8, 0, 8, 8))
         controls.pack(fill="x")
@@ -2282,9 +2503,30 @@ class TrackedMaskPreviewWindow:
         ttk.Label(controls, textvariable=app.tracked_mask_info).grid(row=1, column=2, sticky="e")
         controls.columnconfigure(1, weight=1)
 
+        preview_mode = ttk.LabelFrame(self.window, text="Preview Mode", padding=(8, 4))
+        preview_mode.pack(fill="x", padx=8, pady=(0, 8))
+        self.legacy_mode_button = ttk.Radiobutton(
+            preview_mode,
+            text="Legacy Source Union",
+            variable=app.preview_mode,
+            value="legacy",
+            command=app._on_preview_mode_change,
+        )
+        self.legacy_mode_button.pack(side="left")
+        self.identity_mode_button = ttk.Radiobutton(
+            preview_mode,
+            text="Identity Global (Experimental)",
+            variable=app.preview_mode,
+            value="identity",
+            command=app._on_preview_mode_change,
+        )
+        self.identity_mode_button.pack(side="left", padx=(16, 0))
+
         sources = ttk.LabelFrame(self.window, text="Mask Sources", padding=(8, 4))
         sources.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Label(sources, text="Regular SAM: ON — Base").grid(row=0, column=0, sticky="w")
+        ttk.Label(sources, text="Regular SAM: ON — Legacy base / Identity candidate").grid(
+            row=0, column=0, sticky="w"
+        )
         self.pre_gate_checkbox = ttk.Checkbutton(
             sources,
             text="Add Pre-Gate",
@@ -2348,15 +2590,20 @@ class TrackedMaskPreviewWindow:
 
     def update_controls(self) -> None:
         disabled = self.app._busy
+        identity_mode = self.app.preview_mode.get() == "identity"
+        mode_state = "disabled" if disabled else "normal"
+        self.legacy_mode_button.configure(state=mode_state)
+        self.identity_mode_button.configure(state=mode_state)
         self.pre_gate_checkbox.configure(
             state="disabled"
-            if disabled or self.app.pre_gate_diagnostics is None
+            if disabled or identity_mode or self.app.pre_gate_diagnostics is None
             else "normal"
         )
         self.auto_filter_checkbox.configure(
             state="disabled"
             if (
                 disabled
+                or identity_mode
                 or self.app.pre_gate_diagnostics is None
                 or not self.app.add_pre_gate_source.get()
             )
@@ -2368,13 +2615,16 @@ class TrackedMaskPreviewWindow:
             and bool(self.app.regular_masks[14].any())
         )
         self.reverse_checkbox.configure(
-            state="disabled" if disabled or not reverse_ready else "normal"
+            state="disabled" if disabled or identity_mode or not reverse_ready else "normal"
         )
         self.use_button.configure(
             state="disabled" if disabled or self.app.combined_preview_masks is None else "normal"
         )
         self.temporal_diagnostics_button.configure(
             state="disabled" if self.app.temporal_filter_result is None else "normal"
+        )
+        self.identity_diagnostics_button.configure(
+            state="disabled" if self.app.identity_global_result is None else "normal"
         )
 
     def destroy(self) -> None:
@@ -2624,6 +2874,68 @@ class TemporalFilterDiagnosticsWindow:
 
     def close(self) -> None:
         self.app._temporal_filter_diagnostics_window_closed(self)
+        self.destroy()
+
+
+class IdentityGlobalDiagnosticsWindow:
+    """Selected global path overlay plus copyable feature/DP diagnostics."""
+
+    def __init__(self, app: TeamColorApp, result: IdentityGlobalResult) -> None:
+        self.app = app
+        self.result = result
+        self.report = format_identity_global_diagnostics(result)
+        self.window = tk.Toplevel(app.root)
+        self.window.title("Identity Global Diagnostics")
+        width = min(max(1, app.screen_size[0] - 80), 1100)
+        height = min(max(1, app.screen_size[1] - 120), 820)
+        self.window.geometry(f"{width}x{height}")
+        self.window.minsize(min(620, width), min(420, height))
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        header = ttk.Frame(self.window, padding=8)
+        header.pack(fill="x")
+        ttk.Label(header, text="Identity Global selected path (green)").pack(side="left")
+        ttk.Button(header, text="Copy All", command=self.copy_all).pack(side="right")
+        ttk.Button(header, text="Close", command=self.close).pack(side="right", padx=(0, 8))
+
+        image_viewport = ttk.Frame(self.window, padding=(8, 0, 8, 4))
+        image_viewport.pack(fill="both", expand=True)
+        contact = make_identity_global_contact_sheet(app.frames, result, columns=5)
+        self.image_view = ZoomPanImageView(image_viewport, self.window, contact, zoom=1)
+        self.image_view.frame.pack(fill="both", expand=True)
+
+        text_viewport = ttk.LabelFrame(self.window, text="Text diagnostics", padding=(8, 4))
+        text_viewport.pack(fill="both", padx=8, pady=(0, 8))
+        self.text = tk.Text(text_viewport, height=16, wrap="none", font="TkFixedFont")
+        vertical = ttk.Scrollbar(text_viewport, orient="vertical", command=self.text.yview)
+        horizontal = ttk.Scrollbar(text_viewport, orient="horizontal", command=self.text.xview)
+        self.text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        text_viewport.rowconfigure(0, weight=1)
+        text_viewport.columnconfigure(0, weight=1)
+        self.text.insert("1.0", self.report)
+        self.text.configure(state="disabled")
+        self.window.after(50, self.image_view.canvas.focus_set)
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def copy_all(self) -> None:
+        self.window.clipboard_clear()
+        self.window.clipboard_append(self.report)
+        self.app.status.set("Identity Global diagnostics copied to the clipboard.")
+
+    def destroy(self) -> None:
+        if self.exists():
+            self.window.destroy()
+
+    def close(self) -> None:
+        self.app._identity_global_diagnostics_window_closed(self)
         self.destroy()
 
 

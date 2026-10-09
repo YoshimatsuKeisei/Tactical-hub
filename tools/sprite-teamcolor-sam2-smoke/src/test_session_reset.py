@@ -244,11 +244,14 @@ class SamTrackingStateResetTests(unittest.TestCase):
         app.add_pre_gate_source = ValueStub(True)
         app.add_reverse_source = ValueStub(True)
         app.auto_filter_pre_gate = ValueStub(True)
+        app.preview_mode = ValueStub("identity")
         app.mask_sources_info = ValueStub()
         app.mask_adoption_info = ValueStub()
         app.tracked_mask_info = ValueStub()
         app.sam_session = SessionStub()
         app.temporal_filter_diagnostics_window = None
+        app.identity_global_diagnostics_window = None
+        app._close_identity_global_diagnostics = lambda: None
         app.regular_raw_masks = object()
         app.regular_masks = object()
         app.pre_gate_masks = object()
@@ -259,6 +262,9 @@ class SamTrackingStateResetTests(unittest.TestCase):
         app.reverse_masks = object()
         app.combined_preview_masks = object()
         app.mask_source_state = object()
+        app.identity_global_result = object()
+        app.identity_authoritative_frame0_mask = object()
+        app.identity_reverse_warning = "warning"
         app.raw_masks = object()
         app.masks = object()
 
@@ -275,10 +281,14 @@ class SamTrackingStateResetTests(unittest.TestCase):
             "reverse_masks",
             "combined_preview_masks",
             "mask_source_state",
+            "identity_global_result",
+            "identity_authoritative_frame0_mask",
+            "identity_reverse_warning",
             "raw_masks",
             "masks",
         ):
             self.assertIsNone(getattr(app, attribute), attribute)
+        self.assertEqual(app.preview_mode.get(), "legacy")
         self.assertIsNone(app.sam_session.reverse_raw_logits)
 
 
