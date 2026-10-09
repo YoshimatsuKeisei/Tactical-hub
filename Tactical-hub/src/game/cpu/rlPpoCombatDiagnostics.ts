@@ -157,3 +157,10 @@ export function observePpoBattleDefeats(
     }
   }
 }
+
+
+export function shouldCapturePpoCombatDiagnostics(
+  phase: GameState["phase"],
+): boolean {
+  return phase === "attack_input";
+}
