@@ -31,6 +31,10 @@ import {
   countPpoEpisodeOutcomes,
   isPpoLearnableOutcomeKind,
 } from "./rlPpoTerminalOutcome";
+import {
+  PPO_COMBAT_UNIT_CATEGORIES,
+  createPpoCombatDiagnostics,
+} from "./rlPpoCombatDiagnostics";
 
 type FastBatchRetentionRecord = {
   retentionId: string;
@@ -704,7 +708,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
         let matchProductionSelections = 0;
         let matchProductionPasses = 0;
         let matchMergeInfantrySelected = 0;
-        const matchCombat = summary.combatDiagnostics;
+        const matchCombat = summary.combatDiagnostics ?? createPpoCombatDiagnostics();
         enemyDefeatedUnitCount += matchCombat.enemyDefeatedUnitCount;
         unattributedEnemyDefeatedUnitCount += matchCombat.unattributedEnemyDefeatedUnitCount;
         for (const category of PPO_COMBAT_UNIT_CATEGORIES) {
