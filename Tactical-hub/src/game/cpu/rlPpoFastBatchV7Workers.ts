@@ -682,6 +682,14 @@ export async function runPpoFastBatchV7WorkersSmoke(
     let productionSelectionCount = 0;
     let productionPassCount = 0;
     let mergeInfantrySelectedCount = 0;
+    let enemyDefeatedUnitCount = 0;
+    let unattributedEnemyDefeatedUnitCount = 0;
+    const enemyDefeatParticipationCountByAttackerType = Object.fromEntries(
+      PPO_COMBAT_UNIT_CATEGORIES.map((category) => [category, 0]),
+    ) as Record<(typeof PPO_COMBAT_UNIT_CATEGORIES)[number], number>;
+    const enemyDefeatCreditByAttackerType = Object.fromEntries(
+      PPO_COMBAT_UNIT_CATEGORIES.map((category) => [category, 0]),
+    ) as Record<(typeof PPO_COMBAT_UNIT_CATEGORIES)[number], number>;
     const perMatchBalance = Array.from(
       { length: environmentCount },
       (_, environmentIndex) => {
@@ -696,6 +704,15 @@ export async function runPpoFastBatchV7WorkersSmoke(
         let matchProductionSelections = 0;
         let matchProductionPasses = 0;
         let matchMergeInfantrySelected = 0;
+        const matchCombat = summary.combatDiagnostics;
+        enemyDefeatedUnitCount += matchCombat.enemyDefeatedUnitCount;
+        unattributedEnemyDefeatedUnitCount += matchCombat.unattributedEnemyDefeatedUnitCount;
+        for (const category of PPO_COMBAT_UNIT_CATEGORIES) {
+          enemyDefeatParticipationCountByAttackerType[category] +=
+            matchCombat.enemyDefeatParticipationCountByAttackerType[category];
+          enemyDefeatCreditByAttackerType[category] +=
+            matchCombat.enemyDefeatCreditByAttackerType[category];
+        }
         for (const step of rollout?.trajectory ?? []) {
           const key = step.selectedActionKey;
           if (key.startsWith("production:")) {
@@ -739,6 +756,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
           productionCounts: matchProductionCounts,
           strategistRoleCounts: matchStrategistRoleCounts,
           mergeInfantrySelectedCount: matchMergeInfantrySelected,
+          combatDiagnostics: matchCombat,
         };
       },
     );
@@ -780,6 +798,20 @@ export async function runPpoFastBatchV7WorkersSmoke(
         selectedPerLegalAction: mergeLegalActionCount
           ? mergeInfantrySelectedCount / mergeLegalActionCount
           : 0,
+      },
+      combat: {
+        enemyDefeatedUnitCount,
+        unattributedEnemyDefeatedUnitCount,
+        enemyDefeatParticipationCountByAttackerType,
+        enemyDefeatCreditByAttackerType,
+        enemyDefeatCreditShareByAttackerType: Object.fromEntries(
+          PPO_COMBAT_UNIT_CATEGORIES.map((category) => [
+            category,
+            enemyDefeatedUnitCount
+              ? enemyDefeatCreditByAttackerType[category] / enemyDefeatedUnitCount
+              : 0,
+          ]),
+        ),
       },
       finalTurns: perMatchBalance.map((match) => match.finalTurnNumber),
       perMatch: perMatchBalance,
