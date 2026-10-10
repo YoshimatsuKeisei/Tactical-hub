@@ -56,8 +56,8 @@ export type CatapultAssetManifest = {
   animations: Record<CatapultFrameAnimation, { direction: CatapultDirection; frames: string[] }[]>;
 };
 
-export function isBuilderCatapultUnit(unit: Unit) {
-  return unit.type === "strategist" && unit.role === "builder";
+export function isEngineerCatapultUnit(unit: Unit) {
+  return unit.type === "engineer";
 }
 
 export function catapultDirectionFromDelta(dx: number, dy: number): CatapultDirection {
@@ -168,7 +168,7 @@ export function createCatapultVisualEvents(
   for (const intent of attackIntents) {
     if (intent.pass || !intent.target) continue;
     const attacker = before.units.find((unit) => unit.id === intent.attackerUnitId);
-    if (!attacker || !isBuilderCatapultUnit(attacker)) continue;
+    if (!attacker || !isEngineerCatapultUnit(attacker)) continue;
     events.push({
       unitId: attacker.id,
       kind: "attack",
@@ -177,7 +177,7 @@ export function createCatapultVisualEvents(
     });
   }
 
-  for (const previous of before.units.filter(isBuilderCatapultUnit)) {
+  for (const previous of before.units.filter(isEngineerCatapultUnit)) {
     if (previous.position.kind === "removed" || previous.hp <= 0) continue;
     const current = after.units.find((unit) => unit.id === previous.id);
     const removed = !current || current.hp <= 0 || current.position.kind === "removed";

@@ -23,7 +23,7 @@ export const CATAPULT_ANIMATION_FRAME_COUNTS = {
 };
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = path.resolve(packageRoot, "..");
+export const DEFAULT_CATAPULT_SOURCE_PACK_ROOT = path.join(packageRoot, "Catapult - Isometric");
 const defaultOutputRoot = path.join(packageRoot, "public", "local-assets", "catapult");
 
 function frameName(animation, direction, frame) {
@@ -47,7 +47,7 @@ async function resolveSourceRoot(explicitRoot) {
   const candidates = [
     explicitRoot,
     process.env.CATAPULT_ASSET_ROOT,
-    path.join(repositoryRoot, "Catapult - Isometric"),
+    DEFAULT_CATAPULT_SOURCE_PACK_ROOT,
   ].filter(Boolean).map((candidate) => path.resolve(candidate));
 
   for (const candidate of candidates) {

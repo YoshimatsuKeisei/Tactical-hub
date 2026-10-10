@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { CatapultAssetFallback, handleCatapultImageError } from "../components/CatapultUnitSprite";
 import { UnitToken } from "../components/UnitToken";
+import { UNIT_STATS } from "../game/constants";
 import { createInitialGameState } from "../game/initialState";
 import type { AttackIntent, Unit } from "../game/types";
 import {
@@ -13,21 +14,27 @@ import {
   getCatapultAttackFrames,
   getCatapultBreakFrames,
   getCatapultIdleFrame,
-  isBuilderCatapultUnit,
+  isEngineerCatapultUnit,
   loadCatapultManifest,
 } from "./catapult";
 
 function unit(overrides: Partial<Unit> = {}): Unit {
   return {
-    id: "builder",
+    id: "engineer",
     ownerTeamId: "team-1",
-    type: "strategist",
-    role: "builder",
+    type: "engineer",
     hp: 1,
     position: { kind: "tile", x: 5, y: 5 },
     statuses: [],
     ...overrides,
   };
+}
+
+function strategist(
+  role: NonNullable<Unit["role"]>,
+  overrides: Partial<Unit> = {},
+): Unit {
+  return unit({ id: `strategist-${role}`, type: "strategist", role, ...overrides });
 }
 
 describe("Catapult animation descriptions", () => {
@@ -75,29 +82,44 @@ describe("Catapult animation descriptions", () => {
 });
 
 describe("UnitToken Catapult routing", () => {
-  it("uses the Catapult component only for builder strategists", () => {
-    const builder = renderToStaticMarkup(<UnitToken unit={unit()} />);
-    const encourager = renderToStaticMarkup(
-      <UnitToken unit={unit({ role: "encourage" })} />,
-    );
-    const infantry = renderToStaticMarkup(
-      <UnitToken unit={unit({ type: "infantry", role: undefined })} />,
-    );
-    expect(builder).toContain("catapult-sprite-image");
-    expect(builder).toContain("/local-assets/catapult/idle/dir0.png");
-    expect(encourager).not.toContain("catapult-sprite-image");
-    expect(encourager).toContain("帥");
-    expect(infantry).not.toContain("catapult-sprite-image");
-    expect(infantry).toContain("歩");
-    expect(isBuilderCatapultUnit(unit())).toBe(true);
-    expect(isBuilderCatapultUnit(unit({ role: "teleporter" }))).toBe(false);
+  it("uses the Catapult component for engineers", () => {
+    const engineer = renderToStaticMarkup(<UnitToken unit={unit()} />);
+    expect(engineer).toContain("catapult-sprite-image");
+    expect(engineer).toContain("/local-assets/catapult/idle/dir0.png");
+    expect(isEngineerCatapultUnit(unit())).toBe(true);
+  });
+
+  it("keeps every strategist role on its existing text rendering", () => {
+    for (const role of ["builder", "encourage", "teleporter"] as const) {
+      const markup = renderToStaticMarkup(<UnitToken unit={strategist(role)} />);
+      expect(markup).not.toContain("catapult-sprite-image");
+      expect(markup).toContain("帥");
+      expect(isEngineerCatapultUnit(strategist(role))).toBe(false);
+    }
+  });
+
+  it("keeps every other unit type on its existing text rendering", () => {
+    const otherTypes: Unit["type"][] = [
+      "king",
+      "infantry",
+      "cavalry",
+      "archer",
+      "ninja",
+      "apprentice_ninja",
+    ];
+    for (const type of otherTypes) {
+      const markup = renderToStaticMarkup(<UnitToken unit={unit({ id: type, type })} />);
+      expect(markup).not.toContain("catapult-sprite-image");
+      expect(markup).toContain(UNIT_STATS[type].label);
+      expect(isEngineerCatapultUnit(unit({ type }))).toBe(false);
+    }
   });
 
   it("provides a visible fallback and warning when local assets are absent", async () => {
     const warning = vi.fn();
     expect(handleCatapultImageError("/missing.png", warning)).toBe(false);
     expect(warning).toHaveBeenCalledWith("Catapult asset unavailable: /missing.png");
-    expect(renderToStaticMarkup(<CatapultAssetFallback>帥</CatapultAssetFallback>))
+    expect(renderToStaticMarkup(<CatapultAssetFallback>工</CatapultAssetFallback>))
       .toContain("Catapult asset unavailable");
 
     const consoleWarning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -109,22 +131,22 @@ describe("UnitToken Catapult routing", () => {
 });
 
 describe("Catapult battle presentation events", () => {
-  it("emits attack only for a builder attacker and derives direction", () => {
+  it("emits attack only for an engineer attacker and derives direction", () => {
     const before = createInitialGameState();
-    const builder = unit();
-    const infantry = unit({ id: "infantry", type: "infantry", role: undefined, position: { kind: "tile", x: 3, y: 3 } });
-    const target = unit({ id: "target", type: "infantry", role: undefined, ownerTeamId: "team-2", position: { kind: "tile", x: 7, y: 3 } });
-    before.units = [builder, infantry, target];
+    const engineer = unit();
+    const builder = strategist("builder", { position: { kind: "tile", x: 3, y: 3 } });
+    const target = unit({ id: "target", type: "infantry", ownerTeamId: "team-2", position: { kind: "tile", x: 7, y: 3 } });
+    before.units = [engineer, builder, target];
     const intents: AttackIntent[] = [
+      { teamId: "team-1", attackerUnitId: engineer.id, target: { kind: "unit", unitId: target.id }, pass: false },
       { teamId: "team-1", attackerUnitId: builder.id, target: { kind: "unit", unitId: target.id }, pass: false },
-      { teamId: "team-1", attackerUnitId: infantry.id, target: { kind: "unit", unitId: target.id }, pass: false },
     ];
     const events = createCatapultVisualEvents(before, structuredClone(before), intents);
     expect(events).toEqual([{
-      unitId: builder.id,
+      unitId: engineer.id,
       kind: "attack",
       direction: 3,
-      eventId: `battle-${before.turnNumber}:attack:${builder.id}`,
+      eventId: `battle-${before.turnNumber}:attack:${engineer.id}`,
     }]);
   });
 
@@ -134,13 +156,13 @@ describe("Catapult battle presentation events", () => {
     const hitAfter = structuredClone(before);
     hitAfter.units[0].hp = 2;
     expect(createCatapultVisualEvents(before, hitAfter, [])).toMatchObject([
-      { unitId: "builder", kind: "hit" },
+      { unitId: "engineer", kind: "hit" },
     ]);
 
     const breakAfter = structuredClone(before);
     breakAfter.units[0].position = { kind: "removed", reason: "defeated" };
     expect(createCatapultVisualEvents(before, breakAfter, [])).toMatchObject([
-      { unitId: "builder", kind: "break" },
+      { unitId: "engineer", kind: "break" },
     ]);
   });
 

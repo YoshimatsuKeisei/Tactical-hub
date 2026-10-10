@@ -1,7 +1,7 @@
 import { UNIT_STATS } from "../game/constants";
 import { isRetreating, type RetreatDirectionIndicator } from "../game/engine/retreat";
 import type { Team, Unit } from "../game/types";
-import { isBuilderCatapultUnit, type UnitVisualEvent } from "../presentation/catapult";
+import { isEngineerCatapultUnit, type UnitVisualEvent } from "../presentation/catapult";
 import { CatapultUnitSprite } from "./CatapultUnitSprite";
 
 type Props = {
@@ -28,12 +28,12 @@ const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], strin
 };
 
 export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], visualEvents = [], onClick }: Props) {
-  const builderCatapult = isBuilderCatapultUnit(unit);
+  const engineerCatapult = isEngineerCatapultUnit(unit);
   const tokenLabel = `${team?.name ?? unit.ownerTeamId} ${unit.type} HP:${unit.hp}`;
   return (
     <button
-      className={`unit-token ${builderCatapult ? "catapult-token" : ""} ${selected ? "selected" : ""} ${attackTarget ? "attack-target" : ""} ${attackReady ? "attack-ready" : ""} ${attackComplete ? "attack-complete" : ""}`}
-      style={{ background: builderCatapult ? "transparent" : team?.color ?? "#777" }}
+      className={`unit-token ${engineerCatapult ? "catapult-token" : ""} ${selected ? "selected" : ""} ${attackTarget ? "attack-target" : ""} ${attackReady ? "attack-ready" : ""} ${attackComplete ? "attack-complete" : ""}`}
+      style={{ background: engineerCatapult ? "transparent" : team?.color ?? "#777" }}
       title={tokenLabel}
       aria-label={tokenLabel}
       onClick={(event) => {
@@ -41,7 +41,7 @@ export function UnitToken({ unit, team, selected, attackTarget, attackReady, att
         onClick?.();
       }}
     >
-      {builderCatapult ? (
+      {engineerCatapult ? (
         <>
           <CatapultUnitSprite
             visualEvents={visualEvents}

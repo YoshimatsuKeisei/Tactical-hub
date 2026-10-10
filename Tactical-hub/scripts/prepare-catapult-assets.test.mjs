@@ -1,9 +1,11 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CATAPULT_ANIMATION_FRAME_COUNTS,
+  DEFAULT_CATAPULT_SOURCE_PACK_ROOT,
   createCatapultManifest,
   prepareCatapultAssets,
 } from "./prepare-catapult-assets.mjs";
@@ -24,6 +26,13 @@ async function makeSourceFixture(root) {
 }
 
 describe("Catapult local asset preparation", () => {
+  it("defaults to Catapult - Isometric beside the package.json", () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    expect(DEFAULT_CATAPULT_SOURCE_PACK_ROOT).toBe(
+      path.join(packageRoot, "Catapult - Isometric"),
+    );
+  });
+
   it("recognizes 8 directions and the exact source frame counts", () => {
     const manifest = createCatapultManifest();
     expect(manifest.directions).toHaveLength(8);

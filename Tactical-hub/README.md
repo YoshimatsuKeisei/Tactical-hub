@@ -2,13 +2,14 @@
 
 ## Local Catapult asset setup
 
-Builder strategists (`unit.type === "strategist"` and `unit.role === "builder"`)
-are rendered with the separately purchased **Catapult - Isometric** sprite pack
-after local asset preparation. The raw pack and prepared PNG files are
-local-only and must never be committed or pushed.
+Engineers (`unit.type === "engineer"`) are rendered with the separately
+purchased **Catapult - Isometric** sprite pack after local asset preparation.
+Strategists, including `role === "builder"`, keep their existing text token.
+The raw pack and prepared PNG files are local-only and must never be committed
+or pushed.
 
-1. Place the purchased `Catapult - Isometric` directory at the repository root.
-   Its animation root must be
+1. Place the purchased `Catapult - Isometric` directory in the repository root
+   containing `package.json`. Its animation root must be
    `Catapult - Isometric/isometric/`.
 2. From this directory, run:
 
@@ -21,13 +22,13 @@ local-only and must never be committed or pushed.
    command argument.
 3. Prepared byte-copied frames and `manifest.json` are written to
    `public/local-assets/catapult/`.
-4. Run `npm run dev`. The existing builder strategist text token is then
-   replaced by the prepared Catapult sprite; other strategist roles keep their
-   existing rendering.
+4. Run `npm run dev`. The existing engineer `工` text token is then replaced by
+   the prepared Catapult sprite. All strategist roles keep their existing
+   rendering.
 
 Both the raw directory and prepared output are covered by repository `.gitignore`
 rules. CI and Cloud builds do not require the purchased pack. Their explicit
-text fallback and `Catapult asset unavailable` console warning are only the
+`工` text fallback and `Catapult asset unavailable` console warning are only the
 missing-local-asset path, not the intended final UI.
 
 The idle pose is not a source animation. It uses frame `0000` from each direction
