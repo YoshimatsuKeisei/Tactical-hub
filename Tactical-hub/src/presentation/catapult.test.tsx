@@ -89,18 +89,17 @@ describe("UnitToken Catapult routing", () => {
     expect(isEngineerCatapultUnit(unit())).toBe(true);
   });
 
-  it("keeps every strategist role on its existing text rendering", () => {
+  it("never routes any strategist role through the Catapult renderer", () => {
     for (const role of ["builder", "encourage", "teleporter"] as const) {
       const markup = renderToStaticMarkup(<UnitToken unit={strategist(role)} />);
       expect(markup).not.toContain("catapult-sprite-image");
-      expect(markup).toContain("帥");
+      expect(markup).toContain("data-character=\"10Caster\"");
       expect(isEngineerCatapultUnit(strategist(role))).toBe(false);
     }
   });
 
   it("keeps every other unit type on its existing text rendering", () => {
     const otherTypes: Unit["type"][] = [
-      "king",
       "infantry",
       "cavalry",
       "archer",
@@ -150,7 +149,7 @@ describe("Catapult battle presentation events", () => {
     }]);
   });
 
-  it("emits hit for surviving HP loss and break for removal", () => {
+  it("emits hit for surviving HP loss and death for removal", () => {
     const before = createInitialGameState();
     before.units = [unit({ hp: 3 })];
     const hitAfter = structuredClone(before);
@@ -162,7 +161,7 @@ describe("Catapult battle presentation events", () => {
     const breakAfter = structuredClone(before);
     breakAfter.units[0].position = { kind: "removed", reason: "defeated" };
     expect(createCatapultVisualEvents(before, breakAfter, [])).toMatchObject([
-      { unitId: "engineer", kind: "break" },
+      { unitId: "engineer", kind: "death" },
     ]);
   });
 

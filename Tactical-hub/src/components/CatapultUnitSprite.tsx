@@ -16,6 +16,12 @@ type Props = {
 
 const warnedMissingFrames = new Set<string>();
 
+type CatapultQueueEntry = {
+  eventId: string;
+  animation: Exclude<CatapultAnimationState, "idle">;
+  direction?: CatapultDirection;
+};
+
 export function handleCatapultImageError(
   src: string,
   warn: (message: string) => void = console.warn,
@@ -37,55 +43,51 @@ export function CatapultUnitSprite({
   initialDirection = 0,
   onAnimationEnd,
 }: Props) {
-  const [direction, setDirection] = useState<CatapultDirection>(initialDirection);
-  const [animation, setAnimation] = useState<CatapultAnimationState>("idle");
+  const [facingDirection, setFacingDirection] = useState<CatapultDirection>(initialDirection);
+  const [animationQueue, setAnimationQueue] = useState<CatapultQueueEntry[]>([]);
   const [frameIndex, setFrameIndex] = useState(0);
-  const [hitFeedback, setHitFeedback] = useState(false);
   const [assetAvailable, setAssetAvailable] = useState(true);
   const handledEvents = useRef(new Set<string>());
-  const hitTimer = useRef<number | undefined>(undefined);
-
-  useEffect(() => () => {
-    if (hitTimer.current !== undefined) window.clearTimeout(hitTimer.current);
-  }, []);
 
   useEffect(() => {
+    const additions: CatapultQueueEntry[] = [];
     for (const event of visualEvents) {
       if (handledEvents.current.has(event.eventId)) continue;
       handledEvents.current.add(event.eventId);
-      if (event.direction !== undefined) setDirection(event.direction);
-      if (event.kind === "attack") {
-        setAnimation("attack");
-        setFrameIndex(0);
-      } else if (event.kind === "break") {
-        setAnimation("break");
-        setFrameIndex(0);
-      } else {
-        if (hitTimer.current !== undefined) window.clearTimeout(hitTimer.current);
-        setHitFeedback(true);
-        hitTimer.current = window.setTimeout(() => {
-          setHitFeedback(false);
-          onAnimationEnd?.("hit");
-        }, CATAPULT_HIT_DURATION_MS);
-      }
+      if (event.direction !== undefined) setFacingDirection(event.direction);
+      additions.push({
+        eventId: event.eventId,
+        animation: event.kind === "death" ? "break" : event.kind,
+        direction: event.direction,
+      });
     }
-  }, [onAnimationEnd, visualEvents]);
+    if (additions.length) setAnimationQueue((current) => [...current, ...additions]);
+  }, [visualEvents]);
+
+  const active = animationQueue.length > 0 ? animationQueue[0] : undefined;
+  const animation: CatapultAnimationState = active?.animation ?? "idle";
+  const direction = active?.direction ?? facingDirection;
+
+  useEffect(() => setFrameIndex(0), [active?.eventId]);
 
   const frames = useMemo(() => getCatapultFrames(animation, direction), [animation, direction]);
   const currentFrame = frames[Math.min(frameIndex, frames.length - 1)];
 
   useEffect(() => {
-    if (animation === "idle" || currentFrame.durationMs === null) return;
+    if (animation === "idle") return;
+    const durationMs = animation === "hit"
+      ? CATAPULT_HIT_DURATION_MS
+      : currentFrame.durationMs;
+    if (durationMs === null) return;
     const timer = window.setTimeout(() => {
-      if (frameIndex + 1 < frames.length) {
+      if (animation !== "hit" && frameIndex + 1 < frames.length) {
         setFrameIndex(frameIndex + 1);
         return;
       }
       const completed = animation;
-      setAnimation("idle");
-      setFrameIndex(0);
+      setAnimationQueue((current) => current.slice(1));
       onAnimationEnd?.(completed);
-    }, currentFrame.durationMs);
+    }, durationMs);
     return () => window.clearTimeout(timer);
   }, [animation, currentFrame.durationMs, frameIndex, frames.length, onAnimationEnd]);
 
@@ -98,7 +100,7 @@ export function CatapultUnitSprite({
       data-direction={direction}
     >
       <img
-        className={`catapult-sprite-image ${hitFeedback ? "catapult-hit-feedback" : ""}`}
+        className={`catapult-sprite-image ${animation === "hit" ? "catapult-hit-feedback" : ""}`}
         src={currentFrame.src}
         alt=""
         aria-hidden="true"

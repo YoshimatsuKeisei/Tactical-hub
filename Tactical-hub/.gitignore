@@ -3,6 +3,8 @@ dist/
 coverage*/
 Catapult - Isometric/
 public/local-assets/catapult/
+2D HD Enemy pack 1.zip
+public/local-assets/hd-enemy/
 *.log
 *.err
 *.png

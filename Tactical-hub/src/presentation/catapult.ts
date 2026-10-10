@@ -1,18 +1,18 @@
 import type { AttackIntent, GameState, Unit } from "../game/types";
-import { getPositionCoord } from "../game/utils/roadTopology";
+import {
+  UNIT_DIRECTION_LABELS,
+  UNIT_VISUAL_EVENT_RETENTION_MS,
+  createUnitVisualPresentation,
+  getUnitAttackDirection,
+  getUnitSpriteKind,
+  unitDirectionFromDelta,
+  type UnitDirection,
+  type UnitVisualEvent,
+} from "./unitVisualEvents";
 
-export const CATAPULT_DIRECTION_LABELS = [
-  "down",
-  "down-right",
-  "right",
-  "up-right",
-  "up",
-  "up-left",
-  "left",
-  "down-left",
-] as const;
-
-export type CatapultDirection = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export const CATAPULT_DIRECTION_LABELS = UNIT_DIRECTION_LABELS;
+export type CatapultDirection = UnitDirection;
+export type { UnitVisualEvent } from "./unitVisualEvents";
 export type CatapultAnimationState = "idle" | "attack" | "hit" | "break";
 export type CatapultFrameAnimation = "move" | "load" | "throw" | "break";
 
@@ -26,10 +26,7 @@ export const CATAPULT_LOAD_FRAME_MS = 70;
 export const CATAPULT_THROW_FRAME_MS = 70;
 export const CATAPULT_BREAK_FRAME_MS = 70;
 export const CATAPULT_HIT_DURATION_MS = 220;
-export const CATAPULT_VISUAL_EVENT_RETENTION_MS =
-  CATAPULT_LOAD_FRAME_COUNT * CATAPULT_LOAD_FRAME_MS
-  + CATAPULT_THROW_FRAME_COUNT * CATAPULT_THROW_FRAME_MS
-  + 250;
+export const CATAPULT_VISUAL_EVENT_RETENTION_MS = UNIT_VISUAL_EVENT_RETENTION_MS;
 
 export type CatapultFrame = {
   animation: CatapultFrameAnimation;
@@ -37,13 +34,6 @@ export type CatapultFrame = {
   frame: number;
   src: string;
   durationMs: number | null;
-};
-
-export type UnitVisualEvent = {
-  unitId: string;
-  kind: "attack" | "hit" | "break";
-  direction?: CatapultDirection;
-  eventId: string;
 };
 
 export type CatapultAssetManifest = {
@@ -57,20 +47,11 @@ export type CatapultAssetManifest = {
 };
 
 export function isEngineerCatapultUnit(unit: Unit) {
-  return unit.type === "engineer";
+  return getUnitSpriteKind(unit) === "catapult";
 }
 
 export function catapultDirectionFromDelta(dx: number, dy: number): CatapultDirection {
-  const horizontal = Math.sign(dx);
-  const vertical = Math.sign(dy);
-  if (horizontal === 0 && vertical >= 0) return 0;
-  if (horizontal > 0 && vertical > 0) return 1;
-  if (horizontal > 0 && vertical === 0) return 2;
-  if (horizontal > 0 && vertical < 0) return 3;
-  if (horizontal === 0 && vertical < 0) return 4;
-  if (horizontal < 0 && vertical < 0) return 5;
-  if (horizontal < 0 && vertical === 0) return 6;
-  return 7;
+  return unitDirectionFromDelta(dx, dy);
 }
 
 function framePath(
@@ -129,30 +110,13 @@ export function getCatapultFrames(
   return [getCatapultIdleFrame(direction)];
 }
 
-function getUnitPresentationCoord(state: GameState, unit: Unit) {
-  const position = unit.position;
-  const direct = getPositionCoord(state, position);
-  if (direct || position.kind !== "base") return direct;
-  const base = state.bases.find((candidate) => candidate.id === position.baseId);
-  const slot = base?.slots.find((candidate) => candidate.id === position.slotId);
-  if (!base || !slot) return undefined;
-  const minX = Math.min(...base.coords.map((coord) => coord.x));
-  const minY = Math.min(...base.coords.map((coord) => coord.y));
-  return { x: minX + slot.localCol, y: minY + slot.localRow };
-}
-
 export function getCatapultAttackDirection(
   state: GameState,
   attacker: Unit,
   intent: AttackIntent,
   fallback: CatapultDirection = 0,
 ): CatapultDirection {
-  if (!intent.target) return fallback;
-  const target = state.units.find((unit) => unit.id === intent.target?.unitId);
-  const from = getUnitPresentationCoord(state, attacker);
-  const to = target ? getUnitPresentationCoord(state, target) : undefined;
-  if (!from || !to || (from.x === to.x && from.y === to.y)) return fallback;
-  return catapultDirectionFromDelta(to.x - from.x, to.y - from.y);
+  return getUnitAttackDirection(state, attacker, intent, fallback);
 }
 
 export function createCatapultVisualEvents(
@@ -162,40 +126,10 @@ export function createCatapultVisualEvents(
     (entry) => entry.attackIntents ?? [],
   ),
 ): UnitVisualEvent[] {
-  const events: UnitVisualEvent[] = [];
-  const eventPrefix = `battle-${before.turnNumber}`;
-
-  for (const intent of attackIntents) {
-    if (intent.pass || !intent.target) continue;
-    const attacker = before.units.find((unit) => unit.id === intent.attackerUnitId);
-    if (!attacker || !isEngineerCatapultUnit(attacker)) continue;
-    events.push({
-      unitId: attacker.id,
-      kind: "attack",
-      direction: getCatapultAttackDirection(before, attacker, intent),
-      eventId: `${eventPrefix}:attack:${attacker.id}`,
-    });
-  }
-
-  for (const previous of before.units.filter(isEngineerCatapultUnit)) {
-    if (previous.position.kind === "removed" || previous.hp <= 0) continue;
-    const current = after.units.find((unit) => unit.id === previous.id);
-    const removed = !current || current.hp <= 0 || current.position.kind === "removed";
-    if (removed) {
-      events.push({
-        unitId: previous.id,
-        kind: "break",
-        eventId: `${eventPrefix}:break:${previous.id}`,
-      });
-    } else if (current.hp < previous.hp) {
-      events.push({
-        unitId: previous.id,
-        kind: "hit",
-        eventId: `${eventPrefix}:hit:${previous.id}`,
-      });
-    }
-  }
-  return events;
+  return createUnitVisualPresentation(before, after, attackIntents).events.filter((event) => {
+    const unit = before.units.find((candidate) => candidate.id === event.unitId);
+    return Boolean(unit && isEngineerCatapultUnit(unit));
+  });
 }
 
 function isManifest(value: unknown): value is CatapultAssetManifest {

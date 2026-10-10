@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
+import { HdEnemyDevPreview } from "./components/HdEnemyDevPreview";
 import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
 import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
@@ -17,10 +18,11 @@ import { HttpBrowserBcInferenceClient } from "./game/cpu/browserBcClient";
 import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
 import { AppNavigation, type AppScreen } from "./components/AppNavigation";
 import {
-  CATAPULT_VISUAL_EVENT_RETENTION_MS,
-  createCatapultVisualEvents,
+  UNIT_VISUAL_EVENT_RETENTION_MS,
+  createUnitVisualPresentation,
+  type UnitDeathOverlay,
   type UnitVisualEvent,
-} from "./presentation/catapult";
+} from "./presentation/unitVisualEvents";
 
 const initialTeams = createInitialGameState().teams;
 
@@ -57,6 +59,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
   const [visualCpuPolicy] = useState(createVisualCpuPolicyRouter);
   const [bcInferenceClient] = useState(() => new HttpBrowserBcInferenceClient());
   const [unitVisualEvents, setUnitVisualEvents] = useState<UnitVisualEvent[]>([]);
+  const [unitDeathOverlays, setUnitDeathOverlays] = useState<UnitDeathOverlay[]>([]);
   const cpuAdvancePendingRef = useRef(false);
   const visualEventTimerRef = useRef<number | undefined>(undefined);
   const stateRef = useRef(state);
@@ -197,18 +200,22 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
       target: intent.target ? { ...intent.target } : undefined,
     }));
     const resolved = resolveBattleWithHiddenCpuIntents(completed, cpuRuntime);
-    const visualEvents = createCatapultVisualEvents(
+    const presentation = createUnitVisualPresentation(
       completed,
       resolved.state,
       attackIntentSnapshot,
     );
-    setUnitVisualEvents(visualEvents);
+    setUnitVisualEvents(presentation.events);
+    setUnitDeathOverlays(presentation.deathOverlays);
     if (visualEventTimerRef.current !== undefined) {
       window.clearTimeout(visualEventTimerRef.current);
     }
     visualEventTimerRef.current = window.setTimeout(
-      () => setUnitVisualEvents([]),
-      CATAPULT_VISUAL_EVENT_RETENTION_MS,
+      () => {
+        setUnitVisualEvents([]);
+        setUnitDeathOverlays([]);
+      },
+      UNIT_VISUAL_EVENT_RETENTION_MS,
     );
     runtimeRef.current = resolved.runtime;
     setCpuRuntime(resolved.runtime);
@@ -245,6 +252,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
             onChooseDestination={chooseDestination}
             onChooseAttackTarget={chooseAttackTarget}
             visualEvents={unitVisualEvents}
+            deathOverlays={unitDeathOverlays}
             manualTeamId={effectiveManualTeamId}
             constructionMode={constructionMode}
             onChooseConstruction={(unitId, kind, tiles) => {
@@ -338,6 +346,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
           stoppedReason={cpuRuntime.stoppedReason}
         />}
       />
+      {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV ? <HdEnemyDevPreview /> : null}
     </main>
   );
 }

@@ -6,8 +6,9 @@ import { getBridgeCandidates, getConstructionAt, getObstacleCandidates, getOwnSt
 import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
 import { getUnitAtBoardCell, tileKey } from "../game/utils/position";
 import { getPositionCoord } from "../game/utils/roadTopology";
-import type { UnitVisualEvent } from "../presentation/catapult";
+import type { UnitDeathOverlay as DeathOverlay, UnitVisualEvent } from "../presentation/unitVisualEvents";
 import { TileView } from "./TileView";
+import { UnitDeathOverlay } from "./UnitDeathOverlay";
 import { UnitToken } from "./UnitToken";
 import { useState } from "react";
 
@@ -21,6 +22,7 @@ type Props = {
   constructionMode?: "bridge" | "obstacle";
   onChooseConstruction: (unitId: string, kind: "bridge" | "obstacle", tiles: { x: number; y: number }[]) => void;
   visualEvents?: readonly UnitVisualEvent[];
+  deathOverlays?: readonly DeathOverlay[];
 };
 
 export function getMovementCandidateByBoardCell(
@@ -35,7 +37,7 @@ export function getMovementCandidateByBoardCell(
   return byCell;
 }
 
-export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [] }: Props) {
+export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [], deathOverlays = [] }: Props) {
   const [hoveredBridge, setHoveredBridge] = useState<{ key: string; cells: { x: number; y: number }[] }>();
   const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
@@ -71,6 +73,13 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
     const current = visualEventsByUnit.get(event.unitId) ?? [];
     current.push(event);
     visualEventsByUnit.set(event.unitId, current);
+  }
+  const deathOverlaysByTile = new Map<string, DeathOverlay[]>();
+  for (const overlay of deathOverlays) {
+    const key = tileKey(overlay.coord.x, overlay.coord.y);
+    const current = deathOverlaysByTile.get(key) ?? [];
+    current.push(overlay);
+    deathOverlaysByTile.set(key, current);
   }
 
   function getBaseUnitForTile(base: Base, x: number, y: number) {
@@ -147,6 +156,13 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 }}
               />
             )}
+            {(deathOverlaysByTile.get(tileKey(tile.x, tile.y)) ?? []).map((overlay) => (
+              <UnitDeathOverlay
+                key={overlay.overlayId}
+                overlay={overlay}
+                teamColor={state.teams.find((team) => team.id === overlay.unit.ownerTeamId)?.color}
+              />
+            ))}
           </TileView>
         );
       })}
