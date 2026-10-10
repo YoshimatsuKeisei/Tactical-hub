@@ -19,18 +19,23 @@ function unit(overrides: Partial<Unit> = {}): Unit {
 }
 
 describe("generic animated-unit routing", () => {
-  it("maps king, every strategist role, and engineer without changing other units", () => {
+  it("maps every configured sprite unit and leaves cavalry/apprentice ninja unchanged", () => {
     expect(getUnitSpriteKind(unit({ type: "king" }))).toBe("6Crusader");
     for (const role of ["builder", "encourage", "teleporter"] as const) {
       expect(getUnitSpriteKind(unit({ type: "strategist", role }))).toBe("10Caster");
     }
     expect(getUnitSpriteKind(unit({ type: "engineer" }))).toBe("catapult");
-    expect(getUnitSpriteKind(unit({ type: "infantry" }))).toBeUndefined();
+    expect(getUnitSpriteKind(unit({ type: "infantry" }))).toBe("1Knight");
+    expect(getUnitSpriteKind(unit({ type: "infantry", formation: "heavy" }))).toBe("4Paladin");
+    expect(getUnitSpriteKind(unit({ type: "archer" }))).toBe("2Archer");
+    expect(getUnitSpriteKind(unit({ type: "ninja" }))).toBe("7DeathKnight");
+    expect(getUnitSpriteKind(unit({ type: "cavalry" }))).toBeUndefined();
+    expect(getUnitSpriteKind(unit({ type: "apprentice_ninja" }))).toBeUndefined();
   });
 });
 
 describe("generic battle presentation events", () => {
-  it("emits ordered attacks for king, strategist, and engineer only", () => {
+  it("emits ordered attacks for every sprite-backed attacker", () => {
     const before = createInitialGameState();
     const king = unit();
     const strategist = unit({ id: "strategist", type: "strategist", role: "builder", hp: 1, position: { kind: "tile", x: 4, y: 4 } });
@@ -45,7 +50,7 @@ describe("generic battle presentation events", () => {
       pass: false,
     }));
     expect(createUnitVisualPresentation(before, structuredClone(before), intents).events.map((event) => event.unitId))
-      .toEqual(["king", "strategist", "engineer"]);
+      .toEqual(["king", "strategist", "engineer", "infantry"]);
   });
 
   it("emits hit for surviving HP loss on king and strategist", () => {

@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { UNIT_STATS } from "../game/constants";
+import { getHdCharacterForUnit } from "../presentation/hdCharacter";
 import { getHdEnemyCharacterForUnit } from "../presentation/hdEnemy";
 import { getUnitSpriteKind, type UnitDeathOverlay as Overlay } from "../presentation/unitVisualEvents";
 import { CatapultUnitSprite } from "./CatapultUnitSprite";
+import { HdCharacterUnitSprite } from "./HdCharacterUnitSprite";
 import { HdEnemyUnitSprite } from "./HdEnemyUnitSprite";
 
 type Props = {
@@ -16,7 +18,8 @@ export function UnitDeathOverlay({ overlay, teamColor }: Props) {
 
   const fallback = UNIT_STATS[overlay.unit.type].label;
   const spriteKind = getUnitSpriteKind(overlay.unit);
-  const hdCharacter = getHdEnemyCharacterForUnit(overlay.unit);
+  const hdEnemyCharacter = getHdEnemyCharacterForUnit(overlay.unit);
+  const characterPackCharacter = getHdCharacterForUnit(overlay.unit);
 
   return (
     <span
@@ -34,9 +37,19 @@ export function UnitDeathOverlay({ overlay, teamColor }: Props) {
             if (state === "break") setVisible(false);
           }}
         />
-      ) : hdCharacter ? (
+      ) : hdEnemyCharacter ? (
         <HdEnemyUnitSprite
-          character={hdCharacter}
+          character={hdEnemyCharacter}
+          fallback={fallback}
+          initialDirection={overlay.direction}
+          visualEvents={overlay.events}
+          onAnimationEnd={(state) => {
+            if (state === "die") setVisible(false);
+          }}
+        />
+      ) : characterPackCharacter ? (
+        <HdCharacterUnitSprite
+          character={characterPackCharacter}
           fallback={fallback}
           initialDirection={overlay.direction}
           visualEvents={overlay.events}

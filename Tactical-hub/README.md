@@ -55,7 +55,8 @@ Asset attribution required by the pack license:
 The king (`unit.type === "king"`) uses `6Crusader`, and all strategist roles
 (`builder`, `encourage`, and `teleporter`) use `10Caster` from the separately
 purchased **2D HD Enemy pack 1**. Engineers continue to use Catapult. Infantry,
-cavalry, archer, ninja, and apprentice ninja keep their current text rendering.
+archer, and ninja sprites are configured separately below; cavalry and
+apprentice ninja keep their current text rendering.
 
 The source ZIP and generated files are local-only and must not be committed:
 
@@ -97,17 +98,66 @@ replacement is applied to `6Crusader` or `10Caster`; their original colors are
 shown unchanged. Frame timings are deliberately named provisional constants
 because the purchased pack's source FPS has not been verified.
 
-Development builds include a collapsible **HD Enemy sprite preview** for both
-characters, all four states, and all eight directions. This preview is excluded
-from production builds. Cloud and CI do not need the purchased ZIP and test the
+Development builds include a collapsible directional sprite preview for both
+HD Enemy characters, all four states, and all eight directions. It is also used
+for the HD Character pack described below. This preview is excluded from
+production builds. Cloud and CI do not need the purchased ZIP and test the
 prepare pipeline with a synthetic ZIP; final appearance and animation timing
 must be checked on Windows with the purchased local asset.
+
+## Local HD Character asset setup
+
+The separately purchased **2D HD Character pack 1 V1.2** supplies these
+presentation-only mappings:
+
+- normal infantry → `1Knight`
+- heavy infantry (`type === "infantry"` and `formation === "heavy"`) → `4Paladin`
+- archer → `2Archer`
+- ninja → `7DeathKnight`
+
+Cavalry and apprentice ninja remain text tokens. King, strategist, and engineer
+continue to use `6Crusader`, `10Caster`, and Catapult respectively. No unit
+stats, merge rules, attack behavior, visibility, CPU, or RL logic is changed.
+
+1. Put `2D HD Character pack 1 V1.2.zip` beside `package.json`.
+2. Run:
+
+   ```bash
+   npm run assets:hd-character
+   ```
+
+3. The script validates and byte-copies exactly 16 files from
+   `Spritesheets/With shadow/`:
+
+   - `1Knight/{Idle.png,Melee.png,TakeDamage.png,Die.png}`
+   - `2Archer/{Idle.png,Attack1.png,TakeDamage.png,Die.png}`
+   - `4Paladin/{Idle.png,Melee.png,TakeDamage.png,Die.png}`
+   - `7DeathKnight/{Idle.png,Melee.png,TakeDamage.png,Die.png}`
+
+   Output and `manifest.json` are written to
+   `public/local-assets/hd-character/`. The ZIP and generated output are both
+   ignored by Git.
+
+Every sheet must be `1920x1024`, containing 15×8 frames of `128x128` pixels.
+The shared directional renderer uses rows `[6, 7, 0, 1, 2, 3, 4, 5]` for game
+directions 0–7. Idle loops frames 0–14. Attack and TakeDamage play once and
+return to Idle. Death uses TakeDamage followed by Die on the existing
+presentation-only overlay. Heavy infantry changes from Knight to Paladin as
+soon as the existing merge operation sets `formation === "heavy"`; the heavy
+badge remains visible.
+
+The original Spritesheets are displayed without frame extraction, recolor,
+tint, hue rotation, blend modes, or SAM processing. Frame durations are shared
+named provisional constants because source FPS is unverified. Missing local
+assets fall back to the existing unit labels without crashing the app.
 
 The intended Windows local sequence is:
 
 ```powershell
 cd "C:\Users\jingc\Documents\Tactical hub\Tactical-hub"
+npm install
 npm run assets:catapult
 npm run assets:hd-enemy
+npm run assets:hd-character
 npm run dev
 ```

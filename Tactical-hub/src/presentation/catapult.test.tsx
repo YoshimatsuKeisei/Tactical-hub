@@ -2,7 +2,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { CatapultAssetFallback, handleCatapultImageError } from "../components/CatapultUnitSprite";
 import { UnitToken } from "../components/UnitToken";
-import { UNIT_STATS } from "../game/constants";
 import { createInitialGameState } from "../game/initialState";
 import type { AttackIntent, Unit } from "../game/types";
 import {
@@ -98,7 +97,7 @@ describe("UnitToken Catapult routing", () => {
     }
   });
 
-  it("keeps every other unit type on its existing text rendering", () => {
+  it("never routes another unit type through the Catapult renderer", () => {
     const otherTypes: Unit["type"][] = [
       "infantry",
       "cavalry",
@@ -109,7 +108,6 @@ describe("UnitToken Catapult routing", () => {
     for (const type of otherTypes) {
       const markup = renderToStaticMarkup(<UnitToken unit={unit({ id: type, type })} />);
       expect(markup).not.toContain("catapult-sprite-image");
-      expect(markup).toContain(UNIT_STATS[type].label);
       expect(isEngineerCatapultUnit(unit({ type }))).toBe(false);
     }
   });

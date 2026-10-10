@@ -22,6 +22,7 @@ import {
   getHdEnemySheetUrl,
   loadHdEnemyManifest,
 } from "./hdEnemy";
+import { DIRECTIONAL_SPRITE_DIRECTION_ROWS } from "./directionalSpriteSheet";
 
 function unit(type: Unit["type"], role?: Unit["role"]): Unit {
   return {
@@ -37,6 +38,7 @@ function unit(type: Unit["type"], role?: Unit["role"]): Unit {
 
 describe("HD Enemy sprite descriptions", () => {
   it("maps all game directions to the documented asset rows", () => {
+    expect(HD_ENEMY_DIRECTION_ROWS).toBe(DIRECTIONAL_SPRITE_DIRECTION_ROWS);
     expect(HD_ENEMY_DIRECTION_ROWS).toEqual([6, 7, 0, 1, 2, 3, 4, 5]);
     expect(Array.from({ length: 8 }, (_, direction) => getHdEnemyDirectionRow(direction as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7)))
       .toEqual([6, 7, 0, 1, 2, 3, 4, 5]);
@@ -89,6 +91,7 @@ describe("HD Enemy sprite descriptions", () => {
       <HdEnemySpriteFrame character="6Crusader" animation="attack" direction={7} frame={14} />,
     );
     expect(markup).toContain("data-character=\"6Crusader\"");
+    expect(markup).toContain("directional-unit-sprite-image");
     expect(markup).toContain("background-size:1500% 800%");
     expect(markup).toContain("background-position:100% 71.42857142857143%");
   });
@@ -113,11 +116,11 @@ describe("HD Enemy UnitToken routing", () => {
     }
   });
 
-  it("keeps engineer on Catapult and other units on text", () => {
+  it("keeps engineer on Catapult and the two unassigned unit types on text", () => {
     expect(renderToStaticMarkup(<UnitToken unit={unit("engineer")} />)).toContain("catapult-sprite-image");
-    for (const type of ["infantry", "cavalry", "archer", "ninja", "apprentice_ninja"] as const) {
+    for (const type of ["cavalry", "apprentice_ninja"] as const) {
       const markup = renderToStaticMarkup(<UnitToken unit={unit(type)} />);
-      expect(markup).not.toContain("hd-enemy-sprite-image");
+      expect(markup).not.toContain("directional-unit-sprite-image");
       expect(markup).not.toContain("catapult-sprite-image");
     }
   });

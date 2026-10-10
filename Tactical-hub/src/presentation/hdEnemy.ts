@@ -4,24 +4,43 @@ import {
   type UnitDirection,
   type UnitVisualEvent,
 } from "./unitVisualEvents";
+import {
+  DIRECTIONAL_ATTACK_FRAME_MS,
+  DIRECTIONAL_DIE_FRAME_MS,
+  DIRECTIONAL_HIT_FRAME_MS,
+  DIRECTIONAL_IDLE_FRAME_MS,
+  DIRECTIONAL_SPRITE_COLUMNS,
+  DIRECTIONAL_SPRITE_DIRECTION_ROWS,
+  DIRECTIONAL_SPRITE_FRAME_COUNT,
+  DIRECTIONAL_SPRITE_FRAME_HEIGHT,
+  DIRECTIONAL_SPRITE_FRAME_WIDTH,
+  DIRECTIONAL_SPRITE_ROWS,
+  advanceDirectionalSpriteFrame,
+  getDirectionalAnimationQueue,
+  getDirectionalSpriteBackgroundPosition,
+  getDirectionalSpriteFrameDuration,
+  getDirectionalSpriteRow,
+  type DirectionalAnimationQueueEntry,
+  type DirectionalAnimationState,
+} from "./directionalSpriteSheet";
 
 export const HD_ENEMY_CHARACTERS = ["6Crusader", "10Caster"] as const;
 export type HdEnemyCharacter = typeof HD_ENEMY_CHARACTERS[number];
-export type HdEnemyAnimationState = "idle" | "attack" | "hit" | "die";
+export type HdEnemyAnimationState = DirectionalAnimationState;
 
-export const HD_ENEMY_FRAME_WIDTH = 128;
-export const HD_ENEMY_FRAME_HEIGHT = 128;
-export const HD_ENEMY_COLUMNS = 15;
-export const HD_ENEMY_ROWS = 8;
-export const HD_ENEMY_FRAME_COUNT = 15;
+export const HD_ENEMY_FRAME_WIDTH = DIRECTIONAL_SPRITE_FRAME_WIDTH;
+export const HD_ENEMY_FRAME_HEIGHT = DIRECTIONAL_SPRITE_FRAME_HEIGHT;
+export const HD_ENEMY_COLUMNS = DIRECTIONAL_SPRITE_COLUMNS;
+export const HD_ENEMY_ROWS = DIRECTIONAL_SPRITE_ROWS;
+export const HD_ENEMY_FRAME_COUNT = DIRECTIONAL_SPRITE_FRAME_COUNT;
 
-export const HD_ENEMY_DIRECTION_ROWS = [6, 7, 0, 1, 2, 3, 4, 5] as const;
+export const HD_ENEMY_DIRECTION_ROWS = DIRECTIONAL_SPRITE_DIRECTION_ROWS;
 
 // Provisional presentation timings. The purchased pack's source FPS is unverified.
-export const HD_ENEMY_IDLE_FRAME_MS = 110;
-export const HD_ENEMY_ATTACK_FRAME_MS = 70;
-export const HD_ENEMY_HIT_FRAME_MS = 70;
-export const HD_ENEMY_DIE_FRAME_MS = 85;
+export const HD_ENEMY_IDLE_FRAME_MS = DIRECTIONAL_IDLE_FRAME_MS;
+export const HD_ENEMY_ATTACK_FRAME_MS = DIRECTIONAL_ATTACK_FRAME_MS;
+export const HD_ENEMY_HIT_FRAME_MS = DIRECTIONAL_HIT_FRAME_MS;
+export const HD_ENEMY_DIE_FRAME_MS = DIRECTIONAL_DIE_FRAME_MS;
 
 export const HD_ENEMY_STATE_SHEETS: Record<HdEnemyAnimationState, string> = {
   idle: "Idle.png",
@@ -30,11 +49,7 @@ export const HD_ENEMY_STATE_SHEETS: Record<HdEnemyAnimationState, string> = {
   die: "Die.png",
 };
 
-export type HdEnemyQueueEntry = {
-  eventId: string;
-  animation: Exclude<HdEnemyAnimationState, "idle">;
-  direction?: UnitDirection;
-};
+export type HdEnemyQueueEntry = DirectionalAnimationQueueEntry;
 
 export type HdEnemyManifest = {
   version: 1;
@@ -54,20 +69,14 @@ export function getHdEnemyCharacterForUnit(unit: Unit): HdEnemyCharacter | undef
 }
 
 export function getHdEnemyDirectionRow(direction: UnitDirection) {
-  return HD_ENEMY_DIRECTION_ROWS[direction];
+  return getDirectionalSpriteRow(direction);
 }
 
 export function getHdEnemyBackgroundPosition(
   frame: number,
   direction: UnitDirection,
 ) {
-  if (!Number.isInteger(frame) || frame < 0 || frame >= HD_ENEMY_COLUMNS) {
-    throw new RangeError(`HD Enemy frame must be 0-${HD_ENEMY_COLUMNS - 1}.`);
-  }
-  return {
-    xPercent: (frame / (HD_ENEMY_COLUMNS - 1)) * 100,
-    yPercent: (getHdEnemyDirectionRow(direction) / (HD_ENEMY_ROWS - 1)) * 100,
-  };
+  return getDirectionalSpriteBackgroundPosition(frame, direction, "HD Enemy");
 }
 
 export function getHdEnemySheetUrl(
@@ -78,41 +87,20 @@ export function getHdEnemySheetUrl(
 }
 
 export function getHdEnemyFrameDuration(animation: HdEnemyAnimationState) {
-  if (animation === "attack") return HD_ENEMY_ATTACK_FRAME_MS;
-  if (animation === "hit") return HD_ENEMY_HIT_FRAME_MS;
-  if (animation === "die") return HD_ENEMY_DIE_FRAME_MS;
-  return HD_ENEMY_IDLE_FRAME_MS;
+  return getDirectionalSpriteFrameDuration(animation);
 }
 
 export function advanceHdEnemyFrame(
   animation: HdEnemyAnimationState,
   frame: number,
 ): { frame: number; completed: boolean } {
-  if (frame + 1 < HD_ENEMY_FRAME_COUNT) {
-    return { frame: frame + 1, completed: false };
-  }
-  return { frame: 0, completed: animation !== "idle" };
+  return advanceDirectionalSpriteFrame(animation, frame);
 }
 
 export function getHdEnemyAnimationQueue(
   visualEvents: readonly UnitVisualEvent[],
 ): HdEnemyQueueEntry[] {
-  const queue: HdEnemyQueueEntry[] = [];
-  for (const event of visualEvents) {
-    if (event.kind === "death") {
-      queue.push(
-        { eventId: `${event.eventId}:damage`, animation: "hit" as const, direction: event.direction },
-        { eventId: `${event.eventId}:die`, animation: "die" as const, direction: event.direction },
-      );
-    } else {
-      queue.push({
-        eventId: event.eventId,
-        animation: event.kind,
-        direction: event.direction,
-      });
-    }
-  }
-  return queue;
+  return getDirectionalAnimationQueue(visualEvents);
 }
 
 function isHdEnemyManifest(value: unknown): value is HdEnemyManifest {

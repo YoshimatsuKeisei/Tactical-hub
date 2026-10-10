@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import {
-  getHdEnemySheetUrl,
-  loadHdEnemyManifest,
-  type HdEnemyAnimationState,
-  type HdEnemyCharacter,
-} from "../presentation/hdEnemy";
+  getHdCharacterSheetUrl,
+  loadHdCharacterManifest,
+  type HdCharacter,
+  type HdCharacterAnimationState,
+} from "../presentation/hdCharacter";
 import type { UnitDirection, UnitVisualEvent } from "../presentation/unitVisualEvents";
 import {
   DirectionalSpriteSheetFallback,
@@ -13,57 +13,57 @@ import {
 } from "./DirectionalUnitSpriteSheet";
 
 type Props = {
-  character: HdEnemyCharacter;
+  character: HdCharacter;
   visualEvents?: readonly UnitVisualEvent[];
   fallback: ReactNode;
   initialDirection?: UnitDirection;
-  onAnimationEnd?: (state: HdEnemyAnimationState) => void;
+  onAnimationEnd?: (state: HdCharacterAnimationState) => void;
 };
 
 const warnedMissingAssets = new Set<string>();
-let sharedManifestPromise: Promise<Awaited<ReturnType<typeof loadHdEnemyManifest>>> | undefined;
+let sharedManifestPromise: Promise<Awaited<ReturnType<typeof loadHdCharacterManifest>>> | undefined;
 
 function getSharedManifest() {
-  sharedManifestPromise ??= loadHdEnemyManifest();
+  sharedManifestPromise ??= loadHdCharacterManifest();
   return sharedManifestPromise;
 }
 
-async function checkHdEnemyAssets() {
+async function checkHdCharacterAssets() {
   return Boolean(await getSharedManifest());
 }
 
-export function handleHdEnemyAssetError(
+export function handleHdCharacterAssetError(
   src: string,
   warn: (message: string) => void = console.warn,
 ) {
   if (!warnedMissingAssets.has(src)) {
     warnedMissingAssets.add(src);
-    warn(`HD Enemy asset unavailable: ${src}`);
+    warn(`HD Character asset unavailable: ${src}`);
   }
   return false;
 }
 
-export function HdEnemyAssetFallback({ children }: { children: ReactNode }) {
-  return <DirectionalSpriteSheetFallback title="HD Enemy asset unavailable">{children}</DirectionalSpriteSheetFallback>;
+export function HdCharacterAssetFallback({ children }: { children: ReactNode }) {
+  return <DirectionalSpriteSheetFallback title="HD Character asset unavailable">{children}</DirectionalSpriteSheetFallback>;
 }
 
-export function HdEnemySpriteFrame({
+export function HdCharacterSpriteFrame({
   character,
   animation,
   direction,
   frame,
   onAssetError,
 }: {
-  character: HdEnemyCharacter;
-  animation: HdEnemyAnimationState;
+  character: HdCharacter;
+  animation: HdCharacterAnimationState;
   direction: UnitDirection;
   frame: number;
   onAssetError?: (src: string) => void;
 }) {
-  const src = getHdEnemySheetUrl(character, animation);
+  const src = getHdCharacterSheetUrl(character, animation);
   return (
     <DirectionalSpriteSheetFrame
-      assetPack="hd-enemy"
+      assetPack="hd-character"
       character={character}
       animation={animation}
       direction={direction}
@@ -74,7 +74,7 @@ export function HdEnemySpriteFrame({
   );
 }
 
-export function HdEnemyUnitSprite({
+export function HdCharacterUnitSprite({
   character,
   visualEvents = [],
   fallback,
@@ -83,14 +83,14 @@ export function HdEnemyUnitSprite({
 }: Props) {
   return (
     <DirectionalUnitSpriteSheet
-      assetPack="hd-enemy"
+      assetPack="hd-character"
       character={character}
-      getSheetUrl={(animation) => getHdEnemySheetUrl(character, animation)}
-      checkAssets={checkHdEnemyAssets}
-      handleAssetError={handleHdEnemyAssetError}
+      getSheetUrl={(animation) => getHdCharacterSheetUrl(character, animation)}
+      checkAssets={checkHdCharacterAssets}
+      handleAssetError={handleHdCharacterAssetError}
       visualEvents={visualEvents}
       fallback={fallback}
-      fallbackTitle="HD Enemy asset unavailable"
+      fallbackTitle="HD Character asset unavailable"
       initialDirection={initialDirection}
       onAnimationEnd={onAnimationEnd}
     />

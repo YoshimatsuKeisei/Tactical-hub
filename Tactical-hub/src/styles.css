@@ -329,7 +329,7 @@ p {
   pointer-events: none;
 }
 
-.hd-enemy-sprite-stage {
+.directional-unit-sprite-stage {
   position: absolute;
   z-index: 2;
   left: 50%;
@@ -341,14 +341,14 @@ p {
   pointer-events: none;
 }
 
-.hd-enemy-sprite-image {
+.directional-unit-sprite-image {
   position: absolute;
   inset: 0;
   background-repeat: no-repeat;
   image-rendering: pixelated;
 }
 
-.hd-enemy-asset-probe {
+.directional-unit-sprite-asset-probe {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -356,7 +356,7 @@ p {
   pointer-events: none;
 }
 
-.hd-enemy-asset-fallback {
+.directional-sprite-asset-fallback {
   position: absolute;
   z-index: 2;
   inset: 0;

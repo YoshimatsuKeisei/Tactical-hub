@@ -1,4 +1,5 @@
 import type { AttackIntent, GameState, Unit } from "../game/types";
+import { isHeavyInfantry } from "../game/engine/heavyInfantry";
 import { getPositionCoord } from "../game/utils/roadTopology";
 
 export const UNIT_DIRECTION_LABELS = [
@@ -13,7 +14,14 @@ export const UNIT_DIRECTION_LABELS = [
 ] as const;
 
 export type UnitDirection = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
-export type UnitSpriteKind = "catapult" | "6Crusader" | "10Caster";
+export type UnitSpriteKind =
+  | "catapult"
+  | "6Crusader"
+  | "10Caster"
+  | "1Knight"
+  | "2Archer"
+  | "4Paladin"
+  | "7DeathKnight";
 export type UnitVisualEventKind = "attack" | "hit" | "death";
 
 export type UnitVisualEvent = {
@@ -43,6 +51,10 @@ export function getUnitSpriteKind(unit: Unit): UnitSpriteKind | undefined {
   if (unit.type === "engineer") return "catapult";
   if (unit.type === "king") return "6Crusader";
   if (unit.type === "strategist") return "10Caster";
+  if (isHeavyInfantry(unit)) return "4Paladin";
+  if (unit.type === "infantry") return "1Knight";
+  if (unit.type === "archer") return "2Archer";
+  if (unit.type === "ninja") return "7DeathKnight";
   return undefined;
 }
 

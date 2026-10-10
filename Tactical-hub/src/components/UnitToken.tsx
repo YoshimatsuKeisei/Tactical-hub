@@ -1,9 +1,11 @@
 import { UNIT_STATS } from "../game/constants";
 import { isRetreating, type RetreatDirectionIndicator } from "../game/engine/retreat";
 import type { Team, Unit } from "../game/types";
+import { getHdCharacterForUnit } from "../presentation/hdCharacter";
 import { getHdEnemyCharacterForUnit } from "../presentation/hdEnemy";
 import { getUnitSpriteKind, type UnitVisualEvent } from "../presentation/unitVisualEvents";
 import { CatapultUnitSprite } from "./CatapultUnitSprite";
+import { HdCharacterUnitSprite } from "./HdCharacterUnitSprite";
 import { HdEnemyUnitSprite } from "./HdEnemyUnitSprite";
 
 type Props = {
@@ -32,6 +34,7 @@ const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], strin
 export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], visualEvents = [], onClick }: Props) {
   const spriteKind = getUnitSpriteKind(unit);
   const hdEnemyCharacter = getHdEnemyCharacterForUnit(unit);
+  const hdCharacter = getHdCharacterForUnit(unit);
   const tokenLabel = `${team?.name ?? unit.ownerTeamId} ${unit.type} HP:${unit.hp}`;
   return (
     <button
@@ -54,6 +57,12 @@ export function UnitToken({ unit, team, selected, attackTarget, attackReady, att
           ) : hdEnemyCharacter ? (
             <HdEnemyUnitSprite
               character={hdEnemyCharacter}
+              visualEvents={visualEvents}
+              fallback={UNIT_STATS[unit.type].label}
+            />
+          ) : hdCharacter ? (
+            <HdCharacterUnitSprite
+              character={hdCharacter}
               visualEvents={visualEvents}
               fallback={UNIT_STATS[unit.type].label}
             />
