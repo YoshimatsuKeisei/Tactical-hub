@@ -277,6 +277,70 @@ p {
   cursor: pointer;
 }
 
+.unit-token.catapult-token {
+  border-color: transparent;
+  background: transparent;
+  overflow: visible;
+  isolation: isolate;
+  z-index: 4;
+}
+
+.catapult-sprite-stage {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 48px;
+  transform: translate(-50%, -58%);
+  pointer-events: none;
+}
+
+.catapult-sprite-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.catapult-sprite-image.catapult-hit-feedback {
+  animation: catapult-hit-feedback var(--catapult-hit-duration) ease-out;
+}
+
+@keyframes catapult-hit-feedback {
+  0%, 100% { filter: none; transform: translateX(0); }
+  20% { filter: brightness(2.1); transform: translateX(-2px); }
+  45% { filter: brightness(1.45); transform: translateX(2px); }
+  70% { filter: brightness(1.2); transform: translateX(-1px); }
+}
+
+.catapult-team-badge {
+  position: absolute;
+  z-index: 5;
+  left: -5px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+  pointer-events: none;
+}
+
+.catapult-asset-fallback {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 1px dashed #5f6974;
+  border-radius: 50%;
+  background: #777;
+  color: white;
+}
+
 .unit-token.selected {
   outline: 3px solid #111827;
 }
@@ -297,6 +361,7 @@ p {
   background: #111827;
   color: white;
   font-size: 10px;
+  z-index: 7;
 }
 
 .formation-badge {

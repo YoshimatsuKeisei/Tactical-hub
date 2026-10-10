@@ -16,6 +16,11 @@ import { createTeamVisibleState, isUnitVisibleToTeam } from "./game/visibility";
 import { HttpBrowserBcInferenceClient } from "./game/cpu/browserBcClient";
 import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
 import { AppNavigation, type AppScreen } from "./components/AppNavigation";
+import {
+  CATAPULT_VISUAL_EVENT_RETENTION_MS,
+  createCatapultVisualEvents,
+  type UnitVisualEvent,
+} from "./presentation/catapult";
 
 const initialTeams = createInitialGameState().teams;
 
@@ -51,13 +56,20 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
   const [cpuSpeed, setCpuSpeed] = useState<CpuRunnerSpeed>("normal");
   const [visualCpuPolicy] = useState(createVisualCpuPolicyRouter);
   const [bcInferenceClient] = useState(() => new HttpBrowserBcInferenceClient());
+  const [unitVisualEvents, setUnitVisualEvents] = useState<UnitVisualEvent[]>([]);
   const cpuAdvancePendingRef = useRef(false);
+  const visualEventTimerRef = useRef<number | undefined>(undefined);
   const stateRef = useRef(state);
   const runtimeRef = useRef(cpuRuntime);
   const settingsRef = useRef(cpuSettings);
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { runtimeRef.current = cpuRuntime; }, [cpuRuntime]);
   useEffect(() => { settingsRef.current = cpuSettings; }, [cpuSettings]);
+  useEffect(() => () => {
+    if (visualEventTimerRef.current !== undefined) {
+      window.clearTimeout(visualEventTimerRef.current);
+    }
+  }, []);
   const selectedUnit = useMemo(
     () => state.units.find((unit) => unit.id === selectedUnitId),
     [selectedUnitId, state.units],
@@ -177,7 +189,27 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         if (!alreadySaved) completed = saveAttackIntent(completed, { teamId: team.id, attackerUnitId: attacker.attackerUnitId, target: chooseDeterministicAttackTarget(attacker.attackerUnitId, attacker.targets), pass: false });
       }
     }
+    const attackIntentSnapshot = [
+      ...completed.turnState.actionIntents.flatMap((entry) => entry.attackIntents ?? []),
+      ...cpuRuntime.hiddenAttackIntents,
+    ].map((intent) => ({
+      ...intent,
+      target: intent.target ? { ...intent.target } : undefined,
+    }));
     const resolved = resolveBattleWithHiddenCpuIntents(completed, cpuRuntime);
+    const visualEvents = createCatapultVisualEvents(
+      completed,
+      resolved.state,
+      attackIntentSnapshot,
+    );
+    setUnitVisualEvents(visualEvents);
+    if (visualEventTimerRef.current !== undefined) {
+      window.clearTimeout(visualEventTimerRef.current);
+    }
+    visualEventTimerRef.current = window.setTimeout(
+      () => setUnitVisualEvents([]),
+      CATAPULT_VISUAL_EVENT_RETENTION_MS,
+    );
     runtimeRef.current = resolved.runtime;
     setCpuRuntime(resolved.runtime);
     setState(resolved.state);
@@ -212,6 +244,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
             onSelectUnit={setSelectedUnitId}
             onChooseDestination={chooseDestination}
             onChooseAttackTarget={chooseAttackTarget}
+            visualEvents={unitVisualEvents}
             manualTeamId={effectiveManualTeamId}
             constructionMode={constructionMode}
             onChooseConstruction={(unitId, kind, tiles) => {

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage*/
+Catapult - Isometric/
+public/local-assets/catapult/
 *.log
 *.err
 *.png

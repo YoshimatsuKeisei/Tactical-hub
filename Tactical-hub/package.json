@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "assets:catapult": "node scripts/prepare-catapult-assets.mjs",
     "test": "vitest run",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",

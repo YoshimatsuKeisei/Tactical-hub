@@ -6,6 +6,7 @@ import { getBridgeCandidates, getConstructionAt, getObstacleCandidates, getOwnSt
 import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
 import { getUnitAtBoardCell, tileKey } from "../game/utils/position";
 import { getPositionCoord } from "../game/utils/roadTopology";
+import type { UnitVisualEvent } from "../presentation/catapult";
 import { TileView } from "./TileView";
 import { UnitToken } from "./UnitToken";
 import { useState } from "react";
@@ -19,6 +20,7 @@ type Props = {
   manualTeamId: string;
   constructionMode?: "bridge" | "obstacle";
   onChooseConstruction: (unitId: string, kind: "bridge" | "obstacle", tiles: { x: number; y: number }[]) => void;
+  visualEvents?: readonly UnitVisualEvent[];
 };
 
 export function getMovementCandidateByBoardCell(
@@ -33,7 +35,7 @@ export function getMovementCandidateByBoardCell(
   return byCell;
 }
 
-export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction }: Props) {
+export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [] }: Props) {
   const [hoveredBridge, setHoveredBridge] = useState<{ key: string; cells: { x: number; y: number }[] }>();
   const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
@@ -64,6 +66,12 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
   const teamAttackers = state.phase === "attack_input" ? getTeamAttackCandidates(state, manualTeamId).filter((entry) => entry.targets.length > 0) : [];
   const attackReadyIds = new Set(teamAttackers.filter((entry) => !savedAttackIds.has(entry.attackerUnitId)).map((entry) => entry.attackerUnitId));
   const attackCompleteIds = new Set(teamAttackers.filter((entry) => savedAttackIds.has(entry.attackerUnitId)).map((entry) => entry.attackerUnitId));
+  const visualEventsByUnit = new Map<string, UnitVisualEvent[]>();
+  for (const event of visualEvents) {
+    const current = visualEventsByUnit.get(event.unitId) ?? [];
+    current.push(event);
+    visualEventsByUnit.set(event.unitId, current);
+  }
 
   function getBaseUnitForTile(base: Base, x: number, y: number) {
     const minX = Math.min(...base.coords.map((coord) => coord.x));
@@ -114,6 +122,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 attackReady={attackReadyIds.has(boardUnit.id)}
                 attackComplete={attackCompleteIds.has(boardUnit.id)}
                 retreatIndicators={boardUnit.id === selectedUnitId ? retreatIndicators : []}
+                visualEvents={visualEventsByUnit.get(boardUnit.id)}
                 onClick={() => {
                   const target = attackByUnitId.get(boardUnit.id);
                   if (target) onChooseAttackTarget(target);
@@ -130,6 +139,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 attackReady={attackReadyIds.has(baseUnit.id)}
                 attackComplete={attackCompleteIds.has(baseUnit.id)}
                 retreatIndicators={baseUnit.id === selectedUnitId ? retreatIndicators : []}
+                visualEvents={visualEventsByUnit.get(baseUnit.id)}
                 onClick={() => {
                   const target = attackByUnitId.get(baseUnit.id);
                   if (target) onChooseAttackTarget(target);
