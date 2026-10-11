@@ -56,7 +56,8 @@ export class TerrainTextureCache {
 }
 
 const BASE_FOREGROUND_ASSET_KEYS = new Set<TileAssetKey>([
-  "base_front_wall", "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
+  "base_front_wall", "base_front_wall_third_party",
+  "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
 ]);
 const TERRAIN_ASSET_KEYS = new Set<TileAssetKey>([
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "lake", "obstacle",
@@ -311,9 +312,11 @@ export class PersistentTerrainScene {
         node.road.update("road", rect, snapshot, this.cache, `road:${signature}`,
           (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road));
       } else if (cell.kind === "base" && cell.baseGroupId) {
-        // A valid 2x2 base is painted once by its persistent group node.
+        // Keep the logical base untouched while using the existing road visual
+        // as a four-cell cobblestone underlay behind the one grouped core.
         node.road.hide();
-        node.ground.hide();
+        node.ground.update("road", rect, snapshot, this.cache, `base-road-underlay:${signature}`,
+          (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road));
       } else {
         node.road.hide();
         node.ground.update(cell.kind, rect, snapshot, this.cache, `${cell.kind}:${signature}`,
@@ -461,8 +464,6 @@ export class PersistentTerrainScene {
   }
 }
 
-const THIRD_PARTY_WALL_TINT = 0x756856;
-
 export class PersistentBaseForegroundScene {
   readonly root = new Container();
   private readonly nodes = new Map<string, PersistentBaseForeground>();
@@ -500,12 +501,14 @@ export class PersistentBaseForegroundScene {
       node ??= this.makeBase(group);
       node.layer.visible = true;
       node.layer.zIndex = group.anchorY;
-      node.wall.update("base_front_wall", rect, snapshot, this.cache,
-        `base-wall:${rectSignature(rect)}:${group.thirdParty}`,
+      const thirdPartyWall = group.thirdParty &&
+        this.cache.get("base_front_wall_third_party", snapshot) !== undefined;
+      const wallAssetKey = thirdPartyWall ? "base_front_wall_third_party" : "base_front_wall";
+      node.wall.update(wallAssetKey, rect, snapshot, this.cache,
+        `base-wall:${wallAssetKey}:${rectSignature(rect)}`,
         () => {}, {
           placement: baseAssetPlacement,
           fallback: false,
-          tint: group.thirdParty ? THIRD_PARTY_WALL_TINT : 0xffffff,
         });
       if (group.flagAssetKey) {
         node.flag.update(group.flagAssetKey, rect, snapshot, this.cache,

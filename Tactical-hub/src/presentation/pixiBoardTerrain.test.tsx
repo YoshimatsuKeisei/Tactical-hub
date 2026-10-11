@@ -31,7 +31,10 @@ describe("real-map Pixi presentation adapter", () => {
       expect(group.anchorX).toBe(Math.min(...base.coords.map((coord) => coord.x)));
       expect(group.anchorY).toBe(Math.min(...base.coords.map((coord) => coord.y)));
       expect(cells.filter((cell) => cell.baseGroup?.id === base.id)).toHaveLength(1);
-      expect(cells.filter((cell) => cell.baseGroupId === base.id)).toHaveLength(4);
+      const groupedCells = cells.filter((cell) => cell.baseGroupId === base.id);
+      expect(groupedCells).toHaveLength(4);
+      expect(groupedCells.every((cell) => cell.kind === "base")).toBe(true);
+      expect(base.coords.every((coord) => state.map.tiles.find((tile) => tile.x === coord.x && tile.y === coord.y)?.terrain === "base")).toBe(true);
     }
   });
   it("maps flags from the actual non-neutral team order and switches neutral ownership presentation", () => {

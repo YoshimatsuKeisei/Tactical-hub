@@ -55,7 +55,7 @@ export function TileAssetImportPanel() {
       {TILE_ASSET_KEYS.map((key) => {
         const asset = snapshot.assets[key];
         const isShadow = key === "road_south_shadow";
-        const transparentOptional = key === "road_south_face" || isShadow || key === "base_front_wall" || key.startsWith("base_flag_");
+        const transparentOptional = key === "road_south_face" || isShadow || key.startsWith("base_front_wall") || key.startsWith("base_flag_");
         const shadowSettings = roadSouthShadowSettings(snapshot);
         return <fieldset key={key}>
           <legend>{TILE_ASSET_LABELS[key]}{transparentOptional ? " (透過PNG・任意)" : ""}</legend>

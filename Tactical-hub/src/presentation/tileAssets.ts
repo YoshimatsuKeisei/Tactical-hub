@@ -1,5 +1,6 @@
 export const TILE_ASSET_KEYS = [
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "base_front_wall",
+  "base_front_wall_third_party",
   "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4", "lake", "obstacle",
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
@@ -12,6 +13,7 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   base: "Base core - Team owned / 所属拠点本体",
   base_core_third_party: "Base core - Third party / 第三者拠点本体",
   base_front_wall: "Base front wall / 拠点前側城壁",
+  base_front_wall_third_party: "Base front wall - Third party / 第三者拠点の前側城壁",
   base_flag_team_1: "Team 1 flag / チーム1旗",
   base_flag_team_2: "Team 2 flag / チーム2旗",
   base_flag_team_3: "Team 3 flag / チーム3旗",

@@ -15,7 +15,7 @@ flashing. The exact browser/GPU cause still requires Windows visual confirmation
 Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
 at the top left. Select separate transparent PNG files for **Road top / 道路上面**
 and optional **Road south face / 道路南側面** and **Road south shadow /
-道路南側の落ち影**, plus owned/third-party base cores, base front wall,
+道路南側の落ち影**, plus owned/third-party base cores, owned and third-party base front walls,
 four team flags, lake, obstacle, and the
 six bridge direction/segment slots. Each slot reports its
 filename, decoded dimensions, loading state, or failure reason. Invalid formats,
@@ -73,16 +73,24 @@ cannot be removed automatically: use separate top/face images when needed.
 Valid 2×2 bases use one measured group rectangle rather than repeating the base
 image in each logical cell. The existing `base` slot is the team-owned core;
 `base_core_third_party` is selected while the current owner is the neutral team.
-`base_front_wall` and the four flag slots are transparent overlays with independent
-scale and offsets. Flag slots follow the current non-neutral `GameState.teams`
-order; no team ID text or color is guessed. Captures only switch the persistent
-core/flag/wall Sprite state. Non-2×2 bases stay on the compatible per-cell path.
+Each of the four grouped base cells retains its logical `base` terrain but draws
+the shared `road` top as a cobblestone underlay behind the single grouped core.
+Changing or resetting the road PNG therefore also updates the base underlay, and
+an unset road PNG uses the same road Graphics fallback. This visual reuse does not
+create road terrain, additional south faces, or additional shadows.
+`base_front_wall` is the owned wall, while `base_front_wall_third_party` is an
+independently adjustable optional third-party wall. If the latter is unset or its
+texture is unavailable, third-party bases use `base_front_wall` unchanged. The four
+flag slots are transparent overlays with independent scale and offsets. Flag slots
+follow the current non-neutral `GameState.teams` order; no team ID text or color is
+guessed. Captures only switch the persistent core/flag/wall Sprite state. Non-2×2
+bases stay on the compatible per-cell path.
 
 The base front wall and flag use a second pointer-transparent Pixi Canvas. Unit
 sprite bodies are below that foreground while HP/team/formation/retreat badges and
 selection/target rings are raised above it. Neutral wall instances receive a
-low-cost sepia-gray Sprite tint; the shared source texture and team-owned wall are
-not modified. Other terrain obstacles still cannot partially occlude HTML units.
+dedicated third-party wall image when available, otherwise the normal wall without
+automatic tinting or source-image modification. Other terrain obstacles still cannot partially occlude HTML units.
 Large/offset art may overlap adjacent cells or clip at
 Canvas edges; logical cell interactions are unchanged.
 The real-board Canvas keeps its existing board-sized bounds, so a shadow adjusted

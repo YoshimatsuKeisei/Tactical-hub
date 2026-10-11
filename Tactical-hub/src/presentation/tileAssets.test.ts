@@ -81,14 +81,21 @@ describe("shared browser-only tile assets", () => {
   it("keeps owned/third-party cores, wall, and four flag slots independently adjustable", async () => {
     const store = new TileAssetStore(async () => asset("base-part.png"));
     const keys = [
-      "base", "base_core_third_party", "base_front_wall",
+      "base", "base_core_third_party", "base_front_wall", "base_front_wall_third_party",
       "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
     ] as const;
     for (const key of keys) await store.importFile(key, file);
     store.adjust("base_front_wall", { scale: 1.25, offsetX: -3, offsetY: 7 });
+    store.adjust("base_front_wall_third_party", { scale: 0.8, offsetX: 6, offsetY: -2 });
     store.adjust("base_flag_team_3", { scale: 0.7, offsetX: 4, offsetY: -5 });
     expect(store.getSnapshot().assets.base_front_wall).toMatchObject({ scale: 1.25, offsetX: -3, offsetY: 7 });
+    expect(store.getSnapshot().assets.base_front_wall_third_party).toMatchObject({ scale: 0.8, offsetX: 6, offsetY: -2 });
     expect(store.getSnapshot().assets.base_flag_team_3).toMatchObject({ scale: 0.7, offsetX: 4, offsetY: -5 });
+    store.adjust("base_front_wall_third_party", DEFAULT_ADJUSTMENT);
+    expect(store.getSnapshot().assets.base_front_wall_third_party).toMatchObject(DEFAULT_ADJUSTMENT);
+    store.reset("base_front_wall_third_party");
+    expect(store.getSnapshot().assets.base_front_wall_third_party).toBeUndefined();
+    expect(store.getSnapshot().assets.base_front_wall).toBeDefined();
     store.reset("base_front_wall");
     expect(store.getSnapshot().assets.base_front_wall).toBeUndefined();
     expect(store.getSnapshot().assets.base_flag_team_3).toBeDefined();
