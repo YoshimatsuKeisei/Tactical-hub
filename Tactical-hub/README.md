@@ -2,6 +2,16 @@
 
 ## DEV Tile Asset Preview / Import
 
+Imported PNG terrain uses a persistent Pixi display tree. Each Canvas creates its
+ground/depth layers and per-cell Graphics/Sprites once. State, asset, adjustment,
+and ResizeObserver updates mutate texture, position, dimensions, and visibility;
+they do not clear the stage or recreate every Sprite. Texture synchronization is
+skipped while enabled state and decoded image identities are unchanged. Replacing,
+resetting, or disabling an asset releases only the affected Canvas-owned texture
+and switches the existing per-cell Sprite/Graphics pair in place. This avoids the
+repeated GPU upload and empty display-tree interval that could produce PNG-only
+flashing. The exact browser/GPU cause still requires Windows visual confirmation.
+
 Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
 at the top left. Select PNG files for road, base, lake, obstacle, the six bridge
 direction/segment slots, and optionally `road_south_face`. Each slot reports its

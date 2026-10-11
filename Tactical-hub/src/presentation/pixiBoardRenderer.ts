@@ -1,15 +1,17 @@
 import { Application } from "pixi.js";
 import type { CellBounds, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { EMPTY_ASSETS, type AssetSnapshot } from "./tileAssets";
-import { createTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
+import { PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
 export async function mountPixiBoard(host: HTMLDivElement, signal: AbortSignal) {
   const app = new Application(), cache = new TerrainTextureCache();
+  const terrain = new PersistentTerrainScene(cache);
   let initialized = false, disposed = false;
   const dispose = () => {
     if (disposed) return;
     disposed = true;
-    if (initialized) app.destroy(true, { children: true });
-    else app.stage.destroy({ children: true });
+    terrain.destroy();
+    if (initialized) app.destroy(true, { children: false });
+    else app.stage.destroy({ children: false });
     cache.dispose();
   };
   try {
@@ -18,12 +20,16 @@ export async function mountPixiBoard(host: HTMLDivElement, signal: AbortSignal) 
     if (signal.aborted) { dispose(); return { dispose, update: () => {} }; }
     host.appendChild(app.canvas);
     app.canvas.setAttribute("aria-hidden", "true");
+    app.stage.addChild(terrain.root);
+    let rendererWidth = 0, rendererHeight = 0;
     const update = (cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, width: number, height: number, assets: AssetSnapshot = EMPTY_ASSETS) => {
       if (disposed || signal.aborted || width <= 0 || height <= 0) return;
-      for (const child of app.stage.removeChildren()) child.destroy({ children: true });
-      cache.sync(assets);
-      app.renderer.resize(width, height);
-      app.stage.addChild(createTerrainScene(cells, bounds, assets, cache));
+      if (rendererWidth !== width || rendererHeight !== height) {
+        app.renderer.resize(width, height);
+        rendererWidth = width;
+        rendererHeight = height;
+      }
+      terrain.update(cells, bounds, assets);
       app.render();
     };
     return { dispose, update };

@@ -1,72 +1,170 @@
 import { describe, expect, it, vi } from "vitest";
-import { TerrainTextureCache, createTerrainScene } from "./pixiTerrainScene";
-import { EMPTY_ASSETS, DEFAULT_ADJUSTMENT, type AssetSnapshot } from "./tileAssets";
-import type { PixiBoardTerrain } from "./pixiBoardTerrain";
-// Test scene contracts without a DOM/WebGL renderer.
+import { DEFAULT_ADJUSTMENT, EMPTY_ASSETS, type AssetSnapshot } from "./tileAssets";
+
 vi.mock("pixi.js", () => {
-  class Container { children: unknown[] = []; eventMode = ""; sortableChildren = false; zIndex = 0; addChild(child: unknown) { this.children.push(child); return child; } }
-  class Graphics { rect() { return this; } fill() { return this; } stroke() { return this; } moveTo() { return this; } lineTo() { return this; } }
+  class Container {
+    children: unknown[] = [];
+    eventMode = "";
+    sortableChildren = false;
+    zIndex = 0;
+    visible = true;
+    label = "";
+    position = { set: vi.fn() };
+    addChild(...children: unknown[]) { this.children.push(...children); return children[0]; }
+    destroy = vi.fn();
+  }
+  class Graphics {
+    visible = true;
+    clear = vi.fn(() => this);
+    destroy = vi.fn();
+    rect() { return this; }
+    fill() { return this; }
+    stroke() { return this; }
+    moveTo() { return this; }
+    lineTo() { return this; }
+  }
   class ImageSource { constructor(public options: unknown) {} }
-  class Texture { destroy = vi.fn(); constructor(public options: unknown) {} }
-  class Sprite { position = { set: vi.fn() }; width = 0; height = 0; constructor(public texture: Texture) {} }
+  class Texture {
+    static EMPTY: Texture;
+    destroy = vi.fn();
+    constructor(public options: unknown) {}
+  }
+  Texture.EMPTY = new Texture({ empty: true });
+  class Sprite {
+    position = { set: vi.fn() };
+    width = 0;
+    height = 0;
+    visible = true;
+    destroy = vi.fn();
+    constructor(public texture: Texture) {}
+  }
   return { Container, Graphics, ImageSource, Texture, Sprite };
 });
-import { Container, Sprite, Graphics } from "pixi.js";
+
+import { PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
+import { Sprite, Texture } from "pixi.js";
+
 const image = {} as HTMLImageElement;
-const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: { road: { image, width: 128, height: 128, name: "r.png", ...DEFAULT_ADJUSTMENT } } };
+const imported: AssetSnapshot = {
+  enabled: true,
+  statuses: {},
+  assets: { road: { image, width: 128, height: 128, name: "road.png", ...DEFAULT_ADJUSTMENT } },
+};
 const cell = { x: 0, y: 0, kind: "road" as const, southFace: true, bridge: null, obstacle: false };
 const bounds = new Map([["0,0", { x: 0, y: 0, width: 48, height: 48 }]]);
-function descendants(container: Container): unknown[] { return container.children.flatMap((child) => child instanceof Container ? [child, ...descendants(child)] : [child]); }
-describe("Graphics fallback and renderer-local Sprite sources", () => {
-  it("uses Graphics for unset assets and never draws sprites in shapes mode", () => {
-    const cache = new TerrainTextureCache(); cache.sync(snapshot);
-    const scene = createTerrainScene([cell], bounds, EMPTY_ASSETS, cache);
-    expect(descendants(scene).filter((child) => child instanceof Graphics).length).toBeGreaterThan(0);
-    expect(descendants(scene).some((child) => child instanceof Sprite)).toBe(false);
+
+describe("persistent Pixi terrain scene", () => {
+  it("keeps the same scene, containers, and Sprite across unchanged updates", () => {
+    const cache = new TerrainTextureCache();
+    const scene = new PersistentTerrainScene(cache);
+    scene.update([cell], bounds, imported);
+    const first = scene.getCellDisplayObjects("0,0")!;
+    const texture = first.roadSprite.texture;
+    scene.update([cell], bounds, imported);
+    const second = scene.getCellDisplayObjects("0,0")!;
+    expect(second.roadSprite).toBe(first.roadSprite);
+    expect(second.roadGraphics).toBe(first.roadGraphics);
+    expect(second.roadSprite.texture).toBe(texture);
+    expect(scene.cellCount).toBe(1);
   });
-  it("draws an imported road, retains optional Graphics face, and suppresses internal faces", () => {
-    const cache = new TerrainTextureCache(); cache.sync(snapshot);
-    expect(descendants(createTerrainScene([cell], bounds, snapshot, cache)).filter((child) => child instanceof Sprite)).toHaveLength(1);
-    const scene = createTerrainScene([{ ...cell, southFace: false }], bounds, snapshot, cache);
-    expect(descendants(scene).filter((child) => child instanceof Graphics)).toHaveLength(0);
-    cache.dispose();
+
+  it("updates bounds in place without recreating Sprite or Texture", () => {
+    const cache = new TerrainTextureCache();
+    const scene = new PersistentTerrainScene(cache);
+    scene.update([cell], bounds, imported);
+    const sprite = scene.getCellDisplayObjects("0,0")!.roadSprite;
+    const texture = sprite.texture;
+    const resized = new Map([["0,0", { x: 12, y: 20, width: 72, height: 72 }]]);
+    scene.update([cell], resized, imported);
+    expect(scene.getCellDisplayObjects("0,0")!.roadSprite).toBe(sprite);
+    expect(sprite.texture).toBe(texture);
+    expect(sprite.position.set).toHaveBeenLastCalledWith(12, 20);
+    expect(sprite.width).toBe(72);
+    expect(sprite.height).toBe(72);
   });
-  it("keeps the lake underneath an imported bridge and obstacle", () => {
-    const current = { ...snapshot, assets: { lake: snapshot.assets.road, bridge_vertical_end: snapshot.assets.road, obstacle: snapshot.assets.road } };
-    const cache = new TerrainTextureCache(); cache.sync(current);
-    const scene = createTerrainScene([{ ...cell, kind: "lake", southFace: false, bridge: { direction: "vertical", segment: "end" }, obstacle: true }] as PixiBoardTerrain, bounds, current, cache);
-    expect(descendants(scene).filter((child) => child instanceof Sprite)).toHaveLength(3);
-    const ground = scene.children[0] as Container;
-    expect(ground.children[0]).toBeInstanceOf(Sprite);
+
+  it("switches imported asset off/on using the same Sprite and Graphics fallback", () => {
+    const cache = new TerrainTextureCache();
+    const scene = new PersistentTerrainScene(cache);
+    scene.update([cell], bounds, imported);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    expect(objects.roadSprite.visible).toBe(true);
+    expect(objects.roadGraphics.visible).toBe(false);
+    scene.update([cell], bounds, EMPTY_ASSETS);
+    expect(scene.getCellDisplayObjects("0,0")!.roadSprite).toBe(objects.roadSprite);
+    expect(objects.roadSprite.visible).toBe(false);
+    expect(objects.roadGraphics.visible).toBe(true);
+    scene.update([cell], bounds, imported);
+    expect(scene.getCellDisplayObjects("0,0")!.roadSprite).toBe(objects.roadSprite);
+    expect(objects.roadSprite.visible).toBe(true);
   });
-  it("uses the exact selected bridge key, with fallback when only another segment is loaded", () => {
-    const current = { ...snapshot, assets: { bridge_horizontal_start: snapshot.assets.road } };
-    const cache = new TerrainTextureCache(); cache.sync(current);
-    const cells: PixiBoardTerrain = [{ ...cell, kind: "lake", bridge: { direction: "horizontal", segment: "middle" }, southFace: false }];
-    expect(descendants(createTerrainScene(cells, bounds, current, cache)).some((child) => child instanceof Sprite)).toBe(false);
+
+  it("redraws fallback only when its geometry changes", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, EMPTY_ASSETS);
+    const graphics = scene.getCellDisplayObjects("0,0")!.roadGraphics;
+    const initialClears = vi.mocked(graphics.clear).mock.calls.length;
+    scene.update([cell], bounds, EMPTY_ASSETS);
+    expect(graphics.clear).toHaveBeenCalledTimes(initialClears);
+    scene.update([cell], new Map([["0,0", { x: 0, y: 0, width: 72, height: 72 }]]), EMPTY_ASSETS);
+    expect(graphics.clear).toHaveBeenCalledTimes(initialClears + 1);
   });
-  it("retains Flat/Raised behavior: separate south-face sprite appears only when exposed and raised", () => {
-    const current = { ...snapshot, assets: { ...snapshot.assets, road_south_face: snapshot.assets.road } };
-    const cache = new TerrainTextureCache(); cache.sync(current);
-    expect(descendants(createTerrainScene([cell], bounds, current, cache, false)).filter((child) => child instanceof Sprite)).toHaveLength(1);
-    expect(descendants(createTerrainScene([cell], bounds, current, cache, true)).filter((child) => child instanceof Sprite)).toHaveLength(2);
-    expect(descendants(createTerrainScene([{ ...cell, southFace: false }], bounds, current, cache, true)).filter((child) => child instanceof Sprite)).toHaveLength(1);
+
+  it("updates bridge and obstacle visibility without replacing their display objects", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, EMPTY_ASSETS);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    const constructed = [{ ...cell, bridge: { direction: "horizontal" as const, segment: "middle" as const }, obstacle: true }];
+    scene.update(constructed, bounds, EMPTY_ASSETS);
+    expect(scene.getCellDisplayObjects("0,0")!.bridgeGraphics).toBe(objects.bridgeGraphics);
+    expect(objects.bridgeGraphics.visible).toBe(true);
+    expect(objects.obstacleGraphics.visible).toBe(true);
+    scene.update([cell], bounds, EMPTY_ASSETS);
+    expect(objects.bridgeGraphics.visible).toBe(false);
+    expect(objects.obstacleGraphics.visible).toBe(false);
   });
-  it("owns separate textures per Canvas; replacement/reset/disposal destroys only local textures", () => {
-    const a = new TerrainTextureCache(), b = new TerrainTextureCache(); a.sync(snapshot); b.sync(snapshot);
-    const pa = new Container(), pb = new Container();
-    a.draw(pa, "road", bounds.get("0,0")!, snapshot); b.draw(pb, "road", bounds.get("0,0")!, snapshot);
-    const ta = (pa.children[0] as Sprite).texture, tb = (pb.children[0] as Sprite).texture;
-    expect(ta).not.toBe(tb); a.dispose(); expect(ta.destroy).toHaveBeenCalledOnce(); expect(tb.destroy).not.toHaveBeenCalled();
-    b.sync({ ...snapshot, assets: { road: { ...snapshot.assets.road!, image: {} as HTMLImageElement } } });
-    expect(tb.destroy).toHaveBeenCalledOnce(); b.sync(EMPTY_ASSETS); b.dispose();
+
+  it("retains lake below imported bridge and obstacle Sprites", () => {
+    const allImported: AssetSnapshot = {
+      enabled: true, statuses: {},
+      assets: {
+        lake: { ...imported.assets.road! },
+        bridge_vertical_end: { ...imported.assets.road! },
+        obstacle: { ...imported.assets.road! },
+      },
+    };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([{ ...cell, kind: "lake", southFace: false, bridge: { direction: "vertical", segment: "end" }, obstacle: true }], bounds, allImported);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    expect(objects.groundSprite.visible).toBe(true);
+    expect(objects.bridgeSprite.visible).toBe(true);
+    expect(objects.obstacleSprite.visible).toBe(true);
   });
-  it("does not allocate a new texture when only placement changes", () => {
-    const cache = new TerrainTextureCache(); cache.sync(snapshot); const parent = new Container();
-    cache.draw(parent, "road", bounds.get("0,0")!, snapshot); const texture = (parent.children[0] as Sprite).texture;
-    const adjusted = { ...snapshot, assets: { road: { ...snapshot.assets.road!, scale: 2 } } };
-    cache.sync(adjusted); cache.draw(parent, "road", bounds.get("0,0")!, adjusted);
-    expect((parent.children[1] as Sprite).texture).toBe(texture);
-    expect((parent.children[1] as Sprite).width).toBe(96);
+
+  it("keeps renderer-local textures and destroys only changed images", () => {
+    const a = new TerrainTextureCache(), b = new TerrainTextureCache();
+    a.sync(imported); b.sync(imported);
+    const sceneA = new PersistentTerrainScene(a), sceneB = new PersistentTerrainScene(b);
+    sceneA.update([cell], bounds, imported); sceneB.update([cell], bounds, imported);
+    const textureA = sceneA.getCellDisplayObjects("0,0")!.roadSprite.texture as Texture;
+    const textureB = sceneB.getCellDisplayObjects("0,0")!.roadSprite.texture as Texture;
+    expect(textureA).not.toBe(textureB);
+    expect(a.sync(imported)).toBe(false);
+    a.dispose();
+    expect(textureA.destroy).toHaveBeenCalledOnce();
+    expect(textureB.destroy).not.toHaveBeenCalled();
+    b.dispose();
+  });
+
+  it("reuses one Sprite when only placement adjustment changes", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, imported);
+    const sprite = scene.getCellDisplayObjects("0,0")!.roadSprite as Sprite;
+    const texture = sprite.texture;
+    const adjusted = { ...imported, assets: { road: { ...imported.assets.road!, scale: 2 } } };
+    scene.update([cell], bounds, adjusted);
+    expect(scene.getCellDisplayObjects("0,0")!.roadSprite).toBe(sprite);
+    expect(sprite.texture).toBe(texture);
+    expect(sprite.width).toBe(96);
   });
 });
