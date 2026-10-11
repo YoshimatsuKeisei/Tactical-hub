@@ -3,6 +3,7 @@ import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
 import { HdEnemyDevPreview } from "./components/HdEnemyDevPreview";
+import { PixiTileDevPreview } from "./components/PixiTileDevPreview";
 import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
 import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
@@ -347,6 +348,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         />}
       />
       {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV ? <HdEnemyDevPreview /> : null}
+      {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV ? <PixiTileDevPreview /> : null}
     </main>
   );
 }

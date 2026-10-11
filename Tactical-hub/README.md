@@ -1,5 +1,28 @@
 # Tactical Hub
 
+## DEV PixiJS square tile experiment
+
+Run `npm run dev`, open the game screen, and select **Open PixiJS tile preview
+(DEV)** at the bottom left. Close it with the same button, which stays outside
+the scrollable panel. The panel is not shown in
+production; its Pixi renderer is loaded only when opened and destroyed when closed.
+
+The independent synthetic 7×6 map compares flat and raised square tiles. Gray
+roads, gold bases, and blue lakes are disposable generated shapes, not production
+art. `@pixi/tilemap` batches fixed terrain. Row-sorted Containers hold road south
+faces, horizontal/vertical bridge segments (gold start/end caps), and tall red
+obstacles. Same-height roads to the south suppress internal road sidewalls.
+Lakes stay under bridges; bridge and obstacle overlays do not alter terrain.
+
+Manual checks: compare both panels; inspect road clusters and exposed south edges;
+check both bridge directions and obstacle occlusion. Click road sidewall overhangs
+and tall obstacle tops: selection follows the logical square under the pointer,
+not the graphic's owner. The text reports zero-based `(x, y)` coordinates. Scroll
+the panel on narrow screens. Repeatedly open/close it, including during initial
+loading, to check WebGL/remount cleanup. The renderer uses demand rendering, not
+a continuous animation loop. Performance at production map scale, browser visuals,
+and interaction remain manual checks; no production assets or game rules change.
+
 ## Local Catapult asset setup
 
 Engineers (`unit.type === "engineer"`) are rendered with the separately
