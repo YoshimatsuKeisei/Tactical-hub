@@ -14,7 +14,8 @@ flashing. The exact browser/GPU cause still requires Windows visual confirmation
 
 Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
 at the top left. Select separate transparent PNG files for **Road top / 道路上面**
-and optional **Road south face / 道路南側面**, plus base, lake, obstacle, and the
+and optional **Road south face / 道路南側面** and **Road south shadow /
+道路南側の落ち影**, plus base, lake, obstacle, and the
 six bridge direction/segment slots. Each slot reports its
 filename, decoded dimensions, loading state, or failure reason. Invalid formats,
 signatures, and undecodable PNGs are rejected; the previous good asset is retained.
@@ -50,7 +51,16 @@ face is hidden when the south neighbor is any of those same-height terrains, and
 shown at the bottom edge or when the south neighbor is lake/outside. The separate
 `road_south_face` image is reused for every such exposed raised edge; when unset,
 the existing dark Graphics face is used. It is placed only below the top tile,
-after terrain tops and before bridge/obstacle overlays. Lakes remain beneath transparent
+after terrain tops and before bridge/obstacle overlays. The optional south shadow
+uses exactly the same visibility result and starts at the bottom of the face that
+is actually displayed. It is drawn above low terrain and behind the unchanged
+road/face/bridge/obstacle layers. With no shadow PNG, three unblurred Graphics bands
+fade toward the south; this avoids one BlurFilter per tile. The shadow settings work
+for both PNG and fallback: enable, opacity (default 0.24), scale, and X/Y offset are
+shared by both Pixi views. Turning it off restores the pre-shadow presentation without
+moving the road top or face. **Reset image** returns only the shadow to Graphics;
+**Reset shadow settings** restores its default controls, and **Reset All** restores
+all slots and shadow settings. Lakes remain beneath transparent
 bridge overlays. Bridge direction/start/middle/end and active obstacles follow
 the existing presentation adapter. South-face sprites are also hidden in Flat
 preview mode. A sidewall baked into a road PNG
@@ -58,9 +68,15 @@ cannot be removed automatically: use separate top/face images when needed.
 HTML characters still render above the complete Pixi scene, so exact character
 occlusion is unsupported. Large/offset art may overlap adjacent cells or clip at
 Canvas edges; logical cell interactions are unchanged.
+The real-board Canvas keeps its existing board-sized bounds, so a shadow adjusted
+beyond the final Canvas row is clipped. The existing opaque HTML `outside` tile can
+also cover Pixi overhang in the hybrid renderer; neither constraint changes hitboxes
+or the shadow visibility decision and should be checked with the target map locally.
 
 Manual checks: import recognizable PNGs and enable images; compare both views;
 adjust/reload/reset every slot, test bridge transparency and segment selection,
+toggle the south shadow, compare its PNG and Graphics versions, adjust its opacity
+and placement without moving the road face,
 scroll/resize/click overhangs, toggle CSS/Pixi and shapes/images, close/reopen either
 view while loading, and verify no renewed flicker. GPU rendering/resource behavior
 and browser visuals remain manual checks. No production images are supplied.

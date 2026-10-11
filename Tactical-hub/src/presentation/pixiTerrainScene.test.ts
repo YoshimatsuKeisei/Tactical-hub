@@ -15,9 +15,10 @@ vi.mock("pixi.js", () => {
   }
   class Graphics {
     visible = true;
+    alpha = 1;
     clear = vi.fn(() => this);
     destroy = vi.fn();
-    rect() { return this; }
+    rect = vi.fn(() => this);
     fill() { return this; }
     stroke() { return this; }
     moveTo() { return this; }
@@ -35,6 +36,7 @@ vi.mock("pixi.js", () => {
     width = 0;
     height = 0;
     visible = true;
+    alpha = 1;
     destroy = vi.fn();
     constructor(public texture: Texture) {}
   }
@@ -115,8 +117,72 @@ describe("persistent Pixi terrain scene", () => {
 
     scene.update([{ ...cell, southFace: false }], bounds, withFace, true);
     expect(objects.faceSprite.visible).toBe(false);
+    expect(objects.shadowSprite.visible).toBe(false);
+    expect(objects.shadowGraphics.visible).toBe(false);
     scene.update([cell], bounds, withFace, false);
     expect(objects.faceSprite.visible).toBe(false);
+    expect(objects.shadowSprite.visible).toBe(false);
+    expect(objects.shadowGraphics.visible).toBe(false);
+  });
+
+  it("draws a soft Graphics shadow below the displayed face without moving the face", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, EMPTY_ASSETS, true);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    expect(objects.faceGraphics.visible).toBe(true);
+    expect(objects.shadowGraphics.visible).toBe(true);
+    expect(objects.shadowSprite.visible).toBe(false);
+    expect(objects.shadowGraphics.alpha).toBe(0.24);
+    expect((scene.root.children[1] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
+    const shadowRects = vi.mocked(objects.shadowGraphics.rect).mock.calls;
+    expect(shadowRects).toHaveLength(3);
+    expect(shadowRects[0][0]).toBe(0);
+    expect(shadowRects[0][1]).toBeCloseTo(57.6);
+    expect(shadowRects[0][2]).toBe(48);
+    expect(shadowRects[0][3]).toBeCloseTo(2);
+    expect(shadowRects[1][1]).toBeCloseTo(59.6);
+    expect(shadowRects[2][1]).toBeCloseTo(61.6);
+    expect(objects.faceGraphics.rect).toHaveBeenCalledWith(0, 48, 48, 9.600000000000001);
+  });
+
+  it("reuses the shadow Sprite and Texture across opacity, position, and enable changes", () => {
+    const shadowImage = {} as HTMLImageElement;
+    const snapshot: AssetSnapshot = {
+      enabled: true,
+      statuses: {},
+      assets: {
+        road_south_face: { image, width: 48, height: 10, name: "face.png", ...DEFAULT_ADJUSTMENT },
+        road_south_shadow: { image: shadowImage, width: 48, height: 6, name: "shadow.png", ...DEFAULT_ADJUSTMENT },
+      },
+      roadSouthShadow: { enabled: true, opacity: 0.3, scale: 1, offsetX: 0, offsetY: 0 },
+    };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, snapshot, true);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    const shadowSprite = objects.shadowSprite;
+    const shadowTexture = shadowSprite.texture;
+    const facePosition = vi.mocked(objects.faceSprite.position.set).mock.calls.at(-1);
+    const faceSize = { width: objects.faceSprite.width, height: objects.faceSprite.height };
+    expect(shadowSprite.visible).toBe(true);
+    expect(shadowSprite.alpha).toBe(0.3);
+    expect(shadowSprite.position.set).toHaveBeenLastCalledWith(0, 58);
+
+    const adjusted: AssetSnapshot = {
+      ...snapshot,
+      roadSouthShadow: { enabled: true, opacity: 0.4, scale: 1, offsetX: 2, offsetY: 3 },
+    };
+    scene.update([cell], bounds, adjusted, true);
+    expect(scene.getCellDisplayObjects("0,0")!.shadowSprite).toBe(shadowSprite);
+    expect(shadowSprite.texture).toBe(shadowTexture);
+    expect(shadowSprite.alpha).toBe(0.4);
+    expect(shadowSprite.position.set).toHaveBeenLastCalledWith(2, 61);
+    expect(vi.mocked(objects.faceSprite.position.set).mock.calls.at(-1)).toEqual(facePosition);
+    expect({ width: objects.faceSprite.width, height: objects.faceSprite.height }).toEqual(faceSize);
+
+    scene.update([cell], bounds, { ...adjusted, roadSouthShadow: { ...adjusted.roadSouthShadow!, enabled: false } }, true);
+    expect(objects.shadowSprite.visible).toBe(false);
+    expect(objects.shadowGraphics.visible).toBe(false);
+    expect(objects.faceSprite.visible).toBe(true);
   });
 
   it("redraws fallback only when its geometry changes", () => {

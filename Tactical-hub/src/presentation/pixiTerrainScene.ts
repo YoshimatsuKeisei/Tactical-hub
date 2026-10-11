@@ -1,7 +1,10 @@
 import { Container, Graphics, ImageSource, Sprite, Texture } from "pixi.js";
 import type { CellBounds, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { TERRAIN_COLORS } from "./pixiBoardTerrain";
-import { assetPlacement, bridgeAssetKey, type AssetSnapshot, type TileAssetKey } from "./tileAssets";
+import {
+  assetPlacement, bridgeAssetKey, roadSouthShadowSettings, type AssetAdjustment,
+  type AssetSnapshot, type TileAssetKey,
+} from "./tileAssets";
 
 // Each Canvas owns its GPU textures; only decoded CPU images are shared.
 export class TerrainTextureCache {
@@ -53,6 +56,7 @@ export class TerrainTextureCache {
 }
 
 type FallbackDraw = (graphics: Graphics) => void;
+interface VisualOptions { adjustment?: AssetAdjustment; opacity?: number }
 
 class PersistentVisual {
   readonly graphics = new Graphics();
@@ -64,18 +68,29 @@ class PersistentVisual {
     this.hide();
   }
 
-  update(key: TileAssetKey, rect: CellBounds, snapshot: AssetSnapshot, cache: TerrainTextureCache, fallbackSignature: string, drawFallback: FallbackDraw) {
+  update(
+    key: TileAssetKey,
+    rect: CellBounds,
+    snapshot: AssetSnapshot,
+    cache: TerrainTextureCache,
+    fallbackSignature: string,
+    drawFallback: FallbackDraw,
+    options: VisualOptions = {},
+  ): CellBounds {
     const asset = snapshot.enabled ? snapshot.assets[key] : undefined;
     const texture = cache.get(key, snapshot);
+    const opacity = Math.min(1, Math.max(0, options.opacity ?? 1));
+    this.sprite.alpha = opacity;
+    this.graphics.alpha = opacity;
     if (asset && texture) {
-      const placement = assetPlacement(asset, rect);
+      const placement = assetPlacement(options.adjustment ? { ...asset, ...options.adjustment } : asset, rect);
       this.sprite.texture = texture;
       this.sprite.position.set(placement.x, placement.y);
       this.sprite.width = placement.width;
       this.sprite.height = placement.height;
       this.sprite.visible = true;
       this.graphics.visible = false;
-      return;
+      return placement;
     }
 
     this.sprite.visible = false;
@@ -85,6 +100,7 @@ class PersistentVisual {
       drawFallback(this.graphics);
       this.fallbackSignature = fallbackSignature;
     }
+    return rect;
   }
 
   hide() {
@@ -102,6 +118,7 @@ interface PersistentCell {
   ground: PersistentVisual;
   road: PersistentVisual;
   face: PersistentVisual;
+  shadow: PersistentVisual;
   bridge: PersistentVisual;
   obstacle: PersistentVisual;
   layer: Container;
@@ -112,13 +129,14 @@ const rectSignature = (rect: CellBounds) => `${rect.x},${rect.y},${rect.width},$
 export class PersistentTerrainScene {
   readonly root = new Container();
   private readonly groundLayer = new Container();
+  private readonly shadowLayer = new Container();
   private readonly depthLayer = new Container();
   private readonly nodes = new Map<string, PersistentCell>();
 
   constructor(private readonly cache: TerrainTextureCache) {
     this.root.eventMode = "none";
     this.depthLayer.sortableChildren = true;
-    this.root.addChild(this.groundLayer, this.depthLayer);
+    this.root.addChild(this.groundLayer, this.shadowLayer, this.depthLayer);
   }
 
   private makeCell(key: string, row: number) {
@@ -128,6 +146,7 @@ export class PersistentTerrainScene {
     this.depthLayer.addChild(layer);
     const node = {
       ground: new PersistentVisual(this.groundLayer),
+      shadow: new PersistentVisual(this.shadowLayer),
       road: new PersistentVisual(layer),
       face: new PersistentVisual(layer),
       bridge: new PersistentVisual(layer),
@@ -169,9 +188,26 @@ export class PersistentTerrainScene {
       const depth = raised ? Math.min(10, h * 0.2) : 0;
       if (raised && cell.southFace) {
         const faceRect = { ...rect, y: y + h, height: depth };
-        node.face.update("road_south_face", faceRect, snapshot, this.cache, `face:${rectSignature(faceRect)}`,
+        const displayedFace = node.face.update("road_south_face", faceRect, snapshot, this.cache, `face:${rectSignature(faceRect)}`,
           (g) => g.rect(x, y + h, w, depth).fill(0x4e544f));
-      } else node.face.hide();
+        const shadow = roadSouthShadowSettings(snapshot);
+        if (shadow.enabled) {
+          const anchor = roadSouthShadowAnchor(displayedFace, h);
+          const fallbackRect = adjustedShadowRect(anchor, shadow);
+          node.shadow.update(
+            "road_south_shadow",
+            anchor,
+            snapshot,
+            this.cache,
+            `shadow:${rectSignature(fallbackRect)}`,
+            (g) => drawRoadSouthShadow(g, fallbackRect),
+            { adjustment: shadow, opacity: shadow.opacity },
+          );
+        } else node.shadow.hide();
+      } else {
+        node.face.hide();
+        node.shadow.hide();
+      }
 
       if (cell.bridge) {
         const bridgeKey = bridgeAssetKey(cell.bridge.direction, cell.bridge.segment);
@@ -195,6 +231,7 @@ export class PersistentTerrainScene {
       groundGraphics: node.ground.graphics, groundSprite: node.ground.sprite,
       roadGraphics: node.road.graphics, roadSprite: node.road.sprite,
       faceGraphics: node.face.graphics, faceSprite: node.face.sprite,
+      shadowGraphics: node.shadow.graphics, shadowSprite: node.shadow.sprite,
       bridgeGraphics: node.bridge.graphics, bridgeSprite: node.bridge.sprite,
       obstacleGraphics: node.obstacle.graphics, obstacleSprite: node.obstacle.sprite,
     } : undefined;
@@ -206,6 +243,7 @@ export class PersistentTerrainScene {
     node.ground.hide();
     node.road.hide();
     node.face.hide();
+    node.shadow.hide();
     node.bridge.hide();
     node.obstacle.hide();
     node.layer.visible = false;
@@ -216,15 +254,43 @@ export class PersistentTerrainScene {
       node.ground.destroy();
       node.road.destroy();
       node.face.destroy();
+      node.shadow.destroy();
       node.bridge.destroy();
       node.obstacle.destroy();
       node.layer.destroy({ children: false });
     }
     this.nodes.clear();
     this.groundLayer.destroy({ children: false });
+    this.shadowLayer.destroy({ children: false });
     this.depthLayer.destroy({ children: false });
     this.root.destroy({ children: false });
   }
+}
+
+export function roadSouthShadowAnchor(face: CellBounds, cellHeight: number): CellBounds {
+  return {
+    x: face.x,
+    y: face.y + face.height,
+    width: face.width,
+    height: Math.min(8, Math.max(4, cellHeight * 0.125)),
+  };
+}
+
+export function adjustedShadowRect(anchor: CellBounds, adjustment: AssetAdjustment): CellBounds {
+  const unit = anchor.width / 48;
+  return {
+    x: anchor.x + adjustment.offsetX * unit,
+    y: anchor.y + adjustment.offsetY * unit,
+    width: anchor.width * adjustment.scale,
+    height: anchor.height * adjustment.scale,
+  };
+}
+
+function drawRoadSouthShadow(graphics: Graphics, rect: CellBounds) {
+  const band = rect.height / 3;
+  graphics.rect(rect.x, rect.y, rect.width, band).fill({ color: 0x24170f, alpha: 0.72 });
+  graphics.rect(rect.x, rect.y + band, rect.width, band).fill({ color: 0x24170f, alpha: 0.42 });
+  graphics.rect(rect.x, rect.y + band * 2, rect.width, rect.height - band * 2).fill({ color: 0x24170f, alpha: 0.16 });
 }
 
 function drawBridge(graphics: Graphics, rect: CellBounds, bridge: NonNullable<PixiBoardTerrain[number]["bridge"]>, raised: boolean, depth: number) {

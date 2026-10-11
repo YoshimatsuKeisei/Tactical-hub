@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { DEFAULT_ADJUSTMENT, TILE_ASSET_KEYS, TILE_ASSET_LABELS } from "../presentation/tileAssets";
+import {
+  DEFAULT_ADJUSTMENT, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
+} from "../presentation/tileAssets";
 import { useTileAssets } from "./TileAssetProvider";
 export function TileAssetImportPanel() {
   const [open, setOpen] = useState(false);
@@ -18,20 +20,33 @@ export function TileAssetImportPanel() {
         X/Yは48px基準の位置調整。画像幅を1セルに合わせ、縦横比を維持します。道路南側面は同じ高さが南へ続かない境界だけに表示します。焼き込み側面は自動除去できません。</p>
       {TILE_ASSET_KEYS.map((key) => {
         const asset = snapshot.assets[key];
+        const isShadow = key === "road_south_shadow";
+        const shadowSettings = roadSouthShadowSettings(snapshot);
+        const adjustment = isShadow ? shadowSettings : asset;
         return <fieldset key={key}>
-          <legend>{TILE_ASSET_LABELS[key]}{key === "road_south_face" ? " (透過PNG・任意)" : ""}</legend>
+          <legend>{TILE_ASSET_LABELS[key]}{key === "road_south_face" || isShadow ? " (透過PNG・任意)" : ""}</legend>
+          {isShadow && <label>
+            <input type="checkbox" checked={shadowSettings.enabled} onChange={(event) => store?.setRoadSouthShadowEnabled(event.target.checked)} />
+            影を表示
+          </label>}
           <input aria-label={`${key} PNG`} type="file" accept="image/png,.png" onChange={(event) => {
             const file = event.target.files?.[0]; event.target.value = "";
             if (file) void store?.importFile(key, file);
           }} />
           <span role="status">{snapshot.statuses[key] ?? "未設定：仮図形"}{asset ? ` — ${asset.name} ${asset.width}×${asset.height}` : ""}</span>
           <button type="button" onClick={() => store?.reset(key)}>Reset image</button>
-          {asset && <div>
+          {adjustment && <div>
             {(["scale", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
               <input type="number" aria-label={`${key} ${property}`} step={property === "scale" ? 0.1 : 1} min={property === "scale" ? 0.1 : undefined} max={property === "scale" ? 4 : undefined}
-                value={asset[property]} onChange={(event) => { if (event.target.value !== "") store?.adjust(key, { [property]: Number(event.target.value) }); }} />
+                value={adjustment[property]} onChange={(event) => { if (event.target.value !== "") store?.adjust(key, { [property]: Number(event.target.value) }); }} />
             </label>)}
-            <button type="button" onClick={() => store?.adjust(key, DEFAULT_ADJUSTMENT)}>Reset adjustment</button>
+            {isShadow && <label>opacity
+              <input type="number" aria-label="road_south_shadow opacity" step={0.05} min={0} max={1}
+                value={shadowSettings.opacity} onChange={(event) => { if (event.target.value !== "") store?.setRoadSouthShadowOpacity(Number(event.target.value)); }} />
+            </label>}
+            <button type="button" onClick={() => isShadow ? store?.resetRoadSouthShadowSettings() : store?.adjust(key, DEFAULT_ADJUSTMENT)}>
+              {isShadow ? "Reset shadow settings" : "Reset adjustment"}
+            </button>
           </div>}
         </fieldset>;
       })}
