@@ -55,7 +55,13 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
   const { snapshot: assetSnapshot } = useTileAssets();
   const boardRef = useRef<HTMLDivElement>(null);
   const usePixi = (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV && terrainMode === "pixi";
-  const baseTerrain = useMemo(() => usePixi ? buildPixiBoardTerrain(state) : [], [usePixi, state.map, state.constructions]);
+  const basePresentationVersion = state.bases
+    .map((base) => `${base.id}:${base.ownerTeamId}:${base.coords.map((coord) => `${coord.x},${coord.y}`).join(";")}`)
+    .join("|") + state.teams.map((team) => `${team.id}:${Boolean(team.isNeutral)}:${team.status}`).join("|");
+  const baseTerrain = useMemo(
+    () => usePixi ? buildPixiBoardTerrain(state) : [],
+    [usePixi, state.map, state.constructions, basePresentationVersion],
+  );
   const [hoveredBridge, setHoveredBridge] = useState<{ key: string; cells: { x: number; y: number }[] }>();
   const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
@@ -118,7 +124,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
       <label>Terrain renderer (DEV): <select value={terrainMode} onChange={(event) => { setTerrainError(""); setTerrainMode(event.target.value); }}>
         <option value="css">CSS (default)</option><option value="pixi">PixiJS (experimental)</option>
       </select></label>
-      {usePixi && <span>HTML units/highlights remain above all terrain; exact occlusion is not supported.</span>}
+      {usePixi && <span>Base front walls use a click-through foreground layer; unit badges remain above it.</span>}
       {terrainError && <span role="alert">PixiJS failed; using CSS: {terrainError}</span>}
     </div>}
     <div ref={boardRef} className={`board${usePixi ? " board-pixi" : ""}`} style={{ gridTemplateColumns: `repeat(${state.map.width}, minmax(26px, 1fr))` }}>

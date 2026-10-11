@@ -78,6 +78,24 @@ describe("shared browser-only tile assets", () => {
     store.resetAll();
     expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
   });
+  it("keeps owned/third-party cores, wall, and four flag slots independently adjustable", async () => {
+    const store = new TileAssetStore(async () => asset("base-part.png"));
+    const keys = [
+      "base", "base_core_third_party", "base_front_wall",
+      "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
+    ] as const;
+    for (const key of keys) await store.importFile(key, file);
+    store.adjust("base_front_wall", { scale: 1.25, offsetX: -3, offsetY: 7 });
+    store.adjust("base_flag_team_3", { scale: 0.7, offsetX: 4, offsetY: -5 });
+    expect(store.getSnapshot().assets.base_front_wall).toMatchObject({ scale: 1.25, offsetX: -3, offsetY: 7 });
+    expect(store.getSnapshot().assets.base_flag_team_3).toMatchObject({ scale: 0.7, offsetX: 4, offsetY: -5 });
+    store.reset("base_front_wall");
+    expect(store.getSnapshot().assets.base_front_wall).toBeUndefined();
+    expect(store.getSnapshot().assets.base_flag_team_3).toBeDefined();
+    store.resetAll();
+    expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
+    expect(keys.every((key) => TILE_ASSET_LABELS[key].length > 0)).toBe(true);
+  });
   it("keeps shadow enable, opacity, and placement settings without a PNG", () => {
     const store = new TileAssetStore(async () => asset());
     expect(roadSouthShadowSettings(store.getSnapshot())).toEqual(DEFAULT_ROAD_SOUTH_SHADOW);

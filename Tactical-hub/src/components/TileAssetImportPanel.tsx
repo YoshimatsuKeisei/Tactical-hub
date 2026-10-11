@@ -18,7 +18,8 @@ export function TileAssetImportPanel() {
       <button type="button" onClick={() => store?.resetAll()}>Reset All</button>
       {snapshot.renderError && <p role="alert">画像描画に失敗したため仮図形へ戻しました：{snapshot.renderError}</p>}
       <p>実盤面はTerrain rendererをPixiJSに切り替えてください。CSSには適用されません。
-        X/Yは48px基準の位置調整。画像幅を1セルに合わせ、縦横比を維持します。道路南側面は同じ高さが南へ続かない境界だけに表示します。焼き込み側面は自動除去できません。</p>
+        X/Yは48px基準の位置調整。通常画像は幅1セル、拠点部品は2×2実測範囲を基準に縦横比を維持します。
+        Team 1～4 flagは現在の非中立チーム定義順に対応し、ID文字列は解析しません。道路南側面は同じ高さが南へ続かない境界だけに表示します。</p>
       <fieldset>
         <legend>Normal unit move highlight / 通常ユニット移動強調</legend>
         <label><input type="checkbox" checked={moveHighlight.normal.enabled}
@@ -54,9 +55,10 @@ export function TileAssetImportPanel() {
       {TILE_ASSET_KEYS.map((key) => {
         const asset = snapshot.assets[key];
         const isShadow = key === "road_south_shadow";
+        const transparentOptional = key === "road_south_face" || isShadow || key === "base_front_wall" || key.startsWith("base_flag_");
         const shadowSettings = roadSouthShadowSettings(snapshot);
         return <fieldset key={key}>
-          <legend>{TILE_ASSET_LABELS[key]}{key === "road_south_face" || isShadow ? " (透過PNG・任意)" : ""}</legend>
+          <legend>{TILE_ASSET_LABELS[key]}{transparentOptional ? " (透過PNG・任意)" : ""}</legend>
           {isShadow && <label>
             <input type="checkbox" checked={shadowSettings.enabled} onChange={(event) => store?.setRoadSouthShadowEnabled(event.target.checked)} />
             影を表示
@@ -87,7 +89,8 @@ export function TileAssetImportPanel() {
           </div>}
         </fieldset>;
       })}
-      <p>HTMLキャラはPixi全体より上です。障害物との正確な部分遮蔽は未対応です。</p>
+      <p>拠点前壁はclick-throughの前景Canvasでキャラ本体より手前、HP・badge・選択表示より奥へ配置します。
+        その他の障害物とHTMLキャラの正確な部分遮蔽は未対応です。</p>
     </div>}
   </section>;
 }

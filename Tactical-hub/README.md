@@ -15,7 +15,8 @@ flashing. The exact browser/GPU cause still requires Windows visual confirmation
 Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
 at the top left. Select separate transparent PNG files for **Road top / 道路上面**
 and optional **Road south face / 道路南側面** and **Road south shadow /
-道路南側の落ち影**, plus base, lake, obstacle, and the
+道路南側の落ち影**, plus owned/third-party base cores, base front wall,
+four team flags, lake, obstacle, and the
 six bridge direction/segment slots. Each slot reports its
 filename, decoded dimensions, loading state, or failure reason. Invalid formats,
 signatures, and undecodable PNGs are rejected; the previous good asset is retained.
@@ -30,8 +31,9 @@ Images are temporary browser-only data: no upload, asset-directory copy, or
 persistence. Refreshing or leaving the game clears them; closing the import
 panel or one preview keeps shared settings. **Reset image** removes one image;
 **Reset All** clears all images/settings and restores shapes mode. **Reset
-adjustment** keeps the image and restores scale 1, X/Y 0. Scale is 0.1–4; image
-width defaults to one cell with aspect ratio preserved. X/Y offsets are pixels
+adjustment** keeps the image and restores scale 1, X/Y 0. Scale is 0.1–4; ordinary
+image width defaults to one cell and base components to the measured 2×2 group,
+with aspect ratio preserved. X/Y offsets are pixels
 at a 48px reference cell, proportionally scaled on the actual board. Adjustments
 change visuals only, not tile positions/hitboxes. Replacing an image initializes
 its placement settings.
@@ -68,8 +70,20 @@ bridge overlays. Bridge direction/start/middle/end and active obstacles follow
 the existing presentation adapter. South-face sprites are also hidden in Flat
 preview mode. A sidewall baked into a road PNG
 cannot be removed automatically: use separate top/face images when needed.
-HTML characters still render above the complete Pixi scene, so exact character
-occlusion is unsupported. Large/offset art may overlap adjacent cells or clip at
+Valid 2×2 bases use one measured group rectangle rather than repeating the base
+image in each logical cell. The existing `base` slot is the team-owned core;
+`base_core_third_party` is selected while the current owner is the neutral team.
+`base_front_wall` and the four flag slots are transparent overlays with independent
+scale and offsets. Flag slots follow the current non-neutral `GameState.teams`
+order; no team ID text or color is guessed. Captures only switch the persistent
+core/flag/wall Sprite state. Non-2×2 bases stay on the compatible per-cell path.
+
+The base front wall and flag use a second pointer-transparent Pixi Canvas. Unit
+sprite bodies are below that foreground while HP/team/formation/retreat badges and
+selection/target rings are raised above it. Neutral wall instances receive a
+low-cost sepia-gray Sprite tint; the shared source texture and team-owned wall are
+not modified. Other terrain obstacles still cannot partially occlude HTML units.
+Large/offset art may overlap adjacent cells or clip at
 Canvas edges; logical cell interactions are unchanged.
 The real-board Canvas keeps its existing board-sized bounds, so a shadow adjusted
 beyond the final Canvas row is clipped. The existing opaque HTML `outside` tile can
@@ -134,10 +148,11 @@ preview remain the interaction layer. Pixi movement destinations use persistent
 top/south-face Graphics overlays while their HTML buttons retain the original
 click handlers and logical coordinates.
 
-**Hybrid limitation:** every HTML character and highlight is above the complete
-Pixi terrain scene. Bridges/obstacles cannot correctly occlude character parts,
-even when the terrain's own row depth is correct. This is an experiment, not a
-fully depth-sorted game renderer. Real-board terrain uses measured DOM rectangles;
+**Hybrid limitation:** the dedicated base foreground can mask the lower part of
+HTML units while keeping pointer events and raised badges/rings available, but it
+is not per-pixel interleaved with every HTML control. Bridges/obstacles still cannot
+correctly occlude character parts, even when terrain row depth is correct. This is
+an experiment, not a fully depth-sorted game renderer. Real-board terrain uses measured DOM rectangles;
 batching/performance at scale remains
 to be assessed before production adoption.
 
@@ -155,7 +170,8 @@ Run `npm run dev`, open the game screen, and select **Open PixiJS tile preview
 the scrollable panel. The panel is not shown in
 production; its Pixi renderer is loaded only when opened and destroyed when closed.
 
-The independent synthetic 7×6 map compares flat and raised square tiles. Gray
+The independent synthetic 7×6 map compares flat and raised square tiles and includes
+one owned and one third-party 2×2 base in each panel. Gray
 roads, gold bases, and blue lakes are disposable generated shapes, not production
 art. Graphics supplies unset terrain; imported PNGs use Sprites. Row-sorted Containers hold road south
 faces, horizontal/vertical bridge segments (gold start/end caps), and tall red

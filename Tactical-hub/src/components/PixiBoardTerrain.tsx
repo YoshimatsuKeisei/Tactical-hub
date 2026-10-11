@@ -7,14 +7,15 @@ export function PixiBoardTerrain({ cells, boardRef, onError }: {
   cells: Terrain; boardRef: RefObject<HTMLDivElement | null>; onError: (message: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const foregroundHost = useRef<HTMLDivElement>(null);
   const { store, snapshot } = useTileAssets();
   const latest = useRef({ cells, onError, snapshot, store });
   latest.current = { cells, onError, snapshot, store };
   const refresh = useRef<() => void>(() => {});
   useEffect(() => { refresh.current(); }, [cells, snapshot]);
   useEffect(() => {
-    const board = boardRef.current, element = host.current;
-    if (!board || !element) return;
+    const board = boardRef.current, element = host.current, foregroundElement = foregroundHost.current;
+    if (!board || !element || !foregroundElement) return;
     const controller = new AbortController();
     let renderer: Awaited<ReturnType<typeof import("../presentation/pixiBoardRenderer").mountPixiBoard>> | undefined;
     let observer: ResizeObserver | undefined;
@@ -37,7 +38,7 @@ export function PixiBoardTerrain({ cells, boardRef, onError }: {
     refresh.current = () => { if (!pending) pending = requestAnimationFrame(draw); };
     void import("../presentation/pixiBoardRenderer").then(async ({ mountPixiBoard }) => {
       if (controller.signal.aborted) return;
-      renderer = await mountPixiBoard(element, controller.signal);
+      renderer = await mountPixiBoard(element, foregroundElement, controller.signal);
       if (controller.signal.aborted) { renderer.dispose(); return; }
       observer = new ResizeObserver(refresh.current);
       observer.observe(board);
@@ -51,5 +52,8 @@ export function PixiBoardTerrain({ cells, boardRef, onError }: {
       renderer?.dispose(); refresh.current = () => {};
     };
   }, [boardRef]);
-  return <div ref={host} className="pixi-board-canvas" aria-hidden="true" />;
+  return <>
+    <div ref={host} className="pixi-board-canvas" aria-hidden="true" />
+    <div ref={foregroundHost} className="pixi-board-foreground" aria-hidden="true" />
+  </>;
 }

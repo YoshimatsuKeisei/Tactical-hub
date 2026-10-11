@@ -808,11 +808,28 @@ pre {
 .board-renderer-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .board-pixi { position: relative; isolation: isolate; gap: 0; }
 .pixi-board-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
-.pixi-board-canvas canvas { display: block; }
-.board-pixi > .tile { background: transparent; border-color: transparent; border-radius: 0; z-index: 1; }
+.pixi-board-foreground { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+.pixi-board-canvas canvas,
+.pixi-board-foreground canvas { display: block; }
+.board-pixi > .tile { background: transparent; border-color: transparent; border-radius: 0; z-index: auto; }
 .board-pixi > .tile.outside { background: #d8dde2; }
-.board-pixi > .tile.highlighted { z-index: 2; }
-.board-pixi > .tile.attack-highlighted { z-index: 3; }
+.board-pixi > .tile.highlighted,
+.board-pixi > .tile.attack-highlighted { z-index: auto; }
+.board-pixi .unit-token.animated-unit-token { isolation: auto; z-index: auto; }
+.board-pixi .formation-badge,
+.board-pixi .retreat-badge { z-index: 7; }
+.board-pixi .unit-token.selected::after,
+.board-pixi .unit-token.attack-target::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  z-index: 9;
+  border: 2px solid #111827;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.board-pixi .unit-token.movement-selected::after { border-color: var(--movement-selection-color); box-shadow: 0 0 7px var(--movement-selection-color); }
+.board-pixi .unit-token.attack-target::after { border-color: #d83f31; }
 .board-pixi > .tile.active-bridge:not(.bridge-candidate-marker)::before { content: none; }
 .board-pixi > .tile.active-obstacle:not(.construction-preview)::after { content: none; }
 

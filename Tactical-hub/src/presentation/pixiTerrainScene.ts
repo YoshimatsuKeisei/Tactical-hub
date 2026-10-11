@@ -1,6 +1,6 @@
 import { Container, Graphics, ImageSource, Sprite, Texture } from "pixi.js";
-import type { CellBounds, PixiBoardTerrain } from "./pixiBoardTerrain";
-import { TERRAIN_COLORS } from "./pixiBoardTerrain";
+import type { CellBounds, PixiBaseGroup, PixiBoardTerrain } from "./pixiBoardTerrain";
+import { baseGroupBounds, TERRAIN_COLORS } from "./pixiBoardTerrain";
 import {
   assetPlacement, bridgeAssetKey, roadSouthShadowSettings, type AssetSnapshot,
   type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
@@ -12,11 +12,11 @@ export class TerrainTextureCache {
   private enabled = false;
   private images = new Map<TileAssetKey, HTMLImageElement>();
 
-  sync(snapshot: AssetSnapshot) {
+  sync(snapshot: AssetSnapshot, keys?: ReadonlySet<TileAssetKey>) {
     const nextImages = new Map<TileAssetKey, HTMLImageElement>();
     if (snapshot.enabled) {
       for (const [key, asset] of Object.entries(snapshot.assets)) {
-        if (asset) nextImages.set(key as TileAssetKey, asset.image);
+        if (asset && (!keys || keys.has(key as TileAssetKey))) nextImages.set(key as TileAssetKey, asset.image);
       }
     }
     const unchanged = this.enabled === snapshot.enabled && this.images.size === nextImages.size &&
@@ -55,10 +55,21 @@ export class TerrainTextureCache {
   }
 }
 
+const BASE_FOREGROUND_ASSET_KEYS = new Set<TileAssetKey>([
+  "base_front_wall", "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
+]);
+const TERRAIN_ASSET_KEYS = new Set<TileAssetKey>([
+  "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "lake", "obstacle",
+  "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
+  "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
+]);
+
 type FallbackDraw = (graphics: Graphics) => void;
 interface VisualOptions {
   opacity?: number;
   placement?: (asset: TileAsset, rect: CellBounds) => CellBounds;
+  tint?: number;
+  fallback?: boolean;
 }
 
 class PersistentVisual {
@@ -84,6 +95,7 @@ class PersistentVisual {
     const texture = cache.get(key, snapshot);
     const opacity = Math.min(1, Math.max(0, options.opacity ?? 1));
     this.sprite.alpha = opacity;
+    this.sprite.tint = options.tint ?? 0xffffff;
     this.graphics.alpha = opacity;
     if (asset && texture) {
       const placement = options.placement ? options.placement(asset, rect) : assetPlacement(asset, rect);
@@ -97,7 +109,8 @@ class PersistentVisual {
     }
 
     this.sprite.visible = false;
-    this.graphics.visible = true;
+    this.graphics.visible = options.fallback !== false;
+    if (options.fallback === false) return rect;
     if (this.fallbackSignature !== fallbackSignature) {
       this.graphics.clear();
       drawFallback(this.graphics);
@@ -200,19 +213,54 @@ interface PersistentCell {
   layer: Container;
 }
 
+interface PersistentBaseCore {
+  core: PersistentVisual;
+  layer: Container;
+}
+
+interface PersistentBaseForeground {
+  wall: PersistentVisual;
+  flag: PersistentVisual;
+  layer: Container;
+}
+
 const rectSignature = (rect: CellBounds) => `${rect.x},${rect.y},${rect.width},${rect.height}`;
+
+export function baseAssetPlacement(asset: TileAsset, rect: CellBounds): CellBounds {
+  // Base components use a transparent 2x2 canvas. Offsets remain expressed in
+  // the existing 48px-per-cell unit rather than doubling with the group width.
+  const unit = rect.width / 96;
+  const width = rect.width * asset.scale;
+  return {
+    x: rect.x + asset.offsetX * unit,
+    y: rect.y + asset.offsetY * unit,
+    width,
+    height: width * asset.height / asset.width,
+  };
+}
 
 export class PersistentTerrainScene {
   readonly root = new Container();
   private readonly groundLayer = new Container();
+  private readonly baseLayer = new Container();
   private readonly shadowLayer = new Container();
   private readonly depthLayer = new Container();
   private readonly nodes = new Map<string, PersistentCell>();
+  private readonly baseNodes = new Map<string, PersistentBaseCore>();
 
   constructor(private readonly cache: TerrainTextureCache) {
     this.root.eventMode = "none";
     this.depthLayer.sortableChildren = true;
-    this.root.addChild(this.groundLayer, this.shadowLayer, this.depthLayer);
+    this.root.addChild(this.groundLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
+  }
+
+  private makeBase(id: string) {
+    const layer = new Container();
+    layer.label = `terrain-base-${id}`;
+    this.baseLayer.addChild(layer);
+    const node = { core: new PersistentVisual(layer), layer };
+    this.baseNodes.set(id, node);
+    return node;
   }
 
   private makeCell(key: string, row: number) {
@@ -237,7 +285,8 @@ export class PersistentTerrainScene {
   }
 
   update(cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, snapshot: AssetSnapshot, raised = true) {
-    this.cache.sync(snapshot);
+    this.cache.sync(snapshot, TERRAIN_ASSET_KEYS);
+    this.updateBases(cells.flatMap((cell) => cell.baseGroup ? [cell.baseGroup] : []), bounds, snapshot);
     const seen = new Set<string>();
     const outlinedKeys = new Set(cells
       .filter((cell) => cell.kind && bounds.has(`${cell.x},${cell.y}`) && cell.moveHighlight?.outlineEnabled && cell.moveHighlight.outlineOpacity > 0)
@@ -261,6 +310,10 @@ export class PersistentTerrainScene {
         node.ground.hide();
         node.road.update("road", rect, snapshot, this.cache, `road:${signature}`,
           (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road));
+      } else if (cell.kind === "base" && cell.baseGroupId) {
+        // A valid 2x2 base is painted once by its persistent group node.
+        node.road.hide();
+        node.ground.hide();
       } else {
         node.road.hide();
         node.ground.update(cell.kind, rect, snapshot, this.cache, `${cell.kind}:${signature}`,
@@ -322,6 +375,29 @@ export class PersistentTerrainScene {
     for (const [key, node] of this.nodes) if (!seen.has(key)) this.hideCell(node);
   }
 
+  private updateBases(groups: readonly PixiBaseGroup[], bounds: ReadonlyMap<string, CellBounds>, snapshot: AssetSnapshot) {
+    const seen = new Set<string>();
+    for (const group of groups) {
+      const rect = baseGroupBounds(group, bounds);
+      let node = this.baseNodes.get(group.id);
+      if (!rect) {
+        if (node) { node.core.hide(); node.layer.visible = false; }
+        continue;
+      }
+      seen.add(group.id);
+      node ??= this.makeBase(group.id);
+      node.layer.visible = true;
+      node.core.update(group.coreAssetKey, rect, snapshot, this.cache,
+        `base-core:${group.coreAssetKey}:${rectSignature(rect)}`,
+        (g) => g.rect(rect.x, rect.y, rect.width, rect.height).fill(TERRAIN_COLORS.base),
+        { placement: baseAssetPlacement });
+    }
+    for (const [id, node] of this.baseNodes) if (!seen.has(id)) {
+      node.core.hide();
+      node.layer.visible = false;
+    }
+  }
+
   getCellDisplayObjects(key: string) {
     const node = this.nodes.get(key);
     return node ? {
@@ -338,6 +414,12 @@ export class PersistentTerrainScene {
   }
 
   get cellCount() { return this.nodes.size; }
+  get baseCount() { return [...this.baseNodes.values()].filter((node) => node.layer.visible).length; }
+
+  getBaseDisplayObjects(id: string) {
+    const node = this.baseNodes.get(id);
+    return node ? { coreGraphics: node.core.graphics, coreSprite: node.core.sprite } : undefined;
+  }
 
   private hideCell(node: PersistentCell) {
     node.ground.hide();
@@ -353,6 +435,11 @@ export class PersistentTerrainScene {
   }
 
   destroy() {
+    for (const node of this.baseNodes.values()) {
+      node.core.destroy();
+      node.layer.destroy({ children: false });
+    }
+    this.baseNodes.clear();
     for (const node of this.nodes.values()) {
       node.ground.destroy();
       node.road.destroy();
@@ -367,8 +454,94 @@ export class PersistentTerrainScene {
     }
     this.nodes.clear();
     this.groundLayer.destroy({ children: false });
+    this.baseLayer.destroy({ children: false });
     this.shadowLayer.destroy({ children: false });
     this.depthLayer.destroy({ children: false });
+    this.root.destroy({ children: false });
+  }
+}
+
+const THIRD_PARTY_WALL_TINT = 0x756856;
+
+export class PersistentBaseForegroundScene {
+  readonly root = new Container();
+  private readonly nodes = new Map<string, PersistentBaseForeground>();
+
+  constructor(private readonly cache: TerrainTextureCache) {
+    this.root.eventMode = "none";
+    this.root.sortableChildren = true;
+  }
+
+  private makeBase(group: PixiBaseGroup) {
+    const layer = new Container();
+    layer.label = `base-foreground-${group.id}`;
+    layer.zIndex = group.anchorY;
+    this.root.addChild(layer);
+    const node = {
+      wall: new PersistentVisual(layer),
+      flag: new PersistentVisual(layer),
+      layer,
+    };
+    this.nodes.set(group.id, node);
+    return node;
+  }
+
+  update(groups: readonly PixiBaseGroup[], bounds: ReadonlyMap<string, CellBounds>, snapshot: AssetSnapshot) {
+    this.cache.sync(snapshot, BASE_FOREGROUND_ASSET_KEYS);
+    const seen = new Set<string>();
+    for (const group of groups) {
+      const rect = baseGroupBounds(group, bounds);
+      let node = this.nodes.get(group.id);
+      if (!rect) {
+        if (node) this.hideBase(node);
+        continue;
+      }
+      seen.add(group.id);
+      node ??= this.makeBase(group);
+      node.layer.visible = true;
+      node.layer.zIndex = group.anchorY;
+      node.wall.update("base_front_wall", rect, snapshot, this.cache,
+        `base-wall:${rectSignature(rect)}:${group.thirdParty}`,
+        () => {}, {
+          placement: baseAssetPlacement,
+          fallback: false,
+          tint: group.thirdParty ? THIRD_PARTY_WALL_TINT : 0xffffff,
+        });
+      if (group.flagAssetKey) {
+        node.flag.update(group.flagAssetKey, rect, snapshot, this.cache,
+          `base-flag:${group.flagAssetKey}:${rectSignature(rect)}`,
+          () => {}, { placement: baseAssetPlacement, fallback: false });
+      } else node.flag.hide();
+    }
+    for (const [id, node] of this.nodes) if (!seen.has(id)) this.hideBase(node);
+  }
+
+  private hideBase(node: PersistentBaseForeground) {
+    node.wall.hide();
+    node.flag.hide();
+    node.layer.visible = false;
+  }
+
+  getBaseDisplayObjects(id: string) {
+    const node = this.nodes.get(id);
+    return node ? {
+      wallGraphics: node.wall.graphics,
+      wallSprite: node.wall.sprite,
+      flagGraphics: node.flag.graphics,
+      flagSprite: node.flag.sprite,
+      layer: node.layer,
+    } : undefined;
+  }
+
+  get baseCount() { return [...this.nodes.values()].filter((node) => node.layer.visible).length; }
+
+  destroy() {
+    for (const node of this.nodes.values()) {
+      node.wall.destroy();
+      node.flag.destroy();
+      node.layer.destroy({ children: false });
+    }
+    this.nodes.clear();
     this.root.destroy({ children: false });
   }
 }

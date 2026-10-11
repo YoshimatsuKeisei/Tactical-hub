@@ -8,12 +8,12 @@ export interface PreviewBridge extends PreviewCell {
 export const PREVIEW_CELL_SIZE = 48;
 export const PREVIEW_DEPTH = 10;
 export const PREVIEW_TERRAIN: readonly (readonly PreviewTerrain[])[] = [
-  ["base", "road", "road", "road", "road", "road", "base"],
+  ["road", "road", "road", "road", "road", "road", "road"],
   ["road", "lake", "lake", "lake", "road", "road", "road"],
-  ["road", "road", "road", "road", "road", "lake", "road"],
-  ["road", "road", "lake", "lake", "road", "lake", "road"],
-  ["road", "road", "lake", "lake", "road", "lake", "road"],
-  ["base", "road", "road", "road", "road", "road", "base"],
+  ["base", "base", "road", "road", "road", "lake", "road"],
+  ["base", "base", "lake", "lake", "road", "lake", "road"],
+  ["road", "road", "base", "base", "road", "lake", "road"],
+  ["road", "road", "base", "base", "road", "road", "road"],
 ];
 export const PREVIEW_BRIDGES: readonly PreviewBridge[] = [
   { x: 1, y: 1, direction: "horizontal", segment: "start" },

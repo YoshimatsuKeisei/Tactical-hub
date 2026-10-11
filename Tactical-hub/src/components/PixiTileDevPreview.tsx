@@ -45,7 +45,7 @@ export function PixiTileDevPreview() {
     {open && <div className="pixi-tile-preview-panel">
       <h2>PixiJS square tile experiment</h2>
       <p>Synthetic map only. Gray: road; gold: base; blue: lake. Bridge caps mark start/end.
-        Left: flat; right: raised. Red obstacles are separate overlays.</p>
+        Left: flat; right: raised. Red obstacles are separate overlays. Each panel also includes one owned and one third-party 2×2 base.</p>
       <PixiTileCanvas />
     </div>}
   </section>;

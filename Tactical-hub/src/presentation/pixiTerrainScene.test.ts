@@ -37,13 +37,15 @@ vi.mock("pixi.js", () => {
     height = 0;
     visible = true;
     alpha = 1;
+    tint = 0xffffff;
     destroy = vi.fn();
     constructor(public texture: Texture) {}
   }
   return { Container, Graphics, ImageSource, Texture, Sprite };
 });
 
-import { movementOutlineEdges, PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
+import { baseAssetPlacement, movementOutlineEdges, PersistentBaseForegroundScene, PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
+import type { PixiBaseGroup, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { Sprite, Texture } from "pixi.js";
 
 const image = {} as HTMLImageElement;
@@ -54,6 +56,22 @@ const imported: AssetSnapshot = {
 };
 const cell = { x: 0, y: 0, kind: "road" as const, southFace: true, bridge: null, obstacle: false };
 const bounds = new Map([["0,0", { x: 0, y: 0, width: 48, height: 48 }]]);
+const ownedBase: PixiBaseGroup = {
+  id: "base-a", anchorX: 0, anchorY: 0, ownerTeamId: "alpha", thirdParty: false,
+  coreAssetKey: "base", flagAssetKey: "base_flag_team_1",
+  coords: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+};
+const baseCells: PixiBoardTerrain = ownedBase.coords.map((coord, index) => ({
+  ...coord, kind: "base", southFace: coord.y === 1, bridge: null, obstacle: false,
+  baseGroupId: ownedBase.id,
+  baseGroup: index === 0 ? ownedBase : undefined,
+}));
+const baseBounds = new Map([
+  ["0,0", { x: 10, y: 20, width: 40, height: 36 }],
+  ["1,0", { x: 50, y: 20, width: 40, height: 36 }],
+  ["0,1", { x: 10, y: 56, width: 40, height: 36 }],
+  ["1,1", { x: 50, y: 56, width: 40, height: 36 }],
+]);
 
 describe("persistent Pixi terrain scene", () => {
   it("draws normal fallback terrain without permanent white grid strokes", () => {
@@ -208,7 +226,7 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.shadowGraphics.visible).toBe(true);
     expect(objects.shadowSprite.visible).toBe(false);
     expect(objects.shadowGraphics.alpha).toBe(0.24);
-    expect((scene.root.children[1] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
+    expect((scene.root.children[2] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
     const shadowRects = vi.mocked(objects.shadowGraphics.rect).mock.calls;
     expect(shadowRects).toHaveLength(3);
     expect(shadowRects[0][0]).toBe(0);
@@ -311,6 +329,109 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.groundSprite.visible).toBe(true);
     expect(objects.bridgeSprite.visible).toBe(true);
     expect(objects.obstacleSprite.visible).toBe(true);
+  });
+
+  it("draws one persistent core over the measured 2x2 base instead of four cell images", () => {
+    const baseImage = {} as HTMLImageElement;
+    const snapshot: AssetSnapshot = {
+      enabled: true, statuses: {},
+      assets: { base: { image: baseImage, width: 192, height: 192, name: "base.png", ...DEFAULT_ADJUSTMENT } },
+    };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update(baseCells, baseBounds, snapshot);
+    expect(scene.baseCount).toBe(1);
+    const core = scene.getBaseDisplayObjects(ownedBase.id)!;
+    expect(core.coreSprite.visible).toBe(true);
+    expect(core.coreSprite.position.set).toHaveBeenLastCalledWith(10, 20);
+    expect(core.coreSprite.width).toBe(80);
+    expect(core.coreSprite.height).toBe(80);
+    for (const coord of ownedBase.coords) {
+      const cellObjects = scene.getCellDisplayObjects(`${coord.x},${coord.y}`)!;
+      expect(cellObjects.groundSprite.visible).toBe(false);
+      expect(cellObjects.groundGraphics.visible).toBe(false);
+    }
+    const sprite = core.coreSprite, texture = sprite.texture;
+    scene.update(baseCells, baseBounds, snapshot);
+    expect(scene.getBaseDisplayObjects(ownedBase.id)!.coreSprite).toBe(sprite);
+    expect(sprite.texture).toBe(texture);
+    const resized = new Map([...baseBounds].map(([key, rect]) => [key, {
+      x: 5 + (rect.x - 10) * 1.5,
+      y: 8 + (rect.y - 20) * 1.5,
+      width: rect.width * 1.5,
+      height: rect.height * 1.5,
+    }]));
+    scene.update(baseCells, resized, snapshot);
+    expect(scene.getBaseDisplayObjects(ownedBase.id)!.coreSprite).toBe(sprite);
+    expect(sprite.position.set).toHaveBeenLastCalledWith(5, 8);
+    expect(sprite.width).toBe(120);
+  });
+
+  it("uses 48px-per-cell offsets for independently adjustable 2x2 base parts", () => {
+    expect(baseAssetPlacement({
+      image, name: "part.png", width: 192, height: 96, scale: 1.5, offsetX: 4, offsetY: -2,
+    }, { x: 10, y: 20, width: 96, height: 96 })).toEqual({ x: 14, y: 18, width: 144, height: 72 });
+  });
+
+  it("switches owned and third-party core textures on the same persistent Sprite", () => {
+    const snapshot: AssetSnapshot = {
+      enabled: true, statuses: {}, assets: {
+        base: { image: {} as HTMLImageElement, width: 192, height: 192, name: "owned.png", ...DEFAULT_ADJUSTMENT },
+        base_core_third_party: { image: {} as HTMLImageElement, width: 192, height: 192, name: "third.png", ...DEFAULT_ADJUSTMENT },
+      },
+    };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update(baseCells, baseBounds, snapshot);
+    const sprite = scene.getBaseDisplayObjects(ownedBase.id)!.coreSprite;
+    const ownedTexture = sprite.texture;
+    const third = { ...ownedBase, ownerTeamId: "neutral", thirdParty: true, coreAssetKey: "base_core_third_party" as const, flagAssetKey: undefined };
+    const changedCells = baseCells.map((cell, index) => ({ ...cell, baseGroup: index === 0 ? third : undefined }));
+    scene.update(changedCells, baseBounds, snapshot);
+    expect(scene.getBaseDisplayObjects(ownedBase.id)!.coreSprite).toBe(sprite);
+    expect(sprite.texture).not.toBe(ownedTexture);
+  });
+
+  it("updates wall tint and owner flag in place without changing source textures", () => {
+    const wallImage = {} as HTMLImageElement, flagOne = {} as HTMLImageElement, flagTwo = {} as HTMLImageElement;
+    const snapshot: AssetSnapshot = {
+      enabled: true, statuses: {}, assets: {
+        base_front_wall: { image: wallImage, width: 192, height: 192, name: "wall.png", scale: 1.25, offsetX: -3, offsetY: 2 },
+        base_flag_team_1: { image: flagOne, width: 192, height: 192, name: "flag-1.png", scale: 0.5, offsetX: 4, offsetY: -5 },
+        base_flag_team_2: { image: flagTwo, width: 192, height: 192, name: "flag-2.png", ...DEFAULT_ADJUSTMENT },
+      },
+    };
+    const scene = new PersistentBaseForegroundScene(new TerrainTextureCache());
+    scene.update([ownedBase], baseBounds, snapshot);
+    const objects = scene.getBaseDisplayObjects(ownedBase.id)!;
+    const wall = objects.wallSprite, flag = objects.flagSprite, wallTexture = wall.texture;
+    expect(wall.visible).toBe(true);
+    expect(wall.tint).toBe(0xffffff);
+    expect(wall.position.set).toHaveBeenLastCalledWith(7.5, 21.666666666666668);
+    expect(wall.width).toBe(100);
+    expect(flag.visible).toBe(true);
+    expect(flag.position.set).toHaveBeenLastCalledWith(13.333333333333334, 15.833333333333332);
+    expect(flag.width).toBe(40);
+
+    const changedOwner = { ...ownedBase, ownerTeamId: "beta", flagAssetKey: "base_flag_team_2" as const };
+    scene.update([changedOwner], baseBounds, snapshot);
+    expect(scene.getBaseDisplayObjects(ownedBase.id)!.wallSprite).toBe(wall);
+    expect(scene.getBaseDisplayObjects(ownedBase.id)!.flagSprite).toBe(flag);
+    expect(wall.texture).toBe(wallTexture);
+    expect(flag.texture).not.toBe(Texture.EMPTY);
+
+    scene.update([{ ...changedOwner, ownerTeamId: "neutral", thirdParty: true, coreAssetKey: "base_core_third_party", flagAssetKey: undefined }], baseBounds, snapshot);
+    expect(wall.tint).toBe(0x756856);
+    expect(flag.visible).toBe(false);
+    expect(snapshot.assets.base_front_wall?.image).toBe(wallImage);
+  });
+
+  it("keeps optional wall and flag hidden when their PNGs are unset", () => {
+    const scene = new PersistentBaseForegroundScene(new TerrainTextureCache());
+    scene.update([ownedBase], baseBounds, EMPTY_ASSETS);
+    const objects = scene.getBaseDisplayObjects(ownedBase.id)!;
+    expect(objects.wallSprite.visible).toBe(false);
+    expect(objects.wallGraphics.visible).toBe(false);
+    expect(objects.flagSprite.visible).toBe(false);
+    expect(objects.flagGraphics.visible).toBe(false);
   });
 
   it("keeps renderer-local textures and destroys only changed images", () => {
