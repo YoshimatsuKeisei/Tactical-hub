@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import type { Team, Unit } from "../game/types";
 import { getHdCharacterForUnit } from "../presentation/hdCharacter";
 import { getHdEnemyCharacterForUnit } from "../presentation/hdEnemy";
-import { getUnitSpriteKind, type UnitVisualEvent } from "../presentation/unitVisualEvents";
+import { getUnitSpriteKind, type UnitDirection, type UnitVisualEvent } from "../presentation/unitVisualEvents";
 import { CatapultUnitSprite } from "./CatapultUnitSprite";
 import { HdCharacterUnitSprite } from "./HdCharacterUnitSprite";
 import { HdEnemyUnitSprite } from "./HdEnemyUnitSprite";
@@ -19,6 +19,7 @@ type Props = {
   attackComplete?: boolean;
   retreatIndicators?: RetreatDirectionIndicator[];
   visualEvents?: readonly UnitVisualEvent[];
+  idleDirection?: UnitDirection;
   onClick?: () => void;
 };
 
@@ -33,7 +34,7 @@ const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], strin
   "up-left": "↖",
 };
 
-export function UnitToken({ unit, team, selected, movementSelectionColor, attackTarget, attackReady, attackComplete, retreatIndicators = [], visualEvents = [], onClick }: Props) {
+export function UnitToken({ unit, team, selected, movementSelectionColor, attackTarget, attackReady, attackComplete, retreatIndicators = [], visualEvents = [], idleDirection = 0, onClick }: Props) {
   const spriteKind = getUnitSpriteKind(unit);
   const hdEnemyCharacter = getHdEnemyCharacterForUnit(unit);
   const hdCharacter = getHdCharacterForUnit(unit);
@@ -57,18 +58,21 @@ export function UnitToken({ unit, team, selected, movementSelectionColor, attack
           {spriteKind === "catapult" ? (
             <CatapultUnitSprite
               visualEvents={visualEvents}
+              initialDirection={idleDirection}
               fallback={UNIT_STATS[unit.type].label}
             />
           ) : hdEnemyCharacter ? (
             <HdEnemyUnitSprite
               character={hdEnemyCharacter}
               visualEvents={visualEvents}
+              initialDirection={idleDirection}
               fallback={UNIT_STATS[unit.type].label}
             />
           ) : hdCharacter ? (
             <HdCharacterUnitSprite
               character={hdCharacter}
               visualEvents={visualEvents}
+              initialDirection={idleDirection}
               fallback={UNIT_STATS[unit.type].label}
             />
           ) : UNIT_STATS[unit.type].label}

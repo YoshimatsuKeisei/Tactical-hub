@@ -88,6 +88,14 @@ describe("UnitToken Catapult routing", () => {
     expect(isEngineerCatapultUnit(unit())).toBe(true);
   });
 
+  it("renders the parent-managed idle direction after a remount", () => {
+    const first = renderToStaticMarkup(<UnitToken unit={unit()} idleDirection={2} />);
+    const remounted = renderToStaticMarkup(<UnitToken unit={unit()} idleDirection={6} />);
+    expect(first).toContain("data-direction=\"2\"");
+    expect(remounted).toContain("data-direction=\"6\"");
+    expect(remounted).toContain("/local-assets/catapult/idle/dir6.png");
+  });
+
   it("never routes any strategist role through the Catapult renderer", () => {
     for (const role of ["builder", "encourage", "teleporter"] as const) {
       const markup = renderToStaticMarkup(<UnitToken unit={strategist(role)} />);

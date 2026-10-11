@@ -134,6 +134,11 @@ describe("HD Character UnitToken routing and fallback", () => {
     }
   });
 
+  it("passes the persistent idle direction to Character-pack sprites", () => {
+    const markup = renderToStaticMarkup(<UnitToken unit={unit("archer")} idleDirection={7} />);
+    expect(markup).toContain("data-direction=\"7\"");
+  });
+
   it("preserves UnitToken interaction classes, labels, HP, formation, and retreat badges", () => {
     const paladin = unit("infantry", {
       formation: "heavy",

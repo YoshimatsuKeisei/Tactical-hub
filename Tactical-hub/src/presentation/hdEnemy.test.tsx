@@ -106,6 +106,11 @@ describe("HD Enemy UnitToken routing", () => {
     expect(markup).not.toContain(">王<");
   });
 
+  it("passes the persistent idle direction to Enemy-pack sprites", () => {
+    const markup = renderToStaticMarkup(<UnitToken unit={unit("king")} idleDirection={4} />);
+    expect(markup).toContain("data-direction=\"4\"");
+  });
+
   it("maps all strategist roles to 10Caster", () => {
     for (const role of ["builder", "encourage", "teleporter"] as const) {
       const strategist = unit("strategist", role);

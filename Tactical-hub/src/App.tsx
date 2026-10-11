@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BoardView } from "./components/BoardView";
 import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPanel";
 import { GameDebugPanel } from "./components/GameDebugPanel";
@@ -6,12 +6,12 @@ import { HdEnemyDevPreview } from "./components/HdEnemyDevPreview";
 import { PixiTileDevPreview } from "./components/PixiTileDevPreview";
 import { TileAssetProvider } from "./components/TileAssetProvider";
 import { TileAssetImportPanel } from "./components/TileAssetImportPanel";
-import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
+import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent, type BattlePresentationMetadata } from "./game/engine/battle";
 import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
-import type { AttackTarget, StrategistRole, UnitPosition } from "./game/types";
+import type { AttackTarget, GameState, StrategistRole, UnitPosition } from "./game/types";
 import { saveStrategistActionIntent } from "./game/engine/construction";
 import { resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
 import { createCpuRuntime, type CpuRuntime, type CpuTeamSettings, type TeamController } from "./game/cpu/types";
@@ -22,8 +22,12 @@ import { advanceVisualCpuOneStepWithBc } from "./game/cpu/browserBcPolicy";
 import { AppNavigation, type AppScreen } from "./components/AppNavigation";
 import {
   UNIT_VISUAL_EVENT_RETENTION_MS,
+  applyUnitVisualEventDirections,
+  createUnitDirectionMap,
   createUnitVisualPresentation,
+  updateUnitDirectionMap,
   type UnitDeathOverlay,
+  type UnitDirection,
   type UnitVisualEvent,
 } from "./presentation/unitVisualEvents";
 
@@ -65,14 +69,26 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
   const [bcInferenceClient] = useState(() => new HttpBrowserBcInferenceClient());
   const [unitVisualEvents, setUnitVisualEvents] = useState<UnitVisualEvent[]>([]);
   const [unitDeathOverlays, setUnitDeathOverlays] = useState<UnitDeathOverlay[]>([]);
+  const [unitDirections, setUnitDirections] = useState<Map<string, UnitDirection>>(() => createUnitDirectionMap(state));
   const cpuAdvancePendingRef = useRef(false);
   const visualEventTimerRef = useRef<number | undefined>(undefined);
   const stateRef = useRef(state);
+  const directionStateRef = useRef(state);
+  const unitDirectionsRef = useRef(unitDirections);
   const runtimeRef = useRef(cpuRuntime);
   const settingsRef = useRef(cpuSettings);
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { runtimeRef.current = cpuRuntime; }, [cpuRuntime]);
   useEffect(() => { settingsRef.current = cpuSettings; }, [cpuSettings]);
+  useLayoutEffect(() => {
+    if (directionStateRef.current === state) return;
+    const next = updateUnitDirectionMap(directionStateRef.current, state, unitDirectionsRef.current);
+    directionStateRef.current = state;
+    if (next.size === unitDirectionsRef.current.size
+      && [...next].every(([unitId, direction]) => unitDirectionsRef.current.get(unitId) === direction)) return;
+    unitDirectionsRef.current = next;
+    setUnitDirections(next);
+  }, [state]);
   useEffect(() => () => {
     if (visualEventTimerRef.current !== undefined) {
       window.clearTimeout(visualEventTimerRef.current);
@@ -100,6 +116,23 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
   const initialStrategistRolesLocked = state.turnNumber !== 1 || state.movementCompletedTeamIds.length > 0 || state.productionCompletedTeamIdsThisTurn.length > 0 || state.movedUnitIdsThisMovementPhase.length > 0;
   const initialStrategistRoles = Object.fromEntries(state.units.filter((unit) => unit.type === "strategist" && unit.id.startsWith("home-")).map((unit) => [unit.id, unit.role ?? "encourage"])) as Record<string, StrategistRole>;
 
+  const publishBattlePresentation = useCallback((before: GameState, after: GameState, battle: BattlePresentationMetadata) => {
+    const presentation = createUnitVisualPresentation(before, after, {
+      battle,
+      directions: unitDirectionsRef.current,
+    });
+    const directions = applyUnitVisualEventDirections(unitDirectionsRef.current, presentation.events);
+    unitDirectionsRef.current = directions;
+    setUnitDirections(directions);
+    setUnitVisualEvents(presentation.events);
+    setUnitDeathOverlays(presentation.deathOverlays);
+    if (visualEventTimerRef.current !== undefined) window.clearTimeout(visualEventTimerRef.current);
+    visualEventTimerRef.current = window.setTimeout(() => {
+      setUnitVisualEvents([]);
+      setUnitDeathOverlays([]);
+    }, UNIT_VISUAL_EVENT_RETENTION_MS);
+  }, []);
+
   function seededInitialRole(teamId: string) {
     const roles: StrategistRole[] = ["builder", "encourage", "teleporter"];
     const hash = [...teamId].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0, cpuRuntime.seed >>> 0);
@@ -125,6 +158,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
       runtimeRef.current = result.runtime;
       setCpuRuntime(result.runtime);
       if (result.state !== sourceState) {
+        if (result.battlePresentation) publishBattlePresentation(sourceState, result.state, result.battlePresentation);
         stateRef.current = result.state;
         setState(result.state);
       }
@@ -133,7 +167,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
     } finally {
       cpuAdvancePendingRef.current = false;
     }
-  }, [bcInferenceClient, visualCpuPolicy]);
+  }, [bcInferenceClient, publishBattlePresentation, visualCpuPolicy]);
 
   useEffect(() => {
     if (!cpuRunning || cpuPaused) return;
@@ -197,31 +231,8 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
         if (!alreadySaved) completed = saveAttackIntent(completed, { teamId: team.id, attackerUnitId: attacker.attackerUnitId, target: chooseDeterministicAttackTarget(attacker.attackerUnitId, attacker.targets), pass: false });
       }
     }
-    const attackIntentSnapshot = [
-      ...completed.turnState.actionIntents.flatMap((entry) => entry.attackIntents ?? []),
-      ...cpuRuntime.hiddenAttackIntents,
-    ].map((intent) => ({
-      ...intent,
-      target: intent.target ? { ...intent.target } : undefined,
-    }));
     const resolved = resolveBattleWithHiddenCpuIntents(completed, cpuRuntime);
-    const presentation = createUnitVisualPresentation(
-      completed,
-      resolved.state,
-      attackIntentSnapshot,
-    );
-    setUnitVisualEvents(presentation.events);
-    setUnitDeathOverlays(presentation.deathOverlays);
-    if (visualEventTimerRef.current !== undefined) {
-      window.clearTimeout(visualEventTimerRef.current);
-    }
-    visualEventTimerRef.current = window.setTimeout(
-      () => {
-        setUnitVisualEvents([]);
-        setUnitDeathOverlays([]);
-      },
-      UNIT_VISUAL_EVENT_RETENTION_MS,
-    );
+    if (resolved.battlePresentation) publishBattlePresentation(completed, resolved.state, resolved.battlePresentation);
     runtimeRef.current = resolved.runtime;
     setCpuRuntime(resolved.runtime);
     setState(resolved.state);
@@ -258,6 +269,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
             onChooseAttackTarget={chooseAttackTarget}
             visualEvents={unitVisualEvents}
             deathOverlays={unitDeathOverlays}
+            unitDirections={unitDirections}
             manualTeamId={effectiveManualTeamId}
             constructionMode={constructionMode}
             onChooseConstruction={(unitId, kind, tiles) => {

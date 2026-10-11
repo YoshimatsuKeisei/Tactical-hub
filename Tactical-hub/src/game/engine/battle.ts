@@ -32,6 +32,19 @@ type BattleLogDraft = {
   relatedIds?: string[];
 };
 
+export type BattlePresentationEvent = Readonly<{
+  eventId: string;
+  attackerUnitId: string;
+  targetUnitId: string;
+}>;
+
+export type BattlePresentationMetadata = Readonly<{
+  attacks: readonly BattlePresentationEvent[];
+  hits: readonly BattlePresentationEvent[];
+}>;
+
+export type BattlePresentationCollector = (metadata: BattlePresentationMetadata) => void;
+
 const SUCCESS_DENOMINATORS: Partial<
   Record<UnitType, Partial<Record<UnitType, number>>>
 > = {
@@ -542,6 +555,7 @@ function resolveBattleInternal(
   state: GameState,
   rng: () => number,
   inPlaceForRl: boolean,
+  collectPresentation?: BattlePresentationCollector,
 ): GameState {
   const next = inPlaceForRl ? state : structuredClone(state) as GameState;
   const neutralIntents: AttackIntent[] = next.units
@@ -616,6 +630,15 @@ function resolveBattleInternal(
 
     return Boolean(attacker && target && hit);
   });
+  const toPresentationEvent = (event: BattleEvent): BattlePresentationEvent => ({
+    eventId: event.id,
+    attackerUnitId: event.attackerUnitId,
+    targetUnitId: event.target.unitId,
+  });
+  const presentationMetadata: BattlePresentationMetadata | undefined = collectPresentation ? {
+    attacks: events.map(toPresentationEvent),
+    hits: hitEvents.map(toPresentationEvent),
+  } : undefined;
 
   const damageByUnitId = new Map<string, number>();
   for (const event of hitEvents) {
@@ -771,17 +794,19 @@ function resolveBattleInternal(
     next.phase = "reward_placement";
   } else next.phase = "strategist_action_input";
   next.turnState.phase = next.phase;
-  if (next.phase !== "strategist_action_input") return next;
-  return inPlaceForRl
+  const resolved = next.phase !== "strategist_action_input" ? next : inPlaceForRl
     ? beginStrategistActionPhaseInPlaceForRl(next)
     : beginStrategistActionPhase(next);
+  if (presentationMetadata) collectPresentation?.(presentationMetadata);
+  return resolved;
 }
 
 export function resolveBattle(
   state: GameState,
   rng: () => number = Math.random,
+  collectPresentation?: BattlePresentationCollector,
 ): GameState {
-  return resolveBattleInternal(state, rng, false);
+  return resolveBattleInternal(state, rng, false, collectPresentation);
 }
 
 /** RL-only owned-state battle resolution without whole-state phase clones. */

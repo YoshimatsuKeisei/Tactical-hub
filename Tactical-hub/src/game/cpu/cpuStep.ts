@@ -1,4 +1,4 @@
-import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent } from "../engine/battle";
+import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent, type BattlePresentationMetadata } from "../engine/battle";
 import { resolveStrategistActions, resolveStrategistActionsInPlaceForRl, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
 import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, submitMovementInPlaceForRl, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction } from "../engine/production";
@@ -31,6 +31,7 @@ export type CpuStepInstrumentation = {
   onApply?: (milliseconds: number, decision: CpuDecision, phaseBefore: GameState["phase"], phaseAfter: GameState["phase"], turnBefore: number, turnAfter: number) => void;
   onLog?: (milliseconds: number) => void;
   onDecision?: (decision: CpuDecision) => void;
+  collectBattlePresentation?: boolean;
 };
 function log(runtime: CpuRuntime, state: GameState, teamId: string | undefined, action: string, detail?: string, error?: string, instrumentation?: CpuStepInstrumentation) {
   const started = instrumentation?.onLog ? performance.now() : 0;
@@ -47,7 +48,13 @@ function injectedRng(runtime: CpuRuntime) {
   };
 }
 
-export type CpuStepResult = { state: GameState; runtime: CpuRuntime; applied: boolean; waitingForHuman?: boolean };
+export type CpuStepResult = {
+  state: GameState;
+  runtime: CpuRuntime;
+  applied: boolean;
+  waitingForHuman?: boolean;
+  battlePresentation?: BattlePresentationMetadata;
+};
 
 export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, settings: CpuTeamSettings, policy: CpuPolicy = getRandomCpuDecision, instrumentation?: CpuStepInstrumentation): CpuStepResult {
   const cloneStarted = instrumentation?.onRuntimeClone ? performance.now() : 0;
@@ -75,6 +82,7 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     : instrumentation;
   const writeLog = (teamId: string | undefined, action: string, detail?: string, error?: string) => log(runtime, state, teamId, action, detail, error, actionInstrumentation);
   let next = state;
+  let battlePresentation: BattlePresentationMetadata | undefined;
   switch (decision.kind) {
     case "production":
       if (decision.choice) next = saveProductionChoice(state, decision.choice);
@@ -126,7 +134,9 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       next = runtime.hiddenAttackIntents.reduce((current, intent) => saveAttackIntent(current, intent), state);
       next = instrumentation?.rlInPlacePhaseTransitions
         ? resolveBattleInPlaceForRl(next, injectedRng(runtime))
-        : resolveBattle(next, injectedRng(runtime));
+        : resolveBattle(next, injectedRng(runtime), instrumentation?.collectBattlePresentation
+          ? (metadata) => { battlePresentation = metadata; }
+          : undefined);
       writeLog(undefined, "resolve simultaneous battle");
       break;
     }
@@ -151,15 +161,16 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
   }
   instrumentation?.onApply?.(Math.max(0, performance.now() - applyStarted - actionLogMs), decision, phaseBefore, next.phase, turnBefore, next.turnNumber);
   runtime.appliedStepCount += 1;
-  return { state: next, runtime, applied: true };
+  return { state: next, runtime, applied: true, ...(battlePresentation ? { battlePresentation } : {}) };
 }
 
 export function resolveBattleWithHiddenCpuIntents(state: GameState, sourceRuntime: CpuRuntime) {
   const runtime = structuredClone(sourceRuntime) as CpuRuntime;
   for (const intent of runtime.hiddenAttackIntents) log(runtime, state, intent.teamId, intent.pass ? "attack pass" : "attack", `${intent.attackerUnitId}${intent.target ? ` -> ${intent.target.unitId}` : ""}`);
   const withCpu = runtime.hiddenAttackIntents.reduce((current, intent) => saveAttackIntent(current, intent), state);
-  const next = resolveBattle(withCpu, injectedRng(runtime));
+  let battlePresentation: BattlePresentationMetadata | undefined;
+  const next = resolveBattle(withCpu, injectedRng(runtime), (metadata) => { battlePresentation = metadata; });
   log(runtime, state, undefined, "resolve simultaneous battle after human confirmation");
   runtime.hiddenAttackIntents = [];
-  return { state: next, runtime };
+  return { state: next, runtime, battlePresentation };
 }

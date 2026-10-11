@@ -61,14 +61,14 @@ export async function advanceVisualCpuOneStepWithBc(
   isStillCurrent: () => boolean = () => true,
 ): Promise<CpuStepResult> {
   const prepared = createBcInferenceRequest(state, runtime, settings);
-  if (!prepared) return advanceCpuOneStep(state, runtime, settings, synchronousPolicy);
+  if (!prepared) return advanceCpuOneStep(state, runtime, settings, synchronousPolicy, { collectBattlePresentation: true });
   if (!prepared.request) return { state, runtime: prepared.runtime, applied: false };
   try {
     const response = await client.infer(prepared.request);
     if (!isStillCurrent()) return { state, runtime, applied: false };
     const selected = prepared.decisions.find((entry) => entry.action.actionKey === response.actionKey);
     if (!selected) return failedResult(state, runtime, prepared.teamId, `BC inference returned illegal or stale actionKey: ${response.actionKey}`);
-    const result = advanceCpuOneStep(state, prepared.runtime, settings, () => selected.decision);
+    const result = advanceCpuOneStep(state, prepared.runtime, settings, () => selected.decision, { collectBattlePresentation: true });
     result.runtime.logs.push({
       id: `cpu-${result.runtime.logs.length}`,
       turnNumber: state.turnNumber,

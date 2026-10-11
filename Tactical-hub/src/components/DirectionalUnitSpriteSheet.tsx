@@ -93,7 +93,6 @@ export function DirectionalUnitSpriteSheet({
   initialDirection = 0,
   onAnimationEnd,
 }: Props) {
-  const [facingDirection, setFacingDirection] = useState<UnitDirection>(initialDirection);
   const [animationQueue, setAnimationQueue] = useState<DirectionalAnimationQueueEntry[]>([]);
   const [frameIndex, setFrameIndex] = useState(0);
   const [assetAvailable, setAssetAvailable] = useState(true);
@@ -111,7 +110,6 @@ export function DirectionalUnitSpriteSheet({
     const freshEvents = visualEvents.filter((event) => {
       if (handledEvents.current.has(event.eventId)) return false;
       handledEvents.current.add(event.eventId);
-      if (event.direction !== undefined) setFacingDirection(event.direction);
       return true;
     });
     const additions = getDirectionalAnimationQueue(freshEvents);
@@ -120,7 +118,7 @@ export function DirectionalUnitSpriteSheet({
 
   const active = animationQueue.length > 0 ? animationQueue[0] : undefined;
   const animation: DirectionalAnimationState = active?.animation ?? "idle";
-  const direction = active?.direction ?? facingDirection;
+  const direction = active?.direction ?? initialDirection;
 
   useEffect(() => setFrameIndex(0), [active?.eventId]);
 

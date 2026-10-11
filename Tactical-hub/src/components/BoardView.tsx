@@ -6,7 +6,7 @@ import { getBridgeCandidates, getConstructionAt, getObstacleCandidates, getOwnSt
 import type { AttackTarget, Base, GameState, UnitPosition } from "../game/types";
 import { getUnitAtBoardCell, tileKey } from "../game/utils/position";
 import { getPositionCoord } from "../game/utils/roadTopology";
-import type { UnitDeathOverlay as DeathOverlay, UnitVisualEvent } from "../presentation/unitVisualEvents";
+import { getInitialUnitDirection, type UnitDeathOverlay as DeathOverlay, type UnitDirectionMap, type UnitVisualEvent } from "../presentation/unitVisualEvents";
 import { TileView } from "./TileView";
 import { UnitDeathOverlay } from "./UnitDeathOverlay";
 import { UnitToken } from "./UnitToken";
@@ -27,6 +27,7 @@ type Props = {
   onChooseConstruction: (unitId: string, kind: "bridge" | "obstacle", tiles: { x: number; y: number }[]) => void;
   visualEvents?: readonly UnitVisualEvent[];
   deathOverlays?: readonly DeathOverlay[];
+  unitDirections?: UnitDirectionMap;
 };
 
 export function getMovementCandidateByBoardCell(
@@ -49,7 +50,7 @@ export function getMovementHighlightTileKeys(state: GameState, candidates: UnitP
     .map((tile) => tileKey(tile.x, tile.y)));
 }
 
-export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [], deathOverlays = [] }: Props) {
+export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [], deathOverlays = [], unitDirections }: Props) {
   const [terrainMode, setTerrainMode] = useState("css");
   const [terrainError, setTerrainError] = useState("");
   const { snapshot: assetSnapshot } = useTileAssets();
@@ -172,6 +173,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 attackComplete={attackCompleteIds.has(boardUnit.id)}
                 retreatIndicators={boardUnit.id === selectedUnitId ? retreatIndicators : []}
                 visualEvents={visualEventsByUnit.get(boardUnit.id)}
+                idleDirection={unitDirections?.get(boardUnit.id) ?? getInitialUnitDirection(state, boardUnit)}
                 onClick={() => {
                   const target = attackByUnitId.get(boardUnit.id);
                   if (target) onChooseAttackTarget(target);
@@ -190,6 +192,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 attackComplete={attackCompleteIds.has(baseUnit.id)}
                 retreatIndicators={baseUnit.id === selectedUnitId ? retreatIndicators : []}
                 visualEvents={visualEventsByUnit.get(baseUnit.id)}
+                idleDirection={unitDirections?.get(baseUnit.id) ?? getInitialUnitDirection(state, baseUnit)}
                 onClick={() => {
                   const target = attackByUnitId.get(baseUnit.id);
                   if (target) onChooseAttackTarget(target);

@@ -43,7 +43,6 @@ export function CatapultUnitSprite({
   initialDirection = 0,
   onAnimationEnd,
 }: Props) {
-  const [facingDirection, setFacingDirection] = useState<CatapultDirection>(initialDirection);
   const [animationQueue, setAnimationQueue] = useState<CatapultQueueEntry[]>([]);
   const [frameIndex, setFrameIndex] = useState(0);
   const [assetAvailable, setAssetAvailable] = useState(true);
@@ -54,7 +53,6 @@ export function CatapultUnitSprite({
     for (const event of visualEvents) {
       if (handledEvents.current.has(event.eventId)) continue;
       handledEvents.current.add(event.eventId);
-      if (event.direction !== undefined) setFacingDirection(event.direction);
       additions.push({
         eventId: event.eventId,
         animation: event.kind === "death" ? "break" : event.kind,
@@ -66,7 +64,7 @@ export function CatapultUnitSprite({
 
   const active = animationQueue.length > 0 ? animationQueue[0] : undefined;
   const animation: CatapultAnimationState = active?.animation ?? "idle";
-  const direction = active?.direction ?? facingDirection;
+  const direction = active?.direction ?? initialDirection;
 
   useEffect(() => setFrameIndex(0), [active?.eventId]);
 

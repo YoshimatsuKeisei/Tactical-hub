@@ -9,6 +9,7 @@ import { submitTeamProduction } from "../engine/production";
 import { getHeadlessProgressSignature } from "../cpu/headlessSimulation";
 import { createVisualCpuPolicyRouter } from "../cpu/cpuPolicyRouter";
 import { createHeuristicCpuPolicy } from "../cpu/heuristicCpuPolicy";
+import { saveAttackIntent } from "../engine/battle";
 
 const allCpu = (): CpuTeamSettings => ({ "team-1": "random_cpu", "team-2": "random_cpu", "team-3": "random_cpu", "team-4": "random_cpu" });
 const allHuman = (): CpuTeamSettings => ({ "team-1": "human", "team-2": "human", "team-3": "human", "team-4": "human" });
@@ -25,6 +26,32 @@ function runSteps(count: number, seed: number, settings = allCpu()) {
 }
 
 describe("Phase 5-B Random CPU and Visual Runner", () => {
+  it("returns battle presentation metadata only through the visual CPU path", () => {
+    let state = createInitialGameState();
+    const attacker = state.units.find((unit) => unit.id === "home-1-king")!;
+    const target = state.units.find((unit) => unit.id === "home-2-king")!;
+    attacker.position = { kind: "tile", x: 4, y: 1 };
+    target.position = { kind: "tile", x: 5, y: 1 };
+    state.units = [attacker, target];
+    state.phase = state.turnState.phase = "attack_input";
+    state = saveAttackIntent(state, {
+      teamId: attacker.ownerTeamId,
+      attackerUnitId: attacker.id,
+      target: { kind: "unit", unitId: target.id },
+      pass: false,
+    });
+    const result = advanceVisualCpuOneStep(
+      state,
+      createCpuRuntime(1),
+      allCpu(),
+      () => ({ kind: "resolve_battle", teamId: "all" }),
+    );
+    expect(result.battlePresentation?.attacks).toContainEqual(expect.objectContaining({
+      attackerUnitId: attacker.id,
+      targetUnitId: target.id,
+    }));
+  });
+
   it("routes random, heuristic, and human teams to only their configured controller", () => {
     const calls: string[] = [];
     const heuristic = createHeuristicCpuPolicy();
@@ -165,6 +192,12 @@ describe("Phase 5-B Random CPU and Visual Runner", () => {
       expect(runtime.logs.some((entry) => entry.detail?.includes(intent.target!.unitId))).toBe(false);
     const resolved = resolveBattleWithHiddenCpuIntents(state, runtime);
     expect(resolved.state.phase).not.toBe("attack_input");
+    for (const intent of runtime.hiddenAttackIntents.filter((entry) => entry.target)) {
+      expect(resolved.battlePresentation?.attacks).toContainEqual(expect.objectContaining({
+        attackerUnitId: intent.attackerUnitId,
+        targetUnitId: intent.target!.unitId,
+      }));
+    }
     for (const intent of runtime.hiddenAttackIntents.filter((entry) => entry.target))
       expect(resolved.runtime.logs.some((entry) => entry.detail?.includes(intent.target!.unitId))).toBe(true);
   });

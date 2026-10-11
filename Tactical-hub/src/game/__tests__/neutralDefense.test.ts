@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveBattle } from "../engine/battle";
+import { resolveBattle, type BattlePresentationMetadata } from "../engine/battle";
 import { createInitialGameState } from "../initialState";
 import { getProductionCandidates } from "../engine/production";
 import { getTeamMovementCandidates } from "../engine/movement";
@@ -39,9 +39,11 @@ describe("neutral base defense attacks", () => {
   it("resolves a saved player attack and neutral counterattack simultaneously", () => {
     const { state, guard, enemy } = fixture("infantry");
     state.turnState.actionIntents = [{ teamId: "team-1", productionChoices: [], movementIntents: [], attackIntents: [{ teamId: "team-1", attackerUnitId: enemy.id, target: { kind: "unit", unitId: guard.id }, pass: false }] }];
-    const resolved = resolveBattle(state, () => 0);
+    let metadata: BattlePresentationMetadata | undefined;
+    const resolved = resolveBattle(state, () => 0, (value) => { metadata = value; });
     expect(resolved.units.find((unit) => unit.id === guard.id)?.position.kind).toBe("removed");
     expect(resolved.units.find((unit) => unit.id === enemy.id)?.position.kind).toBe("removed");
+    expect(metadata?.hits.map((event) => event.attackerUnitId).sort()).toEqual(["neutral-guard", "player-unit"]);
   });
 
   it("does not expose neutral production or movement decisions", () => {

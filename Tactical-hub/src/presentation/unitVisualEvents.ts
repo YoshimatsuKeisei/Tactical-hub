@@ -1,4 +1,5 @@
 import type { AttackIntent, GameState, Unit } from "../game/types";
+import type { BattlePresentationMetadata } from "../game/engine/battle";
 import { isHeavyInfantry } from "../game/engine/heavyInfantry";
 import { getPositionCoord } from "../game/utils/roadTopology";
 
@@ -42,6 +43,14 @@ export type UnitDeathOverlay = {
 export type UnitVisualPresentation = {
   events: UnitVisualEvent[];
   deathOverlays: UnitDeathOverlay[];
+};
+
+export type UnitDirectionMap = ReadonlyMap<string, UnitDirection>;
+
+export type UnitVisualPresentationOptions = {
+  attackIntents?: readonly AttackIntent[];
+  battle?: BattlePresentationMetadata;
+  directions?: UnitDirectionMap;
 };
 
 // Long enough for Catapult attack+break and HD Enemy attack+damage+death queues.
@@ -97,6 +106,107 @@ export function getUnitAttackDirection(
   return unitDirectionFromDelta(to.x - from.x, to.y - from.y);
 }
 
+function directionBetweenUnits(
+  state: GameState,
+  fromUnitId: string,
+  toUnitId: string,
+  fallback: UnitDirection,
+) {
+  const fromUnit = state.units.find((unit) => unit.id === fromUnitId);
+  const toUnit = state.units.find((unit) => unit.id === toUnitId);
+  const from = fromUnit ? getUnitPresentationCoord(state, fromUnit) : undefined;
+  const to = toUnit ? getUnitPresentationCoord(state, toUnit) : undefined;
+  if (!from || !to || (from.x === to.x && from.y === to.y)) return fallback;
+  return unitDirectionFromDelta(to.x - from.x, to.y - from.y);
+}
+
+export function getInitialUnitDirection(state: GameState, unit: Unit): UnitDirection {
+  const position = unit.position;
+  if (position.kind === "base" && position.baseId === "neutral-center") return 0;
+  const base = position.kind === "base"
+    ? state.bases.find((candidate) => candidate.id === position.baseId)
+    : undefined;
+  const from = base?.coords.length ? {
+    x: base.coords.reduce((sum, coord) => sum + coord.x, 0) / base.coords.length,
+    y: base.coords.reduce((sum, coord) => sum + coord.y, 0) / base.coords.length,
+  } : getUnitPresentationCoord(state, unit);
+  if (!from) return 0;
+  const center = { x: (state.map.width - 1) / 2, y: (state.map.height - 1) / 2 };
+  if (from.x === center.x && from.y === center.y) return 0;
+  return unitDirectionFromDelta(center.x - from.x, center.y - from.y);
+}
+
+export function createUnitDirectionMap(state: GameState): Map<string, UnitDirection> {
+  return new Map(state.units
+    .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed")
+    .map((unit) => [unit.id, getInitialUnitDirection(state, unit)]));
+}
+
+export function updateUnitDirectionMap(
+  before: GameState,
+  after: GameState,
+  current: UnitDirectionMap,
+): Map<string, UnitDirection> {
+  if (before.turnNumber !== 1 && after.turnNumber === 1
+    && after.logs.length === 1 && after.logs[0]?.id === "log-setup") {
+    return createUnitDirectionMap(after);
+  }
+  const next = new Map(current);
+  const visibleAfterIds = new Set(after.units
+    .filter((unit) => unit.hp > 0 && unit.position.kind !== "removed")
+    .map((unit) => unit.id));
+  for (const unitId of next.keys()) if (!visibleAfterIds.has(unitId)) next.delete(unitId);
+  for (const unit of after.units) {
+    if (!visibleAfterIds.has(unit.id)) continue;
+    const previous = before.units.find((candidate) => candidate.id === unit.id);
+    if (!previous || previous.hp <= 0 || previous.position.kind === "removed") {
+      next.set(unit.id, getInitialUnitDirection(after, unit));
+      continue;
+    }
+    const from = getUnitPresentationCoord(before, previous);
+    const to = getUnitPresentationCoord(after, unit);
+    if (from && to && (from.x !== to.x || from.y !== to.y)) {
+      next.set(unit.id, unitDirectionFromDelta(to.x - from.x, to.y - from.y));
+    } else if (!next.has(unit.id)) {
+      next.set(unit.id, getInitialUnitDirection(after, unit));
+    }
+  }
+  return next;
+}
+
+export function applyUnitVisualEventDirections(
+  current: UnitDirectionMap,
+  events: readonly UnitVisualEvent[],
+): Map<string, UnitDirection> {
+  const next = new Map(current);
+  for (const event of events) if (event.direction !== undefined) next.set(event.unitId, event.direction);
+  return next;
+}
+
+function closestHitDirection(
+  state: GameState,
+  targetUnitId: string,
+  battle: BattlePresentationMetadata | undefined,
+): UnitDirection | undefined {
+  const target = state.units.find((unit) => unit.id === targetUnitId);
+  const targetCoord = target ? getUnitPresentationCoord(state, target) : undefined;
+  if (!targetCoord || !battle) return undefined;
+  const candidates = battle.hits
+    .filter((event) => event.targetUnitId === targetUnitId)
+    .flatMap((event) => {
+      const attacker = state.units.find((unit) => unit.id === event.attackerUnitId);
+      const coord = attacker ? getUnitPresentationCoord(state, attacker) : undefined;
+      if (!coord || (coord.x === targetCoord.x && coord.y === targetCoord.y)) return [];
+      const dx = coord.x - targetCoord.x;
+      const dy = coord.y - targetCoord.y;
+      return [{ attackerUnitId: event.attackerUnitId, dx, dy, distanceSquared: dx * dx + dy * dy }];
+    })
+    .sort((left, right) => left.distanceSquared - right.distanceSquared
+      || left.attackerUnitId.localeCompare(right.attackerUnitId));
+  const closest = candidates[0];
+  return closest ? unitDirectionFromDelta(closest.dx, closest.dy) : undefined;
+}
+
 function copyUnitForPresentation(unit: Unit): Unit {
   return {
     ...unit,
@@ -108,26 +218,34 @@ function copyUnitForPresentation(unit: Unit): Unit {
 export function createUnitVisualPresentation(
   before: GameState,
   after: GameState,
-  attackIntents: readonly AttackIntent[] = before.turnState.actionIntents.flatMap(
-    (entry) => entry.attackIntents ?? [],
-  ),
+  optionsOrIntents: UnitVisualPresentationOptions | readonly AttackIntent[] = {},
 ): UnitVisualPresentation {
+  const options: UnitVisualPresentationOptions = Array.isArray(optionsOrIntents)
+    ? { attackIntents: optionsOrIntents }
+    : optionsOrIntents as UnitVisualPresentationOptions;
+  const attackIntents = options.attackIntents ?? before.turnState.actionIntents.flatMap(
+    (entry) => entry.attackIntents ?? [],
+  );
   const events: UnitVisualEvent[] = [];
-  const deathCandidates: { unit: Unit; coord: { x: number; y: number } }[] = [];
-  const directionByUnit = new Map<string, UnitDirection>();
+  const deathCandidates: { unit: Unit; coord: { x: number; y: number }; direction: UnitDirection }[] = [];
   const eventPrefix = `battle-${before.turnNumber}`;
 
-  for (const intent of attackIntents) {
-    if (intent.pass || !intent.target) continue;
-    const attacker = before.units.find((unit) => unit.id === intent.attackerUnitId);
+  const attacks = options.battle?.attacks ?? attackIntents.flatMap((intent) =>
+    intent.pass || !intent.target ? [] : [{
+      eventId: eventPrefix,
+      attackerUnitId: intent.attackerUnitId,
+      targetUnitId: intent.target.unitId,
+    }]);
+  for (const attack of attacks) {
+    const attacker = before.units.find((unit) => unit.id === attack.attackerUnitId);
     if (!attacker || !getUnitSpriteKind(attacker)) continue;
-    const direction = getUnitAttackDirection(before, attacker, intent);
-    directionByUnit.set(attacker.id, direction);
+    const fallback = options.directions?.get(attacker.id) ?? getInitialUnitDirection(before, attacker);
+    const direction = directionBetweenUnits(before, attacker.id, attack.targetUnitId, fallback);
     events.push({
       unitId: attacker.id,
       kind: "attack",
       direction,
-      eventId: `${eventPrefix}:attack:${attacker.id}`,
+      eventId: `${attack.eventId}:attack:${attacker.id}`,
     });
   }
 
@@ -137,8 +255,10 @@ export function createUnitVisualPresentation(
       || previous.hp <= 0) continue;
     const current = after.units.find((unit) => unit.id === previous.id);
     const removed = !current || current.hp <= 0 || current.position.kind === "removed";
+    const previousDirection = options.directions?.get(previous.id) ?? getInitialUnitDirection(before, previous);
+    const hitDirection = closestHitDirection(before, previous.id, options.battle);
     if (removed) {
-      const direction = directionByUnit.get(previous.id) ?? 0;
+      const direction = hitDirection ?? previousDirection;
       events.push({
         unitId: previous.id,
         kind: "death",
@@ -146,22 +266,22 @@ export function createUnitVisualPresentation(
         eventId: `${eventPrefix}:death:${previous.id}`,
       });
       const coord = getUnitPresentationCoord(before, previous);
-      if (coord) deathCandidates.push({ unit: previous, coord });
+      if (coord) deathCandidates.push({ unit: previous, coord, direction });
     } else if (current.hp < previous.hp) {
       events.push({
         unitId: previous.id,
         kind: "hit",
-        direction: directionByUnit.get(previous.id),
+        direction: hitDirection ?? previousDirection,
         eventId: `${eventPrefix}:hit:${previous.id}`,
       });
     }
   }
 
-  const deathOverlays = deathCandidates.map(({ unit, coord }) => ({
+  const deathOverlays = deathCandidates.map(({ unit, coord, direction }) => ({
     overlayId: `${eventPrefix}:overlay:${unit.id}`,
     unit: copyUnitForPresentation(unit),
     coord: { ...coord },
-    direction: directionByUnit.get(unit.id) ?? 0,
+    direction,
     events: events.filter((event) => event.unitId === unit.id),
   }));
   return { events, deathOverlays };

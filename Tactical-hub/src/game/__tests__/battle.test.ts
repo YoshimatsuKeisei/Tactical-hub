@@ -9,6 +9,7 @@ import {
   getTeamAttackCandidates,
   resolveBattle,
   saveAttackIntent,
+  type BattlePresentationMetadata,
 } from "../engine/battle";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit, UnitPosition, UnitType } from "../types";
@@ -452,6 +453,25 @@ describe("battle", () => {
 
     expect(target.hp).toBe(0);
     expect(target.position).toEqual({ kind: "removed", reason: "defeated" });
+  });
+
+  it("collects read-only attack and hit metadata without changing state or RNG use", () => {
+    const state = createInitialGameState();
+    putUnit(state, "home-1-king", { kind: "tile", x: 4, y: 1 });
+    addUnit(state, "enemy-adjacent", "team-2", "infantry", { kind: "tile", x: 5, y: 1 });
+    const planned = saveAttack(state, "team-1", "home-1-king", "enemy-adjacent");
+    let baselineCalls = 0;
+    const baseline = resolveBattle(structuredClone(planned), () => { baselineCalls += 1; return 0; });
+    let collectedCalls = 0;
+    let metadata: BattlePresentationMetadata | undefined;
+    const collected = resolveBattle(structuredClone(planned), () => { collectedCalls += 1; return 0; }, (value) => { metadata = value; });
+
+    expect(collected).toEqual(baseline);
+    expect(collectedCalls).toBe(baselineCalls);
+    expect(metadata).toEqual({
+      attacks: [{ eventId: `battle-${state.turnNumber}-0`, attackerUnitId: "home-1-king", targetUnitId: "enemy-adjacent" }],
+      hits: [{ eventId: `battle-${state.turnNumber}-0`, attackerUnitId: "home-1-king", targetUnitId: "enemy-adjacent" }],
+    });
   });
 
   it("keeps kings at 3 initial HP and defeats their team at 0 HP", () => {
