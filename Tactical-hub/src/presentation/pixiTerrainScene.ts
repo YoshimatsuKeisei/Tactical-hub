@@ -202,6 +202,7 @@ class PersistentOutline {
 }
 
 interface PersistentCell {
+  outside: PersistentOverlay;
   ground: PersistentVisual;
   road: PersistentVisual;
   face: PersistentVisual;
@@ -243,6 +244,7 @@ export function baseAssetPlacement(asset: TileAsset, rect: CellBounds): CellBoun
 export class PersistentTerrainScene {
   readonly root = new Container();
   private readonly groundLayer = new Container();
+  private readonly roadLayer = new Container();
   private readonly baseLayer = new Container();
   private readonly shadowLayer = new Container();
   private readonly depthLayer = new Container();
@@ -252,7 +254,8 @@ export class PersistentTerrainScene {
   constructor(private readonly cache: TerrainTextureCache) {
     this.root.eventMode = "none";
     this.depthLayer.sortableChildren = true;
-    this.root.addChild(this.groundLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
+    this.roadLayer.sortableChildren = true;
+    this.root.addChild(this.groundLayer, this.roadLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
   }
 
   private makeBase(id: string) {
@@ -270,9 +273,10 @@ export class PersistentTerrainScene {
     layer.zIndex = row;
     this.depthLayer.addChild(layer);
     const node = {
+      outside: new PersistentOverlay(this.groundLayer),
       ground: new PersistentVisual(this.groundLayer),
       shadow: new PersistentVisual(this.shadowLayer),
-      road: new PersistentVisual(layer),
+      road: new PersistentVisual(this.roadLayer),
       face: new PersistentVisual(layer),
       topHighlight: new PersistentOverlay(layer),
       faceHighlight: new PersistentOverlay(layer),
@@ -296,7 +300,7 @@ export class PersistentTerrainScene {
       const key = `${cell.x},${cell.y}`;
       const rect = bounds.get(key);
       let node = this.nodes.get(key);
-      if (!rect || !cell.kind) {
+      if (!rect) {
         if (node) this.hideCell(node);
         continue;
       }
@@ -304,10 +308,18 @@ export class PersistentTerrainScene {
       node ??= this.makeCell(key, cell.y);
       node.layer.visible = true;
       node.layer.zIndex = cell.y;
+      node.road.sprite.zIndex = cell.y;
+      node.road.graphics.zIndex = cell.y;
       const { x, y, width: w, height: h } = rect;
       const signature = rectSignature(rect);
 
-      if (cell.kind === "road") {
+      node.outside.hide();
+      if (!cell.kind) {
+        // Outside remains logically absent; only its background participates.
+        this.hideCell(node);
+        node.outside.update(rect, 0xd8dde2, 1);
+        continue;
+      } else if (cell.kind === "road") {
         node.ground.hide();
         node.road.update("road", rect, snapshot, this.cache, `road:${signature}`,
           (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road));
@@ -404,6 +416,7 @@ export class PersistentTerrainScene {
   getCellDisplayObjects(key: string) {
     const node = this.nodes.get(key);
     return node ? {
+      outsideGraphics: node.outside.graphics,
       groundGraphics: node.ground.graphics, groundSprite: node.ground.sprite,
       roadGraphics: node.road.graphics, roadSprite: node.road.sprite,
       faceGraphics: node.face.graphics, faceSprite: node.face.sprite,
@@ -425,6 +438,7 @@ export class PersistentTerrainScene {
   }
 
   private hideCell(node: PersistentCell) {
+    node.outside.hide();
     node.ground.hide();
     node.road.hide();
     node.face.hide();
@@ -444,6 +458,7 @@ export class PersistentTerrainScene {
     }
     this.baseNodes.clear();
     for (const node of this.nodes.values()) {
+      node.outside.destroy();
       node.ground.destroy();
       node.road.destroy();
       node.face.destroy();
@@ -457,6 +472,7 @@ export class PersistentTerrainScene {
     }
     this.nodes.clear();
     this.groundLayer.destroy({ children: false });
+    this.roadLayer.destroy({ children: false });
     this.baseLayer.destroy({ children: false });
     this.shadowLayer.destroy({ children: false });
     this.depthLayer.destroy({ children: false });

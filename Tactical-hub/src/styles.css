@@ -812,7 +812,7 @@ pre {
 .pixi-board-canvas canvas,
 .pixi-board-foreground canvas { display: block; }
 .board-pixi > .tile { background: transparent; border-color: transparent; border-radius: 0; z-index: auto; }
-.board-pixi > .tile.outside { background: #d8dde2; }
+.board-pixi > .tile.outside { background: transparent; }
 .board-pixi > .tile.highlighted,
 .board-pixi > .tile.attack-highlighted { z-index: auto; }
 .board-pixi .unit-token.animated-unit-token { isolation: auto; z-index: auto; }
@@ -838,3 +838,12 @@ pre {
 .tile-asset-import-panel fieldset { margin: 10px 0; }
 .tile-asset-import-panel input[type="number"] { width: 70px; margin: 4px; }
 .tile-asset-import-panel input[type="file"] { max-width: 100%; }
+
+/* Padding expands scroll reach without changing the logical grid dimensions. */
+.board-css-viewport { display: contents; }
+.board-pixi-viewport {
+  box-sizing: content-box;
+  width: 100%;
+  min-width: 900px;
+  padding: var(--pixi-top, 0px) var(--pixi-right, 0px) var(--pixi-bottom, 0px) var(--pixi-left, 0px);
+}

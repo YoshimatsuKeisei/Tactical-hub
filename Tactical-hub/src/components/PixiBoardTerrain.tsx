@@ -36,6 +36,10 @@ export function PixiBoardTerrain({ cells, boardRef, onError }: {
       }
     };
     refresh.current = () => { if (!pending) pending = requestAnimationFrame(draw); };
+    const scroll = board.closest(".board-scroll");
+    const schedule = () => refresh.current();
+    scroll?.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
     void import("../presentation/pixiBoardRenderer").then(async ({ mountPixiBoard }) => {
       if (controller.signal.aborted) return;
       renderer = await mountPixiBoard(element, foregroundElement, controller.signal);
@@ -49,6 +53,8 @@ export function PixiBoardTerrain({ cells, boardRef, onError }: {
     });
     return () => {
       controller.abort(); observer?.disconnect(); cancelAnimationFrame(pending);
+      scroll?.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
       renderer?.dispose(); refresh.current = () => {};
     };
   }, [boardRef]);

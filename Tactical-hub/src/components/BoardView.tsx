@@ -127,6 +127,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
       {usePixi && <span>Base front walls use a click-through foreground layer; unit badges remain above it.</span>}
       {terrainError && <span role="alert">PixiJS failed; using CSS: {terrainError}</span>}
     </div>}
+    <div className={usePixi ? "board-pixi-viewport" : "board-css-viewport"}>
     <div ref={boardRef} className={`board${usePixi ? " board-pixi" : ""}`} style={{ gridTemplateColumns: `repeat(${state.map.width}, minmax(26px, 1fr))` }}>
       {usePixi && <PixiBoardTerrain cells={terrain} boardRef={boardRef} onError={(message) => { setTerrainError(message); setTerrainMode("css"); }} />}
       {state.map.tiles.map((tile) => {
@@ -206,6 +207,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
           </TileView>
         );
       })}
+    </div>
     </div>
     </>
   );

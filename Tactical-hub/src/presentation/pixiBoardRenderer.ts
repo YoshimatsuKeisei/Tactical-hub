@@ -2,6 +2,7 @@ import { Application } from "pixi.js";
 import type { CellBounds, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { EMPTY_ASSETS, type AssetSnapshot } from "./tileAssets";
 import { PersistentBaseForegroundScene, PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
+import { applyPixiBoardExtent, pixiBoardExtent } from "./pixiBoardExtent";
 export async function mountPixiBoard(host: HTMLDivElement, foregroundHost: HTMLDivElement, signal: AbortSignal) {
   const app = new Application(), foregroundApp = new Application();
   const cache = new TerrainTextureCache(), foregroundCache = new TerrainTextureCache();
@@ -38,11 +39,15 @@ export async function mountPixiBoard(host: HTMLDivElement, foregroundHost: HTMLD
     let rendererWidth = 0, rendererHeight = 0;
     const update = (cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, width: number, height: number, assets: AssetSnapshot = EMPTY_ASSETS) => {
       if (disposed || signal.aborted || width <= 0 || height <= 0) return;
-      if (rendererWidth !== width || rendererHeight !== height) {
-        app.renderer.resize(width, height);
-        foregroundApp.renderer.resize(width, height);
-        rendererWidth = width;
-        rendererHeight = height;
+      const extent = pixiBoardExtent(cells, bounds, width, height, assets);
+      applyPixiBoardExtent(host, foregroundHost, extent);
+      app.stage.position.set(-extent.left, -extent.top);
+      foregroundApp.stage.position.set(-extent.left, -extent.top);
+      if (rendererWidth !== extent.width || rendererHeight !== extent.height) {
+        app.renderer.resize(extent.width, extent.height);
+        foregroundApp.renderer.resize(extent.width, extent.height);
+        rendererWidth = extent.width;
+        rendererHeight = extent.height;
       }
       terrain.update(cells, bounds, assets);
       foreground.update(cells.flatMap((cell) => cell.baseGroup ? [cell.baseGroup] : []), bounds, assets);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_ADJUSTMENT, EMPTY_ASSETS, type AssetSnapshot } from "./tileAssets";
+import { DEFAULT_ADJUSTMENT, EMPTY_ASSETS, type AssetSnapshot, type TileAssetKey } from "./tileAssets";
 
 vi.mock("pixi.js", () => {
   class Container {
@@ -19,7 +19,7 @@ vi.mock("pixi.js", () => {
     clear = vi.fn(() => this);
     destroy = vi.fn();
     rect = vi.fn(() => this);
-    fill() { return this; }
+    fill = vi.fn(() => this);
     stroke = vi.fn(() => this);
     moveTo = vi.fn(() => this);
     lineTo = vi.fn(() => this);
@@ -41,12 +41,24 @@ vi.mock("pixi.js", () => {
     destroy = vi.fn();
     constructor(public texture: Texture) {}
   }
-  return { Container, Graphics, ImageSource, Texture, Sprite };
+  class Application {
+    static instances: Application[] = [];
+    stage = new Container();
+    canvas = { setAttribute: vi.fn() };
+    renderer = { resize: vi.fn() };
+    init = vi.fn(async () => {});
+    render = vi.fn();
+    destroy = vi.fn();
+    constructor() { Application.instances.push(this); }
+  }
+  return { Container, Graphics, ImageSource, Texture, Sprite, Application };
 });
 
 import { baseAssetPlacement, movementOutlineEdges, PersistentBaseForegroundScene, PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
-import type { PixiBaseGroup, PixiBoardTerrain } from "./pixiBoardTerrain";
-import { Sprite, Texture } from "pixi.js";
+import { relativeCellBounds, type PixiBaseGroup, type PixiBoardTerrain } from "./pixiBoardTerrain";
+import { Application, Sprite, Texture } from "pixi.js";
+import { pixiBoardExtent } from "./pixiBoardExtent";
+import { mountPixiBoard } from "./pixiBoardRenderer";
 
 const image = {} as HTMLImageElement;
 const imported: AssetSnapshot = {
@@ -226,7 +238,7 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.shadowGraphics.visible).toBe(true);
     expect(objects.shadowSprite.visible).toBe(false);
     expect(objects.shadowGraphics.alpha).toBe(0.24);
-    expect((scene.root.children[2] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
+    expect((scene.root.children[3] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
     const shadowRects = vi.mocked(objects.shadowGraphics.rect).mock.calls;
     expect(shadowRects).toHaveLength(3);
     expect(shadowRects[0][0]).toBe(0);
@@ -361,7 +373,7 @@ describe("persistent Pixi terrain scene", () => {
     expect((scene.root.children[0] as { children: unknown[] }).children).toContain(
       scene.getCellDisplayObjects("0,0")!.groundSprite,
     );
-    const baseLayer = scene.root.children[1] as { children: { children: unknown[] }[] };
+    const baseLayer = scene.root.children[2] as { children: { children: unknown[] }[] };
     expect(baseLayer.children[0].children).toContain(core.coreSprite);
     const underlaySprite = scene.getCellDisplayObjects("0,0")!.groundSprite;
     const underlayTexture = underlaySprite.texture;
@@ -516,5 +528,164 @@ describe("persistent Pixi terrain scene", () => {
     expect(scene.getCellDisplayObjects("0,0")!.roadSprite).toBe(sprite);
     expect(sprite.texture).toBe(texture);
     expect(sprite.width).toBe(96);
+  });
+});
+
+
+describe("Phase 2 fortress overflow", () => {
+  it.each(["road", "lake", null] as const)("keeps %s behind an expanded core on all four sides", (kind) => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    const snapshot: AssetSnapshot = { ...imported, assets: { ...imported.assets,
+      base: { image, width: 96, height: 96, name: "core", scale: 3, offsetX: -96, offsetY: -96 },
+    } };
+    const neighbors = [{ x: -1, y: 0 }, { x: 2, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 2 }];
+    const rects = new Map(baseBounds);
+    for (const coord of neighbors) rects.set(`${coord.x},${coord.y}`, { x: 10 + coord.x * 40, y: 20 + coord.y * 36, width: 40, height: 36 });
+    const cells: PixiBoardTerrain = [...baseCells, ...neighbors.map((coord) => ({ ...cell, ...coord, kind, southFace: kind === "road" }))];
+    for (const assets of [snapshot, { ...snapshot, assets: { base: snapshot.assets.base } }]) {
+      scene.update(cells, rects, assets);
+      const core = scene.getBaseDisplayObjects(ownedBase.id)!;
+      expect(core.coreSprite.position.set).toHaveBeenLastCalledWith(-70, -60);
+      expect(core.coreSprite.width).toBe(240);
+      expect(core.coreSprite.height).toBe(240);
+      expect(scene.baseCount).toBe(1);
+      const layers = scene.root.children as unknown as { children: unknown[] }[];
+      expect(layers[2].children.some((node) => (node as { children: unknown[] }).children.includes(core.coreSprite))).toBe(true);
+      for (const coord of neighbors) {
+        const objects = scene.getCellDisplayObjects(`${coord.x},${coord.y}`)!;
+        if (kind === "road") {
+          expect(layers[1].children).toContain(objects.roadSprite);
+          expect(layers[1].children).toContain(objects.roadGraphics);
+          expect(objects.roadSprite.visible).toBe(Boolean(assets.assets.road));
+          expect(objects.roadGraphics.visible).toBe(!assets.assets.road);
+          expect(layers[4].children.some((node) => (node as { children: unknown[] }).children.includes(objects.faceGraphics))).toBe(true);
+        } else if (kind === "lake") {
+          expect(layers[0].children).toContain(objects.groundGraphics);
+          expect(objects.groundGraphics.visible).toBe(true);
+        } else {
+          expect(layers[0].children).toContain(objects.outsideGraphics);
+          expect(objects.outsideGraphics.visible).toBe(true);
+          expect(objects.outsideGraphics.fill).toHaveBeenLastCalledWith(0xd8dde2);
+        }
+      }
+    }
+    const core = scene.getBaseDisplayObjects(ownedBase.id)!.coreSprite;
+    scene.update(cells, rects, snapshot);
+    expect(scene.getBaseDisplayObjects(ownedBase.id)!.coreSprite).toBe(core);
+    expect(ownedBase.coords).toHaveLength(4);
+  });
+});
+
+
+const overflowAssets: AssetSnapshot = { enabled: true, statuses: {}, assets: {
+  base: { image, width: 96, height: 96, name: "core", scale: 3, offsetX: -96, offsetY: -96 },
+  base_front_wall: { image, width: 96, height: 192, name: "wall", scale: 2, offsetX: 48, offsetY: 48 },
+  base_flag_team_1: { image, width: 96, height: 96, name: "flag", scale: 1, offsetX: -120, offsetY: -120 },
+  base_core_third_party: { image, width: 96, height: 96, name: "neutral", scale: 1, offsetX: 0, offsetY: 0 },
+} };
+
+describe("shared Canvas extent", () => {
+  it("unions the actual core, wall and flag rectangles and resets without changing bounds", () => {
+    const extent = pixiBoardExtent(baseCells, baseBounds, 100, 100, overflowAssets);
+    expect(extent).toEqual({ left: -90, top: -80, width: 300, height: 460,
+      paddingLeft: 90, paddingTop: 80, paddingRight: 110, paddingBottom: 280 });
+    expect(pixiBoardExtent(baseCells, baseBounds, 100, 100, EMPTY_ASSETS)).toEqual({
+      left: 0, top: 0, width: 100, height: 100, paddingLeft: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0,
+    });
+    const neutral = { ...ownedBase, thirdParty: true, coreAssetKey: "base_core_third_party" as const, flagAssetKey: undefined };
+    const neutralCells = baseCells.map((cell) => ({ ...cell, baseGroup: cell.baseGroup ? neutral : undefined }));
+    // Unset third-party wall continues using the normal wall.
+    expect(pixiBoardExtent(neutralCells, baseBounds, 100, 100, overflowAssets).paddingBottom).toBe(280);
+    const assets = { ...overflowAssets, assets: { ...overflowAssets.assets, base_front_wall_third_party: overflowAssets.assets.base_core_third_party } };
+    expect(pixiBoardExtent(neutralCells, baseBounds, 100, 100, assets).paddingBottom).toBe(0);
+    expect(baseBounds.get("0,0")).toEqual({ x: 10, y: 20, width: 40, height: 36 });
+    expect(baseCells).toHaveLength(4);
+  });
+
+  it("tracks cell resize, scale and offsets while ignoring screen/scroll origin", () => {
+    const small = new Map([...baseBounds].map(([key, rect]) => [key, {
+      x: rect.x / 2, y: rect.y / 2, width: rect.width / 2, height: rect.height / 2,
+    }]));
+    const extent = pixiBoardExtent(baseCells, small, 50, 50, overflowAssets);
+    expect(extent.width).toBe(150);
+    expect(extent.height).toBe(230);
+    for (const origin of [{ x: 200, y: 300 }, { x: -400, y: -500 }]) {
+      const scrolled = new Map([...baseBounds].map(([key, rect]) => [key,
+        relativeCellBounds({ ...rect, x: rect.x + origin.x, y: rect.y + origin.y }, origin),
+      ]));
+      expect(pixiBoardExtent(baseCells, scrolled, 100, 100, overflowAssets))
+        .toEqual(pixiBoardExtent(baseCells, baseBounds, 100, 100, overflowAssets));
+    }
+    const changed = { ...overflowAssets, assets: { base: { ...overflowAssets.assets.base!, scale: 1, offsetX: 0, offsetY: 0 } } };
+    expect(pixiBoardExtent(baseCells, baseBounds, 100, 100, changed).width).toBe(100);
+  });
+
+  it("reuses both Applications and canvases and applies equal stage/CSS compensation", async () => {
+    const viewport = { classList: { contains: () => true }, style: { setProperty: vi.fn() } };
+    const board = { parentElement: viewport };
+    const host = { style: {}, appendChild: vi.fn(), parentElement: board } as unknown as HTMLDivElement;
+    const foregroundHost = { style: {}, appendChild: vi.fn(), parentElement: board } as unknown as HTMLDivElement;
+    const instances = (Application as unknown as { instances: Application[] }).instances;
+    const before = instances.length;
+    const mounted = await mountPixiBoard(host, foregroundHost, new AbortController().signal);
+    const [background, foreground] = instances.slice(before);
+    mounted.update(baseCells, baseBounds, 100, 100, overflowAssets);
+    for (const app of [background, foreground]) {
+      expect(app.stage.position.set).toHaveBeenLastCalledWith(90, 80);
+      expect(app.renderer.resize).toHaveBeenLastCalledWith(300, 460);
+    }
+    expect(host.style).toEqual(foregroundHost.style);
+    expect(host.style.left).toBe("-90px");
+    expect(host.style.top).toBe("-80px");
+    expect(viewport.style.setProperty).toHaveBeenCalledWith("--pixi-left", "90px");
+    mounted.update(baseCells, baseBounds, 100, 100, overflowAssets);
+    expect(background.renderer.resize).toHaveBeenCalledTimes(1);
+    mounted.update(baseCells, baseBounds, 100, 100, EMPTY_ASSETS);
+    expect(background.renderer.resize).toHaveBeenLastCalledWith(100, 100);
+    expect(background.stage.position.set).toHaveBeenLastCalledWith(-0, -0);
+    expect(instances).toHaveLength(before + 2);
+    expect(host.appendChild).toHaveBeenCalledTimes(1);
+    expect(foregroundHost.appendChild).toHaveBeenCalledTimes(1);
+    mounted.dispose();
+  });
+});
+
+
+describe("individual fortress assets and outside transitions", () => {
+  it.each(["base", "base_core_third_party", "base_front_wall", "base_front_wall_third_party",
+    "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4"] as const)(
+    "tracks %s import, independent Reset and replacement dimensions", (key) => {
+      const thirdParty = key === "base_core_third_party" || key === "base_front_wall_third_party";
+      const group: PixiBaseGroup = { ...ownedBase, thirdParty,
+        coreAssetKey: thirdParty ? "base_core_third_party" : "base",
+        flagAssetKey: key.startsWith("base_flag") ? key as PixiBaseGroup["flagAssetKey"] : undefined };
+      const cells = baseCells.map((cell) => ({ ...cell, baseGroup: cell.baseGroup ? group : undefined }));
+      const asset = { image, width: 96, height: 192, name: key, scale: 3, offsetX: -96, offsetY: -96 };
+      const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: { [key as TileAssetKey]: asset } };
+      expect(pixiBoardExtent(cells, baseBounds, 100, 100, snapshot)).toMatchObject({ left: -70, top: -60, width: 240, height: 480 });
+      expect(pixiBoardExtent(cells, baseBounds, 100, 100, { ...snapshot, assets: {} })).toMatchObject({ width: 100, height: 100 });
+      const replaced = { ...snapshot, assets: { [key]: { ...asset, height: 96 } } };
+      expect(pixiBoardExtent(cells, baseBounds, 100, 100, replaced).height).toBe(240);
+    },
+  );
+
+  it("reuses outside Graphics and restores lake/road visuals when terrain changes", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([{ ...cell, kind: null }], bounds, EMPTY_ASSETS);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    expect(objects.outsideGraphics.visible).toBe(true);
+    expect(objects.faceGraphics.visible).toBe(false);
+    scene.update([{ ...cell, kind: "lake", southFace: false }], bounds, EMPTY_ASSETS);
+    expect(objects.outsideGraphics.visible).toBe(false);
+    expect(objects.groundGraphics.visible).toBe(true);
+    scene.update([cell], bounds, imported);
+    expect(objects.roadSprite.visible).toBe(true);
+    scene.update([{ ...cell, kind: null }], bounds, EMPTY_ASSETS);
+    expect(objects.outsideGraphics.visible).toBe(true);
+    expect(objects.roadSprite.visible).toBe(false);
+    expect(scene.getCellDisplayObjects("0,0")!.outsideGraphics).toBe(objects.outsideGraphics);
+    expect(objects.outsideGraphics.clear).toHaveBeenCalledTimes(1);
+    scene.update([], bounds, EMPTY_ASSETS);
+    expect(objects.outsideGraphics.visible).toBe(false);
   });
 });
