@@ -334,8 +334,8 @@ p {
   z-index: 2;
   left: 50%;
   top: 50%;
-  width: 52px;
-  height: 52px;
+  width: 128px;
+  height: 128px;
   transform: translate(-50%, -58%);
   overflow: hidden;
   pointer-events: none;
@@ -345,7 +345,7 @@ p {
   position: absolute;
   inset: 0;
   background-repeat: no-repeat;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 
 .directional-unit-sprite-asset-probe {

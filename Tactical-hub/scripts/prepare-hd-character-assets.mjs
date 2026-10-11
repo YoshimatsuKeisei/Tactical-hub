@@ -31,7 +31,7 @@ export const DEFAULT_HD_CHARACTER_ZIP = path.join(packageRoot, "2D HD Character 
 export const DEFAULT_HD_CHARACTER_OUTPUT = path.join(packageRoot, "public", "local-assets", "hd-character");
 
 function archivePath(character, filename) {
-  return `2D HD Character pack 1 V1.2/Spritesheets/With shadow/${character}/${filename}`;
+  return `Spritesheets/With shadow/${character}/${filename}`;
 }
 
 export function getRequiredHdCharacterEntries() {

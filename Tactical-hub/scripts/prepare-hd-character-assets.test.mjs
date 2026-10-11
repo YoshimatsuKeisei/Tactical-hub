@@ -62,6 +62,8 @@ describe("HD Character local asset preparation", () => {
       "7DeathKnight": ["Idle.png", "Melee.png", "TakeDamage.png", "Die.png"],
     });
     expect(getRequiredHdCharacterEntries()).toHaveLength(16);
+    expect(getRequiredHdCharacterEntries().find((entry) => entry.character === "1Knight" && entry.filename === "Idle.png")?.archivePath)
+      .toBe("Spritesheets/With shadow/1Knight/Idle.png");
   });
 
   it("byte-copies exactly sixteen sheets plus the manifest", async () => {
