@@ -63,7 +63,7 @@ unchanged, which also provides a separate vertical value for future animation wo
 Turning it off restores the pre-shadow presentation without
 moving the road top or face. **Reset image** returns only the shadow to Graphics;
 **Reset shadow settings** restores its default controls, and **Reset All** restores
-all slots and shadow settings. Lakes remain beneath transparent
+all slots and shadow/highlight settings. Lakes remain beneath transparent
 bridge overlays. Bridge direction/start/middle/end and active obstacles follow
 the existing presentation adapter. South-face sprites are also hidden in Flat
 preview mode. A sidewall baked into a road PNG
@@ -84,6 +84,18 @@ scroll/resize/click overhangs, toggle CSS/Pixi and shapes/images, close/reopen e
 view while loading, and verify no renewed flicker. GPU rendering/resource behavior
 and browser visuals remain manual checks. No production images are supplied.
 
+The same DEV panel also controls movement overlays for the real Pixi board.
+Normal units use a darkened version of their team color; ninja use a team-independent
+black/gray value. Each style has an enable switch plus separate top and south-face
+opacity, with `darken` for normal units and `gray` for ninja. The overlay appears
+only for legal destinations while a unit is selected in `movement_input`, and it
+is removed when selection or phase changes. A south-face overlay is drawn only
+when that terrain cell already has an exposed south face. These are presentation
+settings outside `GameState`; movement legality still comes from the existing
+movement engine. The selected token receives a small ring/glow in the same resolved
+color. **Reset normal highlight**, **Reset ninja highlight**, and **Reset All**
+restore their respective defaults.
+
 ## DEV real-board PixiJS terrain (hybrid experiment)
 
 On the game board, **Terrain renderer (DEV)** starts at **CSS (default)**.
@@ -102,10 +114,14 @@ flicker. Both views now use the common Graphics/Sprite scene. The direct cause
 of the former Tilemap/atlas issue remains unconfirmed.
 
 Canvas positioning uses measured HTML tile rectangles, including fractional
-sizes and gaps. A ResizeObserver updates it when layout changes; canvas and
+sizes. Pixi mode removes the visual grid gap and Graphics terrain outlines so
+road/lake artwork meets without permanent white cell lines; CSS mode keeps its
+existing layout. A ResizeObserver updates the Canvas when layout changes; canvas and
 buttons share the same scrolling parent. Canvas has no pointer events. Existing
-HTML unit/tile callbacks, keyboard focus, movement/attack selection, construction
-preview, and highlights remain the interaction layer.
+HTML unit/tile callbacks, keyboard focus, attack selection, and construction
+preview remain the interaction layer. Pixi movement destinations use persistent
+top/south-face Graphics overlays while their HTML buttons retain the original
+click handlers and logical coordinates.
 
 **Hybrid limitation:** every HTML character and highlight is above the complete
 Pixi terrain scene. Bridges/obstacles cannot correctly occlude character parts,

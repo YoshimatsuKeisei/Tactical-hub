@@ -27,6 +27,20 @@ export interface RoadSouthShadowSettings {
   offsetX: number;
   offsetY: number;
 }
+export interface MoveHighlightSettings {
+  normal: {
+    enabled: boolean;
+    topOpacity: number;
+    southFaceOpacity: number;
+    darken: number;
+  };
+  ninja: {
+    enabled: boolean;
+    topOpacity: number;
+    southFaceOpacity: number;
+    gray: number;
+  };
+}
 interface LegacyRoadSouthShadowSettings extends AssetAdjustment { enabled: boolean; opacity: number }
 export interface TileAsset extends AssetAdjustment {
   image: HTMLImageElement; name: string; width: number; height: number;
@@ -37,6 +51,7 @@ export interface AssetSnapshot {
   assets: Partial<Record<TileAssetKey, TileAsset>>;
   statuses: Partial<Record<TileAssetKey, string>>;
   roadSouthShadow?: RoadSouthShadowSettings | LegacyRoadSouthShadowSettings;
+  moveHighlight?: MoveHighlightSettings;
 }
 export const DEFAULT_ADJUSTMENT: AssetAdjustment = { scale: 1, offsetX: 0, offsetY: 0 };
 export const DEFAULT_ROAD_SOUTH_SHADOW: RoadSouthShadowSettings = {
@@ -47,11 +62,16 @@ export const DEFAULT_ROAD_SOUTH_SHADOW: RoadSouthShadowSettings = {
   offsetX: 0,
   offsetY: 0,
 };
+export const DEFAULT_MOVE_HIGHLIGHT: MoveHighlightSettings = {
+  normal: { enabled: true, topOpacity: 0.28, southFaceOpacity: 0.36, darken: 0.28 },
+  ninja: { enabled: true, topOpacity: 0.26, southFaceOpacity: 0.34, gray: 48 },
+};
 export const EMPTY_ASSETS: AssetSnapshot = {
   enabled: false,
   assets: {},
   statuses: {},
   roadSouthShadow: DEFAULT_ROAD_SOUTH_SHADOW,
+  moveHighlight: DEFAULT_MOVE_HIGHLIGHT,
 };
 export function roadSouthShadowSettings(snapshot: AssetSnapshot): RoadSouthShadowSettings {
   const settings = snapshot.roadSouthShadow;
@@ -61,6 +81,9 @@ export function roadSouthShadowSettings(snapshot: AssetSnapshot): RoadSouthShado
     return { ...rest, scaleX: scale, scaleY: scale };
   }
   return settings;
+}
+export function moveHighlightSettings(snapshot: AssetSnapshot): MoveHighlightSettings {
+  return snapshot.moveHighlight ?? DEFAULT_MOVE_HIGHLIGHT;
 }
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 export async function decodeTilePng(file: File, signal?: AbortSignal): Promise<TileAsset> {
@@ -112,6 +135,28 @@ export class TileAssetStore {
   }
   resetRoadSouthShadowSettings() {
     this.publish({ ...this.snapshot, roadSouthShadow: DEFAULT_ROAD_SOUTH_SHADOW });
+  }
+  adjustMoveHighlight<K extends keyof MoveHighlightSettings>(kind: K, change: Partial<MoveHighlightSettings[K]>) {
+    const current = moveHighlightSettings(this.snapshot);
+    const next = { ...current[kind], ...change };
+    next.topOpacity = Math.min(1, Math.max(0, next.topOpacity));
+    next.southFaceOpacity = Math.min(1, Math.max(0, next.southFaceOpacity));
+    if (kind === "normal") {
+      (next as MoveHighlightSettings["normal"]).darken = Math.min(0.85, Math.max(0, (next as MoveHighlightSettings["normal"]).darken));
+    } else {
+      (next as MoveHighlightSettings["ninja"]).gray = Math.round(Math.min(160, Math.max(0, (next as MoveHighlightSettings["ninja"]).gray)));
+    }
+    this.publish({ ...this.snapshot, moveHighlight: { ...current, [kind]: next } as MoveHighlightSettings });
+  }
+  resetMoveHighlightSettings(kind?: keyof MoveHighlightSettings) {
+    if (!kind) {
+      this.publish({ ...this.snapshot, moveHighlight: DEFAULT_MOVE_HIGHLIGHT });
+      return;
+    }
+    this.publish({
+      ...this.snapshot,
+      moveHighlight: { ...moveHighlightSettings(this.snapshot), [kind]: DEFAULT_MOVE_HIGHLIGHT[kind] },
+    });
   }
   adjustRoadSouthShadow(change: Partial<RoadSouthShadowSettings>) {
     const next = { ...roadSouthShadowSettings(this.snapshot), ...change };

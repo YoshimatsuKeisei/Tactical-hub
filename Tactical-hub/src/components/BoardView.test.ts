@@ -3,7 +3,7 @@ import { UNIT_STATS } from "../game/constants";
 import { getMovementCandidates } from "../game/engine/movement";
 import { createInitialGameState } from "../game/initialState";
 import type { Unit } from "../game/types";
-import { getMovementCandidateByBoardCell } from "./BoardView";
+import { getMovementCandidateByBoardCell, getMovementHighlightTileKeys } from "./BoardView";
 
 describe("BoardView movement candidate mapping", () => {
   it("maps a horizontally adjacent bridge candidate to its rendered board cell", () => {
@@ -46,5 +46,14 @@ describe("BoardView movement candidate mapping", () => {
       bridgeId: "horizontal-bridge",
       cellIndex: 0,
     });
+    expect(getMovementHighlightTileKeys(state, candidates).has("4,3")).toBe(true);
+  });
+
+  it("expands a legal base destination to its rendered base cells without adding other cells", () => {
+    const state = createInitialGameState();
+    const base = state.bases[0];
+    const candidate = { kind: "base" as const, baseId: base.id, slotId: base.slots[0].id };
+    const keys = getMovementHighlightTileKeys(state, [candidate]);
+    expect(keys).toEqual(new Set(base.coords.map((coord) => `${coord.x},${coord.y}`)));
   });
 });

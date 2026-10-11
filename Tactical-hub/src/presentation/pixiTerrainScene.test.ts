@@ -20,7 +20,7 @@ vi.mock("pixi.js", () => {
     destroy = vi.fn();
     rect = vi.fn(() => this);
     fill() { return this; }
-    stroke() { return this; }
+    stroke = vi.fn(() => this);
     moveTo() { return this; }
     lineTo() { return this; }
   }
@@ -56,6 +56,48 @@ const cell = { x: 0, y: 0, kind: "road" as const, southFace: true, bridge: null,
 const bounds = new Map([["0,0", { x: 0, y: 0, width: 48, height: 48 }]]);
 
 describe("persistent Pixi terrain scene", () => {
+  it("draws normal fallback terrain without permanent white grid strokes", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([
+      { ...cell, southFace: false },
+      { ...cell, x: 1, kind: "lake" as const, southFace: false },
+    ], new Map([
+      ["0,0", { x: 0, y: 0, width: 48, height: 48 }],
+      ["1,0", { x: 48, y: 0, width: 48, height: 48 }],
+    ]), EMPTY_ASSETS);
+    expect(scene.getCellDisplayObjects("0,0")!.roadGraphics.stroke).not.toHaveBeenCalled();
+    expect(scene.getCellDisplayObjects("1,0")!.groundGraphics.stroke).not.toHaveBeenCalled();
+  });
+
+  it("updates legal-move top and south-face overlays in place and clears them with selection", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    const highlighted = {
+      ...cell,
+      moveHighlight: { enabled: true, color: 0x772929, cssColor: "#772929", topOpacity: 0.25, southFaceOpacity: 0.4 },
+    };
+    scene.update([highlighted], bounds, EMPTY_ASSETS, true);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    const top = objects.topHighlightGraphics, face = objects.faceHighlightGraphics;
+    expect(top.visible).toBe(true);
+    expect(top.alpha).toBe(0.25);
+    expect(top.rect).toHaveBeenLastCalledWith(0, 0, 48, 48);
+    expect(face.visible).toBe(true);
+    expect(face.alpha).toBe(0.4);
+    expect(face.rect).toHaveBeenLastCalledWith(0, 48, 48, 9.600000000000001);
+    const topClears = vi.mocked(top.clear).mock.calls.length;
+
+    scene.update([{ ...highlighted, moveHighlight: { ...highlighted.moveHighlight, topOpacity: 0.55 } }], bounds, EMPTY_ASSETS, true);
+    expect(scene.getCellDisplayObjects("0,0")!.topHighlightGraphics).toBe(top);
+    expect(top.alpha).toBe(0.55);
+    expect(top.clear).toHaveBeenCalledTimes(topClears);
+
+    scene.update([{ ...cell, southFace: false, moveHighlight: highlighted.moveHighlight }], bounds, EMPTY_ASSETS, true);
+    expect(top.visible).toBe(true);
+    expect(face.visible).toBe(false);
+    scene.update([cell], bounds, EMPTY_ASSETS, true);
+    expect(top.visible).toBe(false);
+    expect(face.visible).toBe(false);
+  });
   it("keeps the same scene, containers, and Sprite across unchanged updates", () => {
     const cache = new TerrainTextureCache();
     const scene = new PersistentTerrainScene(cache);

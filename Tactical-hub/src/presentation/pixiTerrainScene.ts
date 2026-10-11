@@ -117,11 +117,37 @@ class PersistentVisual {
   }
 }
 
+class PersistentOverlay {
+  readonly graphics = new Graphics();
+  private signature = "";
+
+  constructor(parent: Container) {
+    parent.addChild(this.graphics);
+    this.graphics.visible = false;
+  }
+
+  update(rect: CellBounds, color: number, opacity: number) {
+    this.graphics.alpha = Math.min(1, Math.max(0, opacity));
+    this.graphics.visible = this.graphics.alpha > 0;
+    const signature = `${rectSignature(rect)}:${color}`;
+    if (this.signature !== signature) {
+      this.graphics.clear();
+      this.graphics.rect(rect.x, rect.y, rect.width, rect.height).fill(color);
+      this.signature = signature;
+    }
+  }
+
+  hide() { this.graphics.visible = false; }
+  destroy() { this.graphics.destroy(); }
+}
+
 interface PersistentCell {
   ground: PersistentVisual;
   road: PersistentVisual;
   face: PersistentVisual;
   shadow: PersistentVisual;
+  topHighlight: PersistentOverlay;
+  faceHighlight: PersistentOverlay;
   bridge: PersistentVisual;
   obstacle: PersistentVisual;
   layer: Container;
@@ -152,6 +178,8 @@ export class PersistentTerrainScene {
       shadow: new PersistentVisual(this.shadowLayer),
       road: new PersistentVisual(layer),
       face: new PersistentVisual(layer),
+      topHighlight: new PersistentOverlay(layer),
+      faceHighlight: new PersistentOverlay(layer),
       bridge: new PersistentVisual(layer),
       obstacle: new PersistentVisual(layer),
       layer,
@@ -181,17 +209,18 @@ export class PersistentTerrainScene {
       if (cell.kind === "road") {
         node.ground.hide();
         node.road.update("road", rect, snapshot, this.cache, `road:${signature}`,
-          (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road).stroke({ color: 0x647066, width: 1 }));
+          (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road));
       } else {
         node.road.hide();
         node.ground.update(cell.kind, rect, snapshot, this.cache, `${cell.kind}:${signature}`,
-          (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS[cell.kind!]).stroke({ color: 0x647066, width: 1 }));
+          (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS[cell.kind!]));
       }
 
       const depth = raised ? Math.min(10, h * 0.2) : 0;
+      let displayedFace: CellBounds | undefined;
       if (raised && cell.southFace) {
         const faceRect = { ...rect, y: y + h, height: depth };
-        const displayedFace = node.face.update("road_south_face", faceRect, snapshot, this.cache, `face:${rectSignature(faceRect)}`,
+        displayedFace = node.face.update("road_south_face", faceRect, snapshot, this.cache, `face:${rectSignature(faceRect)}`,
           (g) => g.rect(x, y + h, w, depth).fill(0x4e544f));
         const shadow = roadSouthShadowSettings(snapshot);
         if (shadow.enabled) {
@@ -210,6 +239,15 @@ export class PersistentTerrainScene {
       } else {
         node.face.hide();
         node.shadow.hide();
+      }
+
+      if (cell.moveHighlight) {
+        node.topHighlight.update(rect, cell.moveHighlight.color, cell.moveHighlight.topOpacity);
+        if (displayedFace) node.faceHighlight.update(displayedFace, cell.moveHighlight.color, cell.moveHighlight.southFaceOpacity);
+        else node.faceHighlight.hide();
+      } else {
+        node.topHighlight.hide();
+        node.faceHighlight.hide();
       }
 
       if (cell.bridge) {
@@ -235,6 +273,8 @@ export class PersistentTerrainScene {
       roadGraphics: node.road.graphics, roadSprite: node.road.sprite,
       faceGraphics: node.face.graphics, faceSprite: node.face.sprite,
       shadowGraphics: node.shadow.graphics, shadowSprite: node.shadow.sprite,
+      topHighlightGraphics: node.topHighlight.graphics,
+      faceHighlightGraphics: node.faceHighlight.graphics,
       bridgeGraphics: node.bridge.graphics, bridgeSprite: node.bridge.sprite,
       obstacleGraphics: node.obstacle.graphics, obstacleSprite: node.obstacle.sprite,
     } : undefined;
@@ -247,6 +287,8 @@ export class PersistentTerrainScene {
     node.road.hide();
     node.face.hide();
     node.shadow.hide();
+    node.topHighlight.hide();
+    node.faceHighlight.hide();
     node.bridge.hide();
     node.obstacle.hide();
     node.layer.visible = false;
@@ -258,6 +300,8 @@ export class PersistentTerrainScene {
       node.road.destroy();
       node.face.destroy();
       node.shadow.destroy();
+      node.topHighlight.destroy();
+      node.faceHighlight.destroy();
       node.bridge.destroy();
       node.obstacle.destroy();
       node.layer.destroy({ children: false });

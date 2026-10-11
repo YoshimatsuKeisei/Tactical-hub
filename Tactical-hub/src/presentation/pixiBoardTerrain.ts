@@ -1,5 +1,6 @@
-import type { GameState, Tile } from "../game/types";
+import type { GameState, Tile, Unit } from "../game/types";
 import { getConstructionAt } from "../game/engine/construction";
+import type { MoveHighlightSettings } from "./tileAssets";
 
 export const TERRAIN_COLORS = { road: 0x999c96, base: 0xc6a253, lake: 0x338ac0 };
 export function pixiTerrainKind(terrain: Tile["terrain"]): keyof typeof TERRAIN_COLORS | null {
@@ -40,7 +41,49 @@ export function buildPixiBoardTerrain(state: GameState) {
     };
   });
 }
-export type PixiBoardTerrain = ReturnType<typeof buildPixiBoardTerrain>;
+type BuiltPixiBoardCell = ReturnType<typeof buildPixiBoardTerrain>[number];
+export interface PixiMoveHighlight {
+  enabled: boolean;
+  color: number;
+  cssColor: string;
+  topOpacity: number;
+  southFaceOpacity: number;
+}
+export type PixiBoardCell = BuiltPixiBoardCell & { moveHighlight?: PixiMoveHighlight };
+export type PixiBoardTerrain = PixiBoardCell[];
+
+function parseHexColor(value: string | undefined): number {
+  if (!value || !/^#[0-9a-f]{6}$/i.test(value)) return 0x777777;
+  return Number.parseInt(value.slice(1), 16);
+}
+
+function toCssColor(color: number) {
+  return `#${color.toString(16).padStart(6, "0")}`;
+}
+
+export function getMoveHighlightStyle(
+  unit: Pick<Unit, "type">,
+  teamColor: string | undefined,
+  settings: MoveHighlightSettings,
+): PixiMoveHighlight {
+  if (unit.type === "ninja") {
+    const gray = Math.round(Math.min(160, Math.max(0, settings.ninja.gray)));
+    const color = gray * 0x010101;
+    return { enabled: settings.ninja.enabled, color, cssColor: toCssColor(color), topOpacity: settings.ninja.topOpacity, southFaceOpacity: settings.ninja.southFaceOpacity };
+  }
+  const base = parseHexColor(teamColor), factor = 1 - Math.min(0.85, Math.max(0, settings.normal.darken));
+  const color = [16, 8, 0].reduce((result, shift) => result | Math.round(((base >> shift) & 0xff) * factor) << shift, 0);
+  return { enabled: settings.normal.enabled, color, cssColor: toCssColor(color), topOpacity: settings.normal.topOpacity, southFaceOpacity: settings.normal.southFaceOpacity };
+}
+
+export function applyMoveHighlights(
+  cells: readonly BuiltPixiBoardCell[],
+  highlightedKeys: ReadonlySet<string>,
+  style?: PixiMoveHighlight,
+): PixiBoardTerrain {
+  if (!style?.enabled || highlightedKeys.size === 0) return cells as PixiBoardTerrain;
+  return cells.map((cell) => highlightedKeys.has(`${cell.x},${cell.y}`) ? { ...cell, moveHighlight: style } : cell);
+}
 export interface CellBounds { x: number; y: number; width: number; height: number }
 export function relativeCellBounds(cell: CellBounds, board: Pick<CellBounds, "x" | "y">): CellBounds {
   return { x: cell.x - board.x, y: cell.y - board.y, width: cell.width, height: cell.height };

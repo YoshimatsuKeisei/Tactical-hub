@@ -1,5 +1,6 @@
 import { UNIT_STATS } from "../game/constants";
 import { isRetreating, type RetreatDirectionIndicator } from "../game/engine/retreat";
+import type { CSSProperties } from "react";
 import type { Team, Unit } from "../game/types";
 import { getHdCharacterForUnit } from "../presentation/hdCharacter";
 import { getHdEnemyCharacterForUnit } from "../presentation/hdEnemy";
@@ -12,6 +13,7 @@ type Props = {
   unit: Unit;
   team?: Team;
   selected?: boolean;
+  movementSelectionColor?: string;
   attackTarget?: boolean;
   attackReady?: boolean;
   attackComplete?: boolean;
@@ -31,15 +33,18 @@ const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], strin
   "up-left": "↖",
 };
 
-export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], visualEvents = [], onClick }: Props) {
+export function UnitToken({ unit, team, selected, movementSelectionColor, attackTarget, attackReady, attackComplete, retreatIndicators = [], visualEvents = [], onClick }: Props) {
   const spriteKind = getUnitSpriteKind(unit);
   const hdEnemyCharacter = getHdEnemyCharacterForUnit(unit);
   const hdCharacter = getHdCharacterForUnit(unit);
   const tokenLabel = `${team?.name ?? unit.ownerTeamId} ${unit.type} HP:${unit.hp}`;
   return (
     <button
-      className={`unit-token ${spriteKind ? "animated-unit-token" : ""} ${spriteKind === "catapult" ? "catapult-token" : ""} ${selected ? "selected" : ""} ${attackTarget ? "attack-target" : ""} ${attackReady ? "attack-ready" : ""} ${attackComplete ? "attack-complete" : ""}`}
-      style={{ background: spriteKind ? "transparent" : team?.color ?? "#777" }}
+      className={`unit-token ${spriteKind ? "animated-unit-token" : ""} ${spriteKind === "catapult" ? "catapult-token" : ""} ${selected ? "selected" : ""} ${movementSelectionColor ? "movement-selected" : ""} ${attackTarget ? "attack-target" : ""} ${attackReady ? "attack-ready" : ""} ${attackComplete ? "attack-complete" : ""}`}
+      style={{
+        background: spriteKind ? "transparent" : team?.color ?? "#777",
+        ...(movementSelectionColor ? { "--movement-selection-color": movementSelectionColor } as CSSProperties : {}),
+      }}
       title={tokenLabel}
       aria-label={tokenLabel}
       onClick={(event) => {

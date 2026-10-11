@@ -3,11 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createInitialGameState } from "../game/initialState";
 import { getConstructionAt } from "../game/engine/construction";
 import {
-  buildPixiBoardTerrain, isRaisedRoadTerrain, pixiTerrainKind, relativeCellBounds,
+  applyMoveHighlights, buildPixiBoardTerrain, getMoveHighlightStyle, isRaisedRoadTerrain, pixiTerrainKind, relativeCellBounds,
   shouldShowRoadSouthFace, TERRAIN_COLORS,
 } from "./pixiBoardTerrain";
+import { DEFAULT_MOVE_HIGHLIGHT } from "./tileAssets";
 import { TileView } from "../components/TileView";
 import { BoardView } from "../components/BoardView";
+import { UnitToken } from "../components/UnitToken";
 
 describe("real-map Pixi presentation adapter", () => {
   it("preserves every real-map coordinate and terrain without mutating state", () => {
@@ -35,6 +37,36 @@ describe("real-map Pixi presentation adapter", () => {
     expect(shouldShowRoadSouthFace("road", "outside")).toBe(true);
     expect(shouldShowRoadSouthFace("road")).toBe(true);
     expect(shouldShowRoadSouthFace("lake", "outside")).toBe(false);
+  });
+  it("uses a darkened team color for normal units and team-independent gray for ninja", () => {
+    const normal = getMoveHighlightStyle({ type: "cavalry" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);
+    expect(normal.color).toBe(0x9c3535);
+    expect(normal.cssColor).toBe("#9c3535");
+    const ninjaA = getMoveHighlightStyle({ type: "ninja" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);
+    const ninjaB = getMoveHighlightStyle({ type: "ninja" }, "#3e7bd8", DEFAULT_MOVE_HIGHLIGHT);
+    expect(ninjaA.color).toBe(0x303030);
+    expect(ninjaB).toEqual(ninjaA);
+  });
+  it("adds overlays only to legal keys without mutating terrain and removes them when disabled", () => {
+    const state = createInitialGameState(), original = buildPixiBoardTerrain(state);
+    const style = getMoveHighlightStyle({ type: "cavalry" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);
+    const key = `${original[0].x},${original[0].y}`;
+    const highlighted = applyMoveHighlights(original, new Set([key]), style);
+    expect(highlighted[0].moveHighlight).toBe(style);
+    expect(highlighted.slice(1).every((cell) => cell.moveHighlight === undefined)).toBe(true);
+    expect(original[0]).not.toHaveProperty("moveHighlight");
+    const disabled = applyMoveHighlights(original, new Set([key]), { ...style, enabled: false });
+    expect(disabled).toBe(original);
+    expect(applyMoveHighlights(original, new Set(), style)).toBe(original);
+  });
+  it("marks a movement-selected unit with the resolved presentation color", () => {
+    const html = renderToStaticMarkup(<UnitToken
+      unit={{ id: "u", ownerTeamId: "team-1", type: "ninja", hp: 1, position: { kind: "tile", x: 0, y: 0 }, statuses: [] }}
+      team={{ id: "team-1", name: "Red", color: "#d94a4a", status: "active", controlledBaseIds: [] }}
+      selected movementSelectionColor="#303030"
+    />);
+    expect(html).toContain("movement-selected");
+    expect(html).toContain("--movement-selection-color:#303030");
   });
   it("matches BoardView active construction lookup, including reset constructions", () => {
     const state = createInitialGameState();

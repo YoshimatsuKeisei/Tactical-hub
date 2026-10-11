@@ -12,7 +12,9 @@ import { UnitDeathOverlay } from "./UnitDeathOverlay";
 import { UnitToken } from "./UnitToken";
 import { useMemo, useRef, useState } from "react";
 import { PixiBoardTerrain } from "./PixiBoardTerrain";
-import { buildPixiBoardTerrain } from "../presentation/pixiBoardTerrain";
+import { applyMoveHighlights, buildPixiBoardTerrain, getMoveHighlightStyle } from "../presentation/pixiBoardTerrain";
+import { moveHighlightSettings } from "../presentation/tileAssets";
+import { useTileAssets } from "./TileAssetProvider";
 
 type Props = {
   state: GameState;
@@ -39,12 +41,21 @@ export function getMovementCandidateByBoardCell(
   return byCell;
 }
 
+export function getMovementHighlightTileKeys(state: GameState, candidates: UnitPosition[]) {
+  const direct = getMovementCandidateByBoardCell(state, candidates);
+  const baseIds = new Set(candidates.filter((candidate) => candidate.kind === "base").map((candidate) => candidate.baseId));
+  return new Set(state.map.tiles
+    .filter((tile) => direct.has(tileKey(tile.x, tile.y)) || Boolean(tile.baseId && baseIds.has(tile.baseId)))
+    .map((tile) => tileKey(tile.x, tile.y)));
+}
+
 export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [], deathOverlays = [] }: Props) {
   const [terrainMode, setTerrainMode] = useState("css");
   const [terrainError, setTerrainError] = useState("");
+  const { snapshot: assetSnapshot } = useTileAssets();
   const boardRef = useRef<HTMLDivElement>(null);
   const usePixi = (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV && terrainMode === "pixi";
-  const terrain = useMemo(() => usePixi ? buildPixiBoardTerrain(state) : [], [usePixi, state.map, state.constructions]);
+  const baseTerrain = useMemo(() => usePixi ? buildPixiBoardTerrain(state) : [], [usePixi, state.map, state.constructions]);
   const [hoveredBridge, setHoveredBridge] = useState<{ key: string; cells: { x: number; y: number }[] }>();
   const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
@@ -70,6 +81,11 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
     }
   }
   const candidateByCell = getMovementCandidateByBoardCell(state, selectedCandidates);
+  const moveHighlightStyle = selectedUnit && state.phase === "movement_input"
+    ? getMoveHighlightStyle(selectedUnit, state.teams.find((team) => team.id === selectedUnit.ownerTeamId)?.color, moveHighlightSettings(assetSnapshot))
+    : undefined;
+  const moveHighlightKeys = getMovementHighlightTileKeys(state, selectedCandidates);
+  const terrain = applyMoveHighlights(baseTerrain, moveHighlightKeys, moveHighlightStyle);
   const attackByUnitId = new Map(attackCandidates.map((candidate) => [candidate.unitId, candidate]));
   const savedAttackIds = new Set(state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).map((intent) => intent.attackerUnitId));
   const teamAttackers = state.phase === "attack_input" ? getTeamAttackCandidates(state, manualTeamId).filter((entry) => entry.targets.length > 0) : [];
@@ -123,7 +139,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
           <TileView
             key={`${tile.x}-${tile.y}`}
             tile={tile}
-            highlighted={Boolean(destination)}
+            highlighted={Boolean(destination) && !usePixi}
             attackHighlighted={Boolean(attackTarget)}
             encourageHighlighted={encourageAreaKeys.has(`${tile.x},${tile.y}`)}
             constructionPreview={previewKeys.has(`${tile.x},${tile.y}`) || constructionByTile.has(`${tile.x},${tile.y}`)}
@@ -143,6 +159,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 unit={boardUnit}
                 team={state.teams.find((team) => team.id === boardUnit.ownerTeamId)}
                 selected={boardUnit.id === selectedUnitId}
+                movementSelectionColor={boardUnit.id === selectedUnitId && state.phase === "movement_input" ? moveHighlightStyle?.cssColor : undefined}
                 attackTarget={attackByUnitId.has(boardUnit.id)}
                 attackReady={attackReadyIds.has(boardUnit.id)}
                 attackComplete={attackCompleteIds.has(boardUnit.id)}
@@ -160,6 +177,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 unit={baseUnit}
                 team={state.teams.find((team) => team.id === baseUnit.ownerTeamId)}
                 selected={baseUnit.id === selectedUnitId}
+                movementSelectionColor={baseUnit.id === selectedUnitId && state.phase === "movement_input" ? moveHighlightStyle?.cssColor : undefined}
                 attackTarget={attackByUnitId.has(baseUnit.id)}
                 attackReady={attackReadyIds.has(baseUnit.id)}
                 attackComplete={attackCompleteIds.has(baseUnit.id)}
