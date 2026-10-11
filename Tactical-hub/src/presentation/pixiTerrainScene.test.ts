@@ -143,6 +143,15 @@ describe("persistent Pixi terrain scene", () => {
     expect(shadowRects[1][1]).toBeCloseTo(59.6);
     expect(shadowRects[2][1]).toBeCloseTo(61.6);
     expect(objects.faceGraphics.rect).toHaveBeenCalledWith(0, 48, 48, 9.600000000000001);
+
+    scene.update([cell], bounds, {
+      ...EMPTY_ASSETS,
+      roadSouthShadow: { enabled: true, opacity: 0.24, scaleX: 2, scaleY: 0.5, offsetX: 0, offsetY: 0 },
+    }, true);
+    const resizedRects = vi.mocked(objects.shadowGraphics.rect).mock.calls.slice(-3);
+    expect(resizedRects[0][2]).toBe(96);
+    expect(resizedRects[0][3]).toBeCloseTo(1);
+    expect(resizedRects[2][1]).toBeCloseTo(59.6);
   });
 
   it("reuses the shadow Sprite and Texture across opacity, position, and enable changes", () => {
@@ -154,7 +163,7 @@ describe("persistent Pixi terrain scene", () => {
         road_south_face: { image, width: 48, height: 10, name: "face.png", ...DEFAULT_ADJUSTMENT },
         road_south_shadow: { image: shadowImage, width: 48, height: 6, name: "shadow.png", ...DEFAULT_ADJUSTMENT },
       },
-      roadSouthShadow: { enabled: true, opacity: 0.3, scale: 1, offsetX: 0, offsetY: 0 },
+      roadSouthShadow: { enabled: true, opacity: 0.3, scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
     };
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     scene.update([cell], bounds, snapshot, true);
@@ -169,13 +178,15 @@ describe("persistent Pixi terrain scene", () => {
 
     const adjusted: AssetSnapshot = {
       ...snapshot,
-      roadSouthShadow: { enabled: true, opacity: 0.4, scale: 1, offsetX: 2, offsetY: 3 },
+      roadSouthShadow: { enabled: true, opacity: 0.4, scaleX: 1.5, scaleY: 2, offsetX: 2, offsetY: 3 },
     };
     scene.update([cell], bounds, adjusted, true);
     expect(scene.getCellDisplayObjects("0,0")!.shadowSprite).toBe(shadowSprite);
     expect(shadowSprite.texture).toBe(shadowTexture);
     expect(shadowSprite.alpha).toBe(0.4);
     expect(shadowSprite.position.set).toHaveBeenLastCalledWith(2, 61);
+    expect(shadowSprite.width).toBe(72);
+    expect(shadowSprite.height).toBe(12);
     expect(vi.mocked(objects.faceSprite.position.set).mock.calls.at(-1)).toEqual(facePosition);
     expect({ width: objects.faceSprite.width, height: objects.faceSprite.height }).toEqual(faceSize);
 

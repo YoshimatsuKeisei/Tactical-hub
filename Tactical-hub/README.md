@@ -56,8 +56,11 @@ uses exactly the same visibility result and starts at the bottom of the face tha
 is actually displayed. It is drawn above low terrain and behind the unchanged
 road/face/bridge/obstacle layers. With no shadow PNG, three unblurred Graphics bands
 fade toward the south; this avoids one BlurFilter per tile. The shadow settings work
-for both PNG and fallback: enable, opacity (default 0.24), scale, and X/Y offset are
-shared by both Pixi views. Turning it off restores the pre-shadow presentation without
+for both PNG and fallback: enable, opacity (default 0.24), scaleX, scaleY, and X/Y offset are
+shared by both Pixi views. Shadow sizing uses independent `scaleX` and `scaleY`
+controls; `scaleY` changes only its downward extent and leaves its horizontal span
+unchanged, which also provides a separate vertical value for future animation work.
+Turning it off restores the pre-shadow presentation without
 moving the road top or face. **Reset image** returns only the shadow to Graphics;
 **Reset shadow settings** restores its default controls, and **Reset All** restores
 all slots and shadow settings. Lakes remain beneath transparent

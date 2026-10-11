@@ -2,8 +2,8 @@ import { Container, Graphics, ImageSource, Sprite, Texture } from "pixi.js";
 import type { CellBounds, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { TERRAIN_COLORS } from "./pixiBoardTerrain";
 import {
-  assetPlacement, bridgeAssetKey, roadSouthShadowSettings, type AssetAdjustment,
-  type AssetSnapshot, type TileAssetKey,
+  assetPlacement, bridgeAssetKey, roadSouthShadowSettings, type AssetSnapshot,
+  type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
 } from "./tileAssets";
 
 // Each Canvas owns its GPU textures; only decoded CPU images are shared.
@@ -56,7 +56,10 @@ export class TerrainTextureCache {
 }
 
 type FallbackDraw = (graphics: Graphics) => void;
-interface VisualOptions { adjustment?: AssetAdjustment; opacity?: number }
+interface VisualOptions {
+  opacity?: number;
+  placement?: (asset: TileAsset, rect: CellBounds) => CellBounds;
+}
 
 class PersistentVisual {
   readonly graphics = new Graphics();
@@ -83,7 +86,7 @@ class PersistentVisual {
     this.sprite.alpha = opacity;
     this.graphics.alpha = opacity;
     if (asset && texture) {
-      const placement = assetPlacement(options.adjustment ? { ...asset, ...options.adjustment } : asset, rect);
+      const placement = options.placement ? options.placement(asset, rect) : assetPlacement(asset, rect);
       this.sprite.texture = texture;
       this.sprite.position.set(placement.x, placement.y);
       this.sprite.width = placement.width;
@@ -201,7 +204,7 @@ export class PersistentTerrainScene {
             this.cache,
             `shadow:${rectSignature(fallbackRect)}`,
             (g) => drawRoadSouthShadow(g, fallbackRect),
-            { adjustment: shadow, opacity: shadow.opacity },
+            { placement: (asset, rect) => roadSouthShadowAssetPlacement(asset, rect, shadow), opacity: shadow.opacity },
           );
         } else node.shadow.hide();
       } else {
@@ -276,13 +279,27 @@ export function roadSouthShadowAnchor(face: CellBounds, cellHeight: number): Cel
   };
 }
 
-export function adjustedShadowRect(anchor: CellBounds, adjustment: AssetAdjustment): CellBounds {
+export function adjustedShadowRect(anchor: CellBounds, settings: RoadSouthShadowSettings): CellBounds {
   const unit = anchor.width / 48;
   return {
-    x: anchor.x + adjustment.offsetX * unit,
-    y: anchor.y + adjustment.offsetY * unit,
-    width: anchor.width * adjustment.scale,
-    height: anchor.height * adjustment.scale,
+    x: anchor.x + settings.offsetX * unit,
+    y: anchor.y + settings.offsetY * unit,
+    width: anchor.width * settings.scaleX,
+    height: anchor.height * settings.scaleY,
+  };
+}
+
+export function roadSouthShadowAssetPlacement(
+  asset: Pick<TileAsset, "width" | "height">,
+  anchor: CellBounds,
+  settings: RoadSouthShadowSettings,
+): CellBounds {
+  const unit = anchor.width / 48;
+  return {
+    x: anchor.x + settings.offsetX * unit,
+    y: anchor.y + settings.offsetY * unit,
+    width: anchor.width * settings.scaleX,
+    height: anchor.width * asset.height / asset.width * settings.scaleY,
   };
 }
 

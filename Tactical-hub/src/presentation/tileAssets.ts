@@ -19,7 +19,15 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   bridge_vertical_end: "Bridge vertical end",
 };
 export interface AssetAdjustment { scale: number; offsetX: number; offsetY: number }
-export interface RoadSouthShadowSettings extends AssetAdjustment { enabled: boolean; opacity: number }
+export interface RoadSouthShadowSettings {
+  enabled: boolean;
+  opacity: number;
+  scaleX: number;
+  scaleY: number;
+  offsetX: number;
+  offsetY: number;
+}
+interface LegacyRoadSouthShadowSettings extends AssetAdjustment { enabled: boolean; opacity: number }
 export interface TileAsset extends AssetAdjustment {
   image: HTMLImageElement; name: string; width: number; height: number;
 }
@@ -28,13 +36,16 @@ export interface AssetSnapshot {
   renderError?: string;
   assets: Partial<Record<TileAssetKey, TileAsset>>;
   statuses: Partial<Record<TileAssetKey, string>>;
-  roadSouthShadow?: RoadSouthShadowSettings;
+  roadSouthShadow?: RoadSouthShadowSettings | LegacyRoadSouthShadowSettings;
 }
 export const DEFAULT_ADJUSTMENT: AssetAdjustment = { scale: 1, offsetX: 0, offsetY: 0 };
 export const DEFAULT_ROAD_SOUTH_SHADOW: RoadSouthShadowSettings = {
-  ...DEFAULT_ADJUSTMENT,
   enabled: true,
   opacity: 0.24,
+  scaleX: 1,
+  scaleY: 1,
+  offsetX: 0,
+  offsetY: 0,
 };
 export const EMPTY_ASSETS: AssetSnapshot = {
   enabled: false,
@@ -43,7 +54,13 @@ export const EMPTY_ASSETS: AssetSnapshot = {
   roadSouthShadow: DEFAULT_ROAD_SOUTH_SHADOW,
 };
 export function roadSouthShadowSettings(snapshot: AssetSnapshot): RoadSouthShadowSettings {
-  return snapshot.roadSouthShadow ?? DEFAULT_ROAD_SOUTH_SHADOW;
+  const settings = snapshot.roadSouthShadow;
+  if (!settings) return DEFAULT_ROAD_SOUTH_SHADOW;
+  if ("scale" in settings) {
+    const { scale, ...rest } = settings;
+    return { ...rest, scaleX: scale, scaleY: scale };
+  }
+  return settings;
 }
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 export async function decodeTilePng(file: File, signal?: AbortSignal): Promise<TileAsset> {
@@ -96,6 +113,14 @@ export class TileAssetStore {
   resetRoadSouthShadowSettings() {
     this.publish({ ...this.snapshot, roadSouthShadow: DEFAULT_ROAD_SOUTH_SHADOW });
   }
+  adjustRoadSouthShadow(change: Partial<RoadSouthShadowSettings>) {
+    const next = { ...roadSouthShadowSettings(this.snapshot), ...change };
+    if (![next.opacity, next.scaleX, next.scaleY, next.offsetX, next.offsetY].every(Number.isFinite)) return;
+    next.opacity = Math.min(1, Math.max(0, next.opacity));
+    next.scaleX = Math.min(4, Math.max(0.1, next.scaleX));
+    next.scaleY = Math.min(4, Math.max(0.1, next.scaleY));
+    this.publish({ ...this.snapshot, roadSouthShadow: next });
+  }
   async importFile(key: TileAssetKey, file: File) {
     const version = this.versions[key] = (this.versions[key] ?? 0) + 1;
     this.pending.get(key)?.abort();
@@ -112,10 +137,12 @@ export class TileAssetStore {
   }
   adjust(key: TileAssetKey, change: Partial<AssetAdjustment>) {
     if (key === "road_south_shadow") {
-      const next = { ...roadSouthShadowSettings(this.snapshot), ...change };
-      if (![next.scale, next.offsetX, next.offsetY].every(Number.isFinite)) return;
-      next.scale = Math.min(4, Math.max(0.1, next.scale));
-      this.publish({ ...this.snapshot, roadSouthShadow: next });
+      const { scale, offsetX, offsetY } = change;
+      this.adjustRoadSouthShadow({
+        ...(scale === undefined ? {} : { scaleX: scale, scaleY: scale }),
+        ...(offsetX === undefined ? {} : { offsetX }),
+        ...(offsetY === undefined ? {} : { offsetY }),
+      });
       return;
     }
     const asset = this.snapshot.assets[key];

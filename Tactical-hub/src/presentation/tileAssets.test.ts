@@ -83,14 +83,23 @@ describe("shared browser-only tile assets", () => {
     expect(roadSouthShadowSettings(store.getSnapshot())).toEqual(DEFAULT_ROAD_SOUTH_SHADOW);
     store.setRoadSouthShadowEnabled(false);
     store.setRoadSouthShadowOpacity(0.35);
-    store.adjust("road_south_shadow", { scale: 1.25, offsetX: -2, offsetY: 5 });
+    store.adjustRoadSouthShadow({ scaleX: 1.25, scaleY: 0.75, offsetX: -2, offsetY: 5 });
     expect(roadSouthShadowSettings(store.getSnapshot())).toEqual({
-      enabled: false, opacity: 0.35, scale: 1.25, offsetX: -2, offsetY: 5,
+      enabled: false, opacity: 0.35, scaleX: 1.25, scaleY: 0.75, offsetX: -2, offsetY: 5,
     });
     store.setRoadSouthShadowOpacity(2);
     expect(roadSouthShadowSettings(store.getSnapshot()).opacity).toBe(1);
     store.resetRoadSouthShadowSettings();
     expect(roadSouthShadowSettings(store.getSnapshot())).toEqual(DEFAULT_ROAD_SOUTH_SHADOW);
+  });
+  it("maps a legacy uniform shadow scale to both independent axes", () => {
+    const snapshot = {
+      ...EMPTY_ASSETS,
+      roadSouthShadow: { enabled: true, opacity: 0.2, scale: 1.5, offsetX: 2, offsetY: 3 },
+    };
+    expect(roadSouthShadowSettings(snapshot)).toEqual({
+      enabled: true, opacity: 0.2, scaleX: 1.5, scaleY: 1.5, offsetX: 2, offsetY: 3,
+    });
   });
   it("imports and resets the shadow PNG independently from its fallback settings", async () => {
     const store = new TileAssetStore(async () => asset("shadow.png"));

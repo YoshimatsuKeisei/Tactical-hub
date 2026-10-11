@@ -22,7 +22,6 @@ export function TileAssetImportPanel() {
         const asset = snapshot.assets[key];
         const isShadow = key === "road_south_shadow";
         const shadowSettings = roadSouthShadowSettings(snapshot);
-        const adjustment = isShadow ? shadowSettings : asset;
         return <fieldset key={key}>
           <legend>{TILE_ASSET_LABELS[key]}{key === "road_south_face" || isShadow ? " (透過PNG・任意)" : ""}</legend>
           {isShadow && <label>
@@ -35,18 +34,23 @@ export function TileAssetImportPanel() {
           }} />
           <span role="status">{snapshot.statuses[key] ?? "未設定：仮図形"}{asset ? ` — ${asset.name} ${asset.width}×${asset.height}` : ""}</span>
           <button type="button" onClick={() => store?.reset(key)}>Reset image</button>
-          {adjustment && <div>
-            {(["scale", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
-              <input type="number" aria-label={`${key} ${property}`} step={property === "scale" ? 0.1 : 1} min={property === "scale" ? 0.1 : undefined} max={property === "scale" ? 4 : undefined}
-                value={adjustment[property]} onChange={(event) => { if (event.target.value !== "") store?.adjust(key, { [property]: Number(event.target.value) }); }} />
+          {isShadow ? <div>
+            {(["scaleX", "scaleY", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
+              <input type="number" aria-label={`${key} ${property}`} step={property === "scaleX" || property === "scaleY" ? 0.1 : 1}
+                min={property === "scaleX" || property === "scaleY" ? 0.1 : undefined} max={property === "scaleX" || property === "scaleY" ? 4 : undefined}
+                value={shadowSettings[property]} onChange={(event) => { if (event.target.value !== "") store?.adjustRoadSouthShadow({ [property]: Number(event.target.value) }); }} />
             </label>)}
-            {isShadow && <label>opacity
+            <label>opacity
               <input type="number" aria-label="road_south_shadow opacity" step={0.05} min={0} max={1}
                 value={shadowSettings.opacity} onChange={(event) => { if (event.target.value !== "") store?.setRoadSouthShadowOpacity(Number(event.target.value)); }} />
-            </label>}
-            <button type="button" onClick={() => isShadow ? store?.resetRoadSouthShadowSettings() : store?.adjust(key, DEFAULT_ADJUSTMENT)}>
-              {isShadow ? "Reset shadow settings" : "Reset adjustment"}
-            </button>
+            </label>
+            <button type="button" onClick={() => store?.resetRoadSouthShadowSettings()}>Reset shadow settings</button>
+          </div> : asset && <div>
+            {(["scale", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
+              <input type="number" aria-label={`${key} ${property}`} step={property === "scale" ? 0.1 : 1} min={property === "scale" ? 0.1 : undefined} max={property === "scale" ? 4 : undefined}
+                value={asset[property]} onChange={(event) => { if (event.target.value !== "") store?.adjust(key, { [property]: Number(event.target.value) }); }} />
+            </label>)}
+            <button type="button" onClick={() => store?.adjust(key, DEFAULT_ADJUSTMENT)}>Reset adjustment</button>
           </div>}
         </fieldset>;
       })}
