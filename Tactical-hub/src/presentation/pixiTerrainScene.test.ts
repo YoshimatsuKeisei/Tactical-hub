@@ -21,8 +21,8 @@ vi.mock("pixi.js", () => {
     rect = vi.fn(() => this);
     fill() { return this; }
     stroke = vi.fn(() => this);
-    moveTo() { return this; }
-    lineTo() { return this; }
+    moveTo = vi.fn(() => this);
+    lineTo = vi.fn(() => this);
   }
   class ImageSource { constructor(public options: unknown) {} }
   class Texture {
@@ -43,7 +43,7 @@ vi.mock("pixi.js", () => {
   return { Container, Graphics, ImageSource, Texture, Sprite };
 });
 
-import { PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
+import { movementOutlineEdges, PersistentTerrainScene, TerrainTextureCache } from "./pixiTerrainScene";
 import { Sprite, Texture } from "pixi.js";
 
 const image = {} as HTMLImageElement;
@@ -73,23 +73,40 @@ describe("persistent Pixi terrain scene", () => {
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     const highlighted = {
       ...cell,
-      moveHighlight: { enabled: true, color: 0x772929, cssColor: "#772929", topOpacity: 0.25, southFaceOpacity: 0.4 },
+      moveHighlight: {
+        enabled: true, color: 0x772929, cssColor: "#772929", topOpacity: 0.25, southFaceOpacity: 0.4,
+        outlineEnabled: true, outlineColor: 0xb56f6f, outlineOpacity: 0.6,
+      },
     };
     scene.update([highlighted], bounds, EMPTY_ASSETS, true);
     const objects = scene.getCellDisplayObjects("0,0")!;
-    const top = objects.topHighlightGraphics, face = objects.faceHighlightGraphics;
+    const top = objects.topHighlightGraphics, face = objects.faceHighlightGraphics, outline = objects.topOutlineGraphics;
     expect(top.visible).toBe(true);
     expect(top.alpha).toBe(0.25);
     expect(top.rect).toHaveBeenLastCalledWith(0, 0, 48, 48);
     expect(face.visible).toBe(true);
     expect(face.alpha).toBe(0.4);
     expect(face.rect).toHaveBeenLastCalledWith(0, 48, 48, 9.600000000000001);
+    expect(outline.visible).toBe(true);
+    expect(outline.alpha).toBe(0.6);
+    expect(outline.stroke).toHaveBeenLastCalledWith({ color: 0xb56f6f, width: 1 });
+    expect(outline.moveTo).toHaveBeenCalledTimes(4);
+    expect(face.stroke).not.toHaveBeenCalled();
+    expect(objects.shadowGraphics.stroke).not.toHaveBeenCalled();
     const topClears = vi.mocked(top.clear).mock.calls.length;
+    const outlineClears = vi.mocked(outline.clear).mock.calls.length;
 
-    scene.update([{ ...highlighted, moveHighlight: { ...highlighted.moveHighlight, topOpacity: 0.55 } }], bounds, EMPTY_ASSETS, true);
+    scene.update([{ ...highlighted, moveHighlight: { ...highlighted.moveHighlight, topOpacity: 0.55, outlineOpacity: 0.25 } }], bounds, EMPTY_ASSETS, true);
     expect(scene.getCellDisplayObjects("0,0")!.topHighlightGraphics).toBe(top);
+    expect(scene.getCellDisplayObjects("0,0")!.topOutlineGraphics).toBe(outline);
     expect(top.alpha).toBe(0.55);
     expect(top.clear).toHaveBeenCalledTimes(topClears);
+    expect(outline.alpha).toBe(0.25);
+    expect(outline.clear).toHaveBeenCalledTimes(outlineClears);
+
+    scene.update([{ ...highlighted, moveHighlight: { ...highlighted.moveHighlight, outlineEnabled: false } }], bounds, EMPTY_ASSETS, true);
+    expect(top.visible).toBe(true);
+    expect(outline.visible).toBe(false);
 
     scene.update([{ ...cell, southFace: false, moveHighlight: highlighted.moveHighlight }], bounds, EMPTY_ASSETS, true);
     expect(top.visible).toBe(true);
@@ -97,6 +114,22 @@ describe("persistent Pixi terrain scene", () => {
     scene.update([cell], bounds, EMPTY_ASSETS, true);
     expect(top.visible).toBe(false);
     expect(face.visible).toBe(false);
+    expect(outline.visible).toBe(false);
+  });
+
+  it("assigns every shared candidate edge to one cell without losing internal boundaries", () => {
+    const keys = new Set(["0,0", "1,0", "0,1", "1,1"]);
+    expect(movementOutlineEdges(0, 0, keys)).toEqual({ top: true, right: false, bottom: false, left: true });
+    expect(movementOutlineEdges(1, 0, keys)).toEqual({ top: true, right: true, bottom: false, left: true });
+    expect(movementOutlineEdges(0, 1, keys)).toEqual({ top: true, right: false, bottom: true, left: true });
+    expect(movementOutlineEdges(1, 1, keys)).toEqual({ top: true, right: true, bottom: true, left: true });
+
+    // The internal vertical edge is owned by the right cell's left edge; the
+    // internal horizontal edge is owned by the lower cell's top edge.
+    expect(movementOutlineEdges(0, 0, keys).right).toBe(false);
+    expect(movementOutlineEdges(1, 0, keys).left).toBe(true);
+    expect(movementOutlineEdges(0, 0, keys).bottom).toBe(false);
+    expect(movementOutlineEdges(0, 1, keys).top).toBe(true);
   });
   it("keeps the same scene, containers, and Sprite across unchanged updates", () => {
     const cache = new TerrainTextureCache();

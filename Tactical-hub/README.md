@@ -96,6 +96,17 @@ movement engine. The selected token receives a small ring/glow in the same resol
 color. **Reset normal highlight**, **Reset ninja highlight**, and **Reset All**
 restore their respective defaults.
 
+Legal destination tops also receive a one-CSS-pixel outline so adjacent highlighted
+cells remain individually readable while the normal terrain grid stays hidden.
+The outline color is calculated from the resolved fill color by blending toward
+white; it is therefore a lighter team color for normal units and a lighter gray
+for ninja. `apprentice_ninja` continues to use the normal team-color path. Normal
+and ninja settings independently expose outline enable, opacity (default `0.6`),
+and lighten factor (default `0.35`). Each cell owns its top and left edges; only
+cells on the east/south exterior own their right/bottom edges. This leaves every
+internal boundary visible without painting a shared edge twice. The outline is
+top-only: it does not extend onto the south face or south shadow.
+
 ## DEV real-board PixiJS terrain (hybrid experiment)
 
 On the game board, **Terrain renderer (DEV)** starts at **CSS (default)**.

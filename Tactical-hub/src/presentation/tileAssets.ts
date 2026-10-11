@@ -33,12 +33,18 @@ export interface MoveHighlightSettings {
     topOpacity: number;
     southFaceOpacity: number;
     darken: number;
+    outlineEnabled: boolean;
+    outlineOpacity: number;
+    outlineLighten: number;
   };
   ninja: {
     enabled: boolean;
     topOpacity: number;
     southFaceOpacity: number;
     gray: number;
+    outlineEnabled: boolean;
+    outlineOpacity: number;
+    outlineLighten: number;
   };
 }
 interface LegacyRoadSouthShadowSettings extends AssetAdjustment { enabled: boolean; opacity: number }
@@ -63,8 +69,14 @@ export const DEFAULT_ROAD_SOUTH_SHADOW: RoadSouthShadowSettings = {
   offsetY: 0,
 };
 export const DEFAULT_MOVE_HIGHLIGHT: MoveHighlightSettings = {
-  normal: { enabled: true, topOpacity: 0.28, southFaceOpacity: 0.36, darken: 0.28 },
-  ninja: { enabled: true, topOpacity: 0.26, southFaceOpacity: 0.34, gray: 48 },
+  normal: {
+    enabled: true, topOpacity: 0.28, southFaceOpacity: 0.36, darken: 0.28,
+    outlineEnabled: true, outlineOpacity: 0.6, outlineLighten: 0.35,
+  },
+  ninja: {
+    enabled: true, topOpacity: 0.26, southFaceOpacity: 0.34, gray: 48,
+    outlineEnabled: true, outlineOpacity: 0.6, outlineLighten: 0.35,
+  },
 };
 export const EMPTY_ASSETS: AssetSnapshot = {
   enabled: false,
@@ -141,6 +153,8 @@ export class TileAssetStore {
     const next = { ...current[kind], ...change };
     next.topOpacity = Math.min(1, Math.max(0, next.topOpacity));
     next.southFaceOpacity = Math.min(1, Math.max(0, next.southFaceOpacity));
+    next.outlineOpacity = Math.min(1, Math.max(0, next.outlineOpacity));
+    next.outlineLighten = Math.min(1, Math.max(0, next.outlineLighten));
     if (kind === "normal") {
       (next as MoveHighlightSettings["normal"]).darken = Math.min(0.85, Math.max(0, (next as MoveHighlightSettings["normal"]).darken));
     } else {

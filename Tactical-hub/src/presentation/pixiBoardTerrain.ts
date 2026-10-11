@@ -48,6 +48,9 @@ export interface PixiMoveHighlight {
   cssColor: string;
   topOpacity: number;
   southFaceOpacity: number;
+  outlineEnabled: boolean;
+  outlineColor: number;
+  outlineOpacity: number;
 }
 export type PixiBoardCell = BuiltPixiBoardCell & { moveHighlight?: PixiMoveHighlight };
 export type PixiBoardTerrain = PixiBoardCell[];
@@ -61,6 +64,14 @@ function toCssColor(color: number) {
   return `#${color.toString(16).padStart(6, "0")}`;
 }
 
+export function lightenColor(color: number, amount: number) {
+  const factor = Math.min(1, Math.max(0, amount));
+  return [16, 8, 0].reduce((result, shift) => {
+    const channel = (color >> shift) & 0xff;
+    return result | Math.round(channel + (255 - channel) * factor) << shift;
+  }, 0);
+}
+
 export function getMoveHighlightStyle(
   unit: Pick<Unit, "type">,
   teamColor: string | undefined,
@@ -69,11 +80,23 @@ export function getMoveHighlightStyle(
   if (unit.type === "ninja") {
     const gray = Math.round(Math.min(160, Math.max(0, settings.ninja.gray)));
     const color = gray * 0x010101;
-    return { enabled: settings.ninja.enabled, color, cssColor: toCssColor(color), topOpacity: settings.ninja.topOpacity, southFaceOpacity: settings.ninja.southFaceOpacity };
+    return {
+      enabled: settings.ninja.enabled, color, cssColor: toCssColor(color),
+      topOpacity: settings.ninja.topOpacity, southFaceOpacity: settings.ninja.southFaceOpacity,
+      outlineEnabled: settings.ninja.outlineEnabled,
+      outlineColor: lightenColor(color, settings.ninja.outlineLighten),
+      outlineOpacity: settings.ninja.outlineOpacity,
+    };
   }
   const base = parseHexColor(teamColor), factor = 1 - Math.min(0.85, Math.max(0, settings.normal.darken));
   const color = [16, 8, 0].reduce((result, shift) => result | Math.round(((base >> shift) & 0xff) * factor) << shift, 0);
-  return { enabled: settings.normal.enabled, color, cssColor: toCssColor(color), topOpacity: settings.normal.topOpacity, southFaceOpacity: settings.normal.southFaceOpacity };
+  return {
+    enabled: settings.normal.enabled, color, cssColor: toCssColor(color),
+    topOpacity: settings.normal.topOpacity, southFaceOpacity: settings.normal.southFaceOpacity,
+    outlineEnabled: settings.normal.outlineEnabled,
+    outlineColor: lightenColor(color, settings.normal.outlineLighten),
+    outlineOpacity: settings.normal.outlineOpacity,
+  };
 }
 
 export function applyMoveHighlights(

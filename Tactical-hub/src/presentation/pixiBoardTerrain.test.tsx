@@ -42,10 +42,21 @@ describe("real-map Pixi presentation adapter", () => {
     const normal = getMoveHighlightStyle({ type: "cavalry" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);
     expect(normal.color).toBe(0x9c3535);
     expect(normal.cssColor).toBe("#9c3535");
+    expect(normal.outlineColor).toBe(0xbf7c7c);
+    expect(normal.outlineOpacity).toBe(0.6);
     const ninjaA = getMoveHighlightStyle({ type: "ninja" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);
     const ninjaB = getMoveHighlightStyle({ type: "ninja" }, "#3e7bd8", DEFAULT_MOVE_HIGHLIGHT);
     expect(ninjaA.color).toBe(0x303030);
+    expect(ninjaA.outlineColor).toBe(0x787878);
     expect(ninjaB).toEqual(ninjaA);
+    const apprentice = getMoveHighlightStyle({ type: "apprentice_ninja" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);
+    expect(apprentice.color).toBe(normal.color);
+    expect(apprentice.outlineColor).toBe(normal.outlineColor);
+    const adjusted = getMoveHighlightStyle({ type: "cavalry" }, "#d94a4a", {
+      ...DEFAULT_MOVE_HIGHLIGHT,
+      normal: { ...DEFAULT_MOVE_HIGHLIGHT.normal, outlineEnabled: false, outlineOpacity: 0.2, outlineLighten: 0 },
+    });
+    expect(adjusted).toMatchObject({ outlineEnabled: false, outlineOpacity: 0.2, outlineColor: adjusted.color });
   });
   it("adds overlays only to legal keys without mutating terrain and removes them when disabled", () => {
     const state = createInitialGameState(), original = buildPixiBoardTerrain(state);

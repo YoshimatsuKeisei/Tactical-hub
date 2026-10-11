@@ -95,16 +95,31 @@ describe("shared browser-only tile assets", () => {
   it("keeps normal and ninja move-highlight controls independent and resettable", () => {
     const store = new TileAssetStore(async () => asset());
     expect(moveHighlightSettings(store.getSnapshot())).toEqual(DEFAULT_MOVE_HIGHLIGHT);
-    store.adjustMoveHighlight("normal", { enabled: false, topOpacity: 0.4, southFaceOpacity: 0.5, darken: 0.45 });
-    store.adjustMoveHighlight("ninja", { enabled: false, topOpacity: 0.2, southFaceOpacity: 0.3, gray: 72 });
-    expect(moveHighlightSettings(store.getSnapshot())).toEqual({
-      normal: { enabled: false, topOpacity: 0.4, southFaceOpacity: 0.5, darken: 0.45 },
-      ninja: { enabled: false, topOpacity: 0.2, southFaceOpacity: 0.3, gray: 72 },
+    store.adjustMoveHighlight("normal", {
+      enabled: false, topOpacity: 0.4, southFaceOpacity: 0.5, darken: 0.45,
+      outlineEnabled: false, outlineOpacity: 0.7, outlineLighten: 0.25,
     });
-    store.adjustMoveHighlight("normal", { topOpacity: 4, southFaceOpacity: -1, darken: 3 });
-    store.adjustMoveHighlight("ninja", { gray: 999 });
-    expect(moveHighlightSettings(store.getSnapshot()).normal).toMatchObject({ topOpacity: 1, southFaceOpacity: 0, darken: 0.85 });
+    store.adjustMoveHighlight("ninja", {
+      enabled: false, topOpacity: 0.2, southFaceOpacity: 0.3, gray: 72,
+      outlineEnabled: false, outlineOpacity: 0.8, outlineLighten: 0.45,
+    });
+    expect(moveHighlightSettings(store.getSnapshot())).toEqual({
+      normal: {
+        enabled: false, topOpacity: 0.4, southFaceOpacity: 0.5, darken: 0.45,
+        outlineEnabled: false, outlineOpacity: 0.7, outlineLighten: 0.25,
+      },
+      ninja: {
+        enabled: false, topOpacity: 0.2, southFaceOpacity: 0.3, gray: 72,
+        outlineEnabled: false, outlineOpacity: 0.8, outlineLighten: 0.45,
+      },
+    });
+    store.adjustMoveHighlight("normal", { topOpacity: 4, southFaceOpacity: -1, darken: 3, outlineOpacity: 2, outlineLighten: -1 });
+    store.adjustMoveHighlight("ninja", { gray: 999, outlineOpacity: -1, outlineLighten: 2 });
+    expect(moveHighlightSettings(store.getSnapshot()).normal).toMatchObject({
+      topOpacity: 1, southFaceOpacity: 0, darken: 0.85, outlineOpacity: 1, outlineLighten: 0,
+    });
     expect(moveHighlightSettings(store.getSnapshot()).ninja.gray).toBe(160);
+    expect(moveHighlightSettings(store.getSnapshot()).ninja).toMatchObject({ outlineOpacity: 0, outlineLighten: 1 });
     store.resetMoveHighlightSettings("normal");
     expect(moveHighlightSettings(store.getSnapshot()).normal).toEqual(DEFAULT_MOVE_HIGHLIGHT.normal);
     expect(moveHighlightSettings(store.getSnapshot()).ninja.gray).toBe(160);

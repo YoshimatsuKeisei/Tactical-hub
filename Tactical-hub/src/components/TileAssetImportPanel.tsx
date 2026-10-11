@@ -23,10 +23,12 @@ export function TileAssetImportPanel() {
         <legend>Normal unit move highlight / 通常ユニット移動強調</legend>
         <label><input type="checkbox" checked={moveHighlight.normal.enabled}
           onChange={(event) => store?.adjustMoveHighlight("normal", { enabled: event.target.checked })} /> 表示</label>
-        {(["topOpacity", "southFaceOpacity", "darken"] as const).map((property) => <label key={property}>{property}
+        {(["topOpacity", "southFaceOpacity", "darken", "outlineOpacity", "outlineLighten"] as const).map((property) => <label key={property}>{property}
           <input type="number" aria-label={`normal move highlight ${property}`} min={0} max={property === "darken" ? 0.85 : 1} step={0.05}
             value={moveHighlight.normal[property]} onChange={(event) => { if (event.target.value !== "") store?.adjustMoveHighlight("normal", { [property]: Number(event.target.value) }); }} />
         </label>)}
+        <label><input type="checkbox" checked={moveHighlight.normal.outlineEnabled}
+          onChange={(event) => store?.adjustMoveHighlight("normal", { outlineEnabled: event.target.checked })} /> 境界線を表示</label>
         <button type="button" onClick={() => store?.resetMoveHighlightSettings("normal")}>Reset normal highlight</button>
       </fieldset>
       <fieldset>
@@ -41,6 +43,12 @@ export function TileAssetImportPanel() {
           <input type="number" aria-label="ninja move highlight gray" min={0} max={160} step={4}
             value={moveHighlight.ninja.gray} onChange={(event) => { if (event.target.value !== "") store?.adjustMoveHighlight("ninja", { gray: Number(event.target.value) }); }} />
         </label>
+        {(["outlineOpacity", "outlineLighten"] as const).map((property) => <label key={property}>{property}
+          <input type="number" aria-label={`ninja move highlight ${property}`} min={0} max={1} step={0.05}
+            value={moveHighlight.ninja[property]} onChange={(event) => { if (event.target.value !== "") store?.adjustMoveHighlight("ninja", { [property]: Number(event.target.value) }); }} />
+        </label>)}
+        <label><input type="checkbox" checked={moveHighlight.ninja.outlineEnabled}
+          onChange={(event) => store?.adjustMoveHighlight("ninja", { outlineEnabled: event.target.checked })} /> 境界線を表示</label>
         <button type="button" onClick={() => store?.resetMoveHighlightSettings("ninja")}>Reset ninja highlight</button>
       </fieldset>
       {TILE_ASSET_KEYS.map((key) => {

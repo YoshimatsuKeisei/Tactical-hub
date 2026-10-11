@@ -141,6 +141,52 @@ class PersistentOverlay {
   destroy() { this.graphics.destroy(); }
 }
 
+export interface MovementOutlineEdges {
+  top: boolean;
+  right: boolean;
+  bottom: boolean;
+  left: boolean;
+}
+
+export function movementOutlineEdges(x: number, y: number, outlinedKeys: ReadonlySet<string>): MovementOutlineEdges {
+  return {
+    // Top and left own every shared edge. Right and bottom close only the
+    // exterior, so adjacent cells never paint the same edge twice.
+    top: true,
+    left: true,
+    right: !outlinedKeys.has(`${x + 1},${y}`),
+    bottom: !outlinedKeys.has(`${x},${y + 1}`),
+  };
+}
+
+class PersistentOutline {
+  readonly graphics = new Graphics();
+  private signature = "";
+
+  constructor(parent: Container) {
+    parent.addChild(this.graphics);
+    this.graphics.visible = false;
+  }
+
+  update(rect: CellBounds, color: number, opacity: number, edges: MovementOutlineEdges) {
+    this.graphics.alpha = Math.min(1, Math.max(0, opacity));
+    this.graphics.visible = this.graphics.alpha > 0 && Object.values(edges).some(Boolean);
+    const signature = `${rectSignature(rect)}:${color}:${Number(edges.top)}${Number(edges.right)}${Number(edges.bottom)}${Number(edges.left)}`;
+    if (this.signature === signature) return;
+    this.graphics.clear();
+    const x2 = rect.x + rect.width, y2 = rect.y + rect.height;
+    if (edges.top) this.graphics.moveTo(rect.x, rect.y).lineTo(x2, rect.y);
+    if (edges.right) this.graphics.moveTo(x2, rect.y).lineTo(x2, y2);
+    if (edges.bottom) this.graphics.moveTo(x2, y2).lineTo(rect.x, y2);
+    if (edges.left) this.graphics.moveTo(rect.x, y2).lineTo(rect.x, rect.y);
+    this.graphics.stroke({ color, width: 1 });
+    this.signature = signature;
+  }
+
+  hide() { this.graphics.visible = false; }
+  destroy() { this.graphics.destroy(); }
+}
+
 interface PersistentCell {
   ground: PersistentVisual;
   road: PersistentVisual;
@@ -148,6 +194,7 @@ interface PersistentCell {
   shadow: PersistentVisual;
   topHighlight: PersistentOverlay;
   faceHighlight: PersistentOverlay;
+  topOutline: PersistentOutline;
   bridge: PersistentVisual;
   obstacle: PersistentVisual;
   layer: Container;
@@ -180,6 +227,7 @@ export class PersistentTerrainScene {
       face: new PersistentVisual(layer),
       topHighlight: new PersistentOverlay(layer),
       faceHighlight: new PersistentOverlay(layer),
+      topOutline: new PersistentOutline(layer),
       bridge: new PersistentVisual(layer),
       obstacle: new PersistentVisual(layer),
       layer,
@@ -191,6 +239,9 @@ export class PersistentTerrainScene {
   update(cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, snapshot: AssetSnapshot, raised = true) {
     this.cache.sync(snapshot);
     const seen = new Set<string>();
+    const outlinedKeys = new Set(cells
+      .filter((cell) => cell.kind && bounds.has(`${cell.x},${cell.y}`) && cell.moveHighlight?.outlineEnabled && cell.moveHighlight.outlineOpacity > 0)
+      .map((cell) => `${cell.x},${cell.y}`));
     for (const cell of cells) {
       const key = `${cell.x},${cell.y}`;
       const rect = bounds.get(key);
@@ -245,9 +296,14 @@ export class PersistentTerrainScene {
         node.topHighlight.update(rect, cell.moveHighlight.color, cell.moveHighlight.topOpacity);
         if (displayedFace) node.faceHighlight.update(displayedFace, cell.moveHighlight.color, cell.moveHighlight.southFaceOpacity);
         else node.faceHighlight.hide();
+        if (cell.moveHighlight.outlineEnabled) {
+          node.topOutline.update(rect, cell.moveHighlight.outlineColor, cell.moveHighlight.outlineOpacity,
+            movementOutlineEdges(cell.x, cell.y, outlinedKeys));
+        } else node.topOutline.hide();
       } else {
         node.topHighlight.hide();
         node.faceHighlight.hide();
+        node.topOutline.hide();
       }
 
       if (cell.bridge) {
@@ -275,6 +331,7 @@ export class PersistentTerrainScene {
       shadowGraphics: node.shadow.graphics, shadowSprite: node.shadow.sprite,
       topHighlightGraphics: node.topHighlight.graphics,
       faceHighlightGraphics: node.faceHighlight.graphics,
+      topOutlineGraphics: node.topOutline.graphics,
       bridgeGraphics: node.bridge.graphics, bridgeSprite: node.bridge.sprite,
       obstacleGraphics: node.obstacle.graphics, obstacleSprite: node.obstacle.sprite,
     } : undefined;
@@ -289,6 +346,7 @@ export class PersistentTerrainScene {
     node.shadow.hide();
     node.topHighlight.hide();
     node.faceHighlight.hide();
+    node.topOutline.hide();
     node.bridge.hide();
     node.obstacle.hide();
     node.layer.visible = false;
@@ -302,6 +360,7 @@ export class PersistentTerrainScene {
       node.shadow.destroy();
       node.topHighlight.destroy();
       node.faceHighlight.destroy();
+      node.topOutline.destroy();
       node.bridge.destroy();
       node.obstacle.destroy();
       node.layer.destroy({ children: false });
