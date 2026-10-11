@@ -25,7 +25,9 @@
     "rl:bc-server": "python -u -m rl.browser_bc_server --checkpoint rl-checkpoints/bc-best.pt"
   },
   "dependencies": {
+    "@pixi/tilemap": "^5.0.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "pixi.js": "^8.22.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.2",
