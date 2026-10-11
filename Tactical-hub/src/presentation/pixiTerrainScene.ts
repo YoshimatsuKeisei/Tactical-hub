@@ -5,6 +5,7 @@ import {
   assetPlacement, bridgeAssetKey, roadSouthShadowSettings, type AssetSnapshot,
   type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
 } from "./tileAssets";
+import type { LakeAnimationState } from "./pixiLakeAnimation";
 
 // Each Canvas owns its GPU textures; only decoded CPU images are shared.
 export class TerrainTextureCache {
@@ -60,7 +61,8 @@ const BASE_FOREGROUND_ASSET_KEYS = new Set<TileAssetKey>([
   "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
 ]);
 const TERRAIN_ASSET_KEYS = new Set<TileAssetKey>([
-  "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "lake", "obstacle",
+  "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party",
+  "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
 ]);
@@ -204,6 +206,9 @@ class PersistentOutline {
 interface PersistentCell {
   outside: PersistentOverlay;
   ground: PersistentVisual;
+  lakeBlend: Sprite;
+  isLake: boolean;
+  lakePlacement?: CellBounds;
   road: PersistentVisual;
   face: PersistentVisual;
   shadow: PersistentVisual;
@@ -253,6 +258,7 @@ export class PersistentTerrainScene {
 
   constructor(private readonly cache: TerrainTextureCache) {
     this.root.eventMode = "none";
+    this.groundLayer.sortableChildren = true;
     this.depthLayer.sortableChildren = true;
     this.roadLayer.sortableChildren = true;
     this.root.addChild(this.groundLayer, this.roadLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
@@ -272,9 +278,17 @@ export class PersistentTerrainScene {
     layer.label = `terrain-cell-${key}`;
     layer.zIndex = row;
     this.depthLayer.addChild(layer);
+    const ground = new PersistentVisual(this.groundLayer);
+    const lakeBlend = new Sprite(Texture.EMPTY);
+    lakeBlend.visible = false;
+    lakeBlend.zIndex = 1;
+    this.groundLayer.addChild(lakeBlend);
     const node = {
       outside: new PersistentOverlay(this.groundLayer),
-      ground: new PersistentVisual(this.groundLayer),
+      ground,
+      lakeBlend,
+      isLake: false,
+      lakePlacement: undefined,
       shadow: new PersistentVisual(this.shadowLayer),
       road: new PersistentVisual(this.roadLayer),
       face: new PersistentVisual(layer),
@@ -314,6 +328,9 @@ export class PersistentTerrainScene {
       const signature = rectSignature(rect);
 
       node.outside.hide();
+      node.lakeBlend.visible = false;
+      node.isLake = false;
+      node.lakePlacement = undefined;
       if (!cell.kind) {
         // Outside remains logically absent; only its background participates.
         this.hideCell(node);
@@ -329,6 +346,11 @@ export class PersistentTerrainScene {
         node.road.hide();
         node.ground.update("road", rect, snapshot, this.cache, `base-road-underlay:${signature}`,
           (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.road));
+      } else if (cell.kind === "lake") {
+        node.road.hide();
+        node.isLake = true;
+        node.lakePlacement = node.ground.update("lake", rect, snapshot, this.cache, `lake:${signature}`,
+          (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS.lake));
       } else {
         node.road.hide();
         node.ground.update(cell.kind, rect, snapshot, this.cache, `${cell.kind}:${signature}`,
@@ -390,6 +412,23 @@ export class PersistentTerrainScene {
     for (const [key, node] of this.nodes) if (!seen.has(key)) this.hideCell(node);
   }
 
+  applyLakeAnimation(state: LakeAnimationState, snapshot: AssetSnapshot) {
+    const currentTexture = this.cache.get(state.current, snapshot);
+    const nextTexture = this.cache.get(state.next, snapshot);
+    if (!currentTexture || !nextTexture || !snapshot.assets.lake) return;
+    for (const node of this.nodes.values()) {
+      if (!node.isLake || !node.lakePlacement || !node.ground.sprite.visible) continue;
+      node.ground.sprite.texture = currentTexture;
+      node.ground.graphics.visible = false;
+      node.lakeBlend.texture = nextTexture;
+      node.lakeBlend.position.set(node.lakePlacement.x, node.lakePlacement.y);
+      node.lakeBlend.width = node.lakePlacement.width;
+      node.lakeBlend.height = node.lakePlacement.height;
+      node.lakeBlend.alpha = state.alpha;
+      node.lakeBlend.visible = state.alpha > 0;
+    }
+  }
+
   private updateBases(groups: readonly PixiBaseGroup[], bounds: ReadonlyMap<string, CellBounds>, snapshot: AssetSnapshot) {
     const seen = new Set<string>();
     for (const group of groups) {
@@ -418,6 +457,7 @@ export class PersistentTerrainScene {
     return node ? {
       outsideGraphics: node.outside.graphics,
       groundGraphics: node.ground.graphics, groundSprite: node.ground.sprite,
+      lakeBlendSprite: node.lakeBlend,
       roadGraphics: node.road.graphics, roadSprite: node.road.sprite,
       faceGraphics: node.face.graphics, faceSprite: node.face.sprite,
       shadowGraphics: node.shadow.graphics, shadowSprite: node.shadow.sprite,
@@ -440,6 +480,9 @@ export class PersistentTerrainScene {
   private hideCell(node: PersistentCell) {
     node.outside.hide();
     node.ground.hide();
+    node.lakeBlend.visible = false;
+    node.isLake = false;
+    node.lakePlacement = undefined;
     node.road.hide();
     node.face.hide();
     node.shadow.hide();
@@ -460,6 +503,7 @@ export class PersistentTerrainScene {
     for (const node of this.nodes.values()) {
       node.outside.destroy();
       node.ground.destroy();
+      node.lakeBlend.destroy({ texture: false, textureSource: false });
       node.road.destroy();
       node.face.destroy();
       node.shadow.destroy();

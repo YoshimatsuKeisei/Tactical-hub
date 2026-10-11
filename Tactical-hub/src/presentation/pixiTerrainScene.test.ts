@@ -59,6 +59,7 @@ import { relativeCellBounds, type PixiBaseGroup, type PixiBoardTerrain } from ".
 import { Application, Sprite, Texture } from "pixi.js";
 import { pixiBoardExtent } from "./pixiBoardExtent";
 import { mountPixiBoard } from "./pixiBoardRenderer";
+import { lakeAnimationStateAt } from "./pixiLakeAnimation";
 
 const image = {} as HTMLImageElement;
 const imported: AssetSnapshot = {
@@ -529,6 +530,63 @@ describe("persistent Pixi terrain scene", () => {
     expect(sprite.texture).toBe(texture);
     expect(sprite.width).toBe(96);
   });
+
+  it("shares four lake textures, synchronizes alpha, and reuses two Sprites per lake cell", () => {
+    const images = [{}, {}, {}, {}] as HTMLImageElement[];
+    const lakeAssets: AssetSnapshot = {
+      enabled: true,
+      lakeAnimationEnabled: true,
+      statuses: {},
+      assets: {
+        lake: { image: images[0], width: 96, height: 48, name: "lake-1.png", scale: 1.25, offsetX: 2, offsetY: -3 },
+        lake_frame_2: { image: images[1], width: 32, height: 128, name: "lake-2.png", ...DEFAULT_ADJUSTMENT },
+        lake_frame_3: { image: images[2], width: 128, height: 32, name: "lake-3.png", ...DEFAULT_ADJUSTMENT },
+        lake_frame_4: { image: images[3], width: 64, height: 64, name: "lake-4.png", ...DEFAULT_ADJUSTMENT },
+      },
+    };
+    const cells = [
+      { ...cell, kind: "lake" as const, southFace: false },
+      { ...cell, x: 1, kind: "lake" as const, southFace: false },
+    ];
+    const lakeBounds = new Map([
+      ["0,0", { x: 0, y: 0, width: 48, height: 48 }],
+      ["1,0", { x: 48, y: 0, width: 48, height: 48 }],
+    ]);
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update(cells, lakeBounds, lakeAssets);
+    const first = scene.getCellDisplayObjects("0,0")!;
+    const second = scene.getCellDisplayObjects("1,0")!;
+    const firstBaseSprite = first.groundSprite, firstBlendSprite = first.lakeBlendSprite;
+    scene.applyLakeAnimation(lakeAnimationStateAt(700), lakeAssets);
+
+    expect(first.groundSprite.texture).toBe(second.groundSprite.texture);
+    expect(first.lakeBlendSprite.texture).toBe(second.lakeBlendSprite.texture);
+    expect(first.lakeBlendSprite.alpha).toBe(0.5);
+    expect(second.lakeBlendSprite.alpha).toBe(0.5);
+    expect(first.groundSprite).not.toBe(first.lakeBlendSprite);
+    expect(first.lakeBlendSprite.position.set).toHaveBeenLastCalledWith(2, -3);
+    expect(first.lakeBlendSprite.width).toBe(60);
+    expect(first.lakeBlendSprite.height).toBe(30);
+    expect(second.lakeBlendSprite.width).toBe(60);
+    expect(second.lakeBlendSprite.height).toBe(30);
+    const frame2Texture = first.lakeBlendSprite.texture;
+
+    scene.applyLakeAnimation(lakeAnimationStateAt(900), lakeAssets);
+    expect(first.groundSprite).toBe(firstBaseSprite);
+    expect(first.lakeBlendSprite).toBe(firstBlendSprite);
+    expect(first.groundSprite.texture).toBe(frame2Texture);
+    const frame3Texture = first.lakeBlendSprite.texture as Texture;
+
+    const withoutFrame3 = { ...lakeAssets, assets: { ...lakeAssets.assets, lake_frame_3: undefined } };
+    scene.update(cells, lakeBounds, withoutFrame3);
+    expect(first.lakeBlendSprite.visible).toBe(false);
+    expect(first.groundSprite.texture).not.toBe(frame2Texture);
+    expect(frame3Texture.destroy).toHaveBeenCalledOnce();
+
+    const groundLayer = scene.root.children[0] as { children: unknown[] };
+    expect(groundLayer.children).toContain(first.lakeBlendSprite);
+    expect(groundLayer.children).toContain(second.lakeBlendSprite);
+  });
 });
 
 
@@ -647,6 +705,47 @@ describe("shared Canvas extent", () => {
     expect(host.appendChild).toHaveBeenCalledTimes(1);
     expect(foregroundHost.appendChild).toHaveBeenCalledTimes(1);
     mounted.dispose();
+  });
+
+  it("redraws only the background Canvas during lake fades and stops when switched off", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = { style: {}, appendChild: vi.fn() } as unknown as HTMLDivElement;
+      const foregroundHost = { style: {}, appendChild: vi.fn() } as unknown as HTMLDivElement;
+      const instances = (Application as unknown as { instances: Application[] }).instances;
+      const before = instances.length;
+      const mounted = await mountPixiBoard(host, foregroundHost, new AbortController().signal);
+      const [background, foreground] = instances.slice(before);
+      const lakeAsset = { image, width: 48, height: 48, name: "lake.png", ...DEFAULT_ADJUSTMENT };
+      const animated: AssetSnapshot = {
+        enabled: true,
+        lakeAnimationEnabled: true,
+        statuses: {},
+        assets: {
+          lake: lakeAsset,
+          lake_frame_2: { ...lakeAsset, name: "lake-2.png" },
+          lake_frame_3: { ...lakeAsset, name: "lake-3.png" },
+          lake_frame_4: { ...lakeAsset, name: "lake-4.png" },
+        },
+      };
+      const lakeCell = { ...cell, kind: "lake" as const, southFace: false };
+      mounted.update([lakeCell], bounds, 48, 48, animated);
+      expect(background.render).toHaveBeenCalledTimes(1);
+      expect(foreground.render).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(700);
+      expect(vi.mocked(background.render).mock.calls.length).toBeGreaterThan(1);
+      expect(foreground.render).toHaveBeenCalledTimes(1);
+
+      mounted.update([lakeCell], bounds, 48, 48, { ...animated, lakeAnimationEnabled: false });
+      const backgroundAfterOff = vi.mocked(background.render).mock.calls.length;
+      const foregroundAfterOff = vi.mocked(foreground.render).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(background.render).toHaveBeenCalledTimes(backgroundAfterOff);
+      expect(foreground.render).toHaveBeenCalledTimes(foregroundAfterOff);
+      mounted.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

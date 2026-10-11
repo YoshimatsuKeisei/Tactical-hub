@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assetPlacement, bridgeAssetKey, decodeTilePng, DEFAULT_ADJUSTMENT, EMPTY_ASSETS,
-  DEFAULT_MOVE_HIGHLIGHT, DEFAULT_ROAD_SOUTH_SHADOW, moveHighlightSettings, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
+  DEFAULT_MOVE_HIGHLIGHT, DEFAULT_ROAD_SOUTH_SHADOW, lakeAnimationCanRun, LAKE_FRAME_KEYS,
+  missingLakeAnimationAssets, moveHighlightSettings, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
   TileAssetStore, type TileAsset,
 } from "./tileAssets";
 const asset = (name = "road.png"): TileAsset => ({ image: {} as HTMLImageElement, name, width: 128, height: 64, ...DEFAULT_ADJUSTMENT });
@@ -77,6 +78,25 @@ describe("shared browser-only tile assets", () => {
     expect(store.getSnapshot().assets.road_south_face).toMatchObject({ scale: 1.5, offsetX: 2, offsetY: 6 });
     store.resetAll();
     expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
+  });
+  it("manages four lake frames independently and disables animation when one is reset", async () => {
+    const store = new TileAssetStore(async (selected) => asset(selected.name));
+    expect(LAKE_FRAME_KEYS).toEqual(["lake", "lake_frame_2", "lake_frame_3", "lake_frame_4"]);
+    expect(missingLakeAnimationAssets(store.getSnapshot())).toEqual(LAKE_FRAME_KEYS);
+    for (const [index, key] of LAKE_FRAME_KEYS.entries()) {
+      await store.importFile(key, { ...file, name: `lake-${index + 1}.png` } as File);
+    }
+    expect(missingLakeAnimationAssets(store.getSnapshot())).toEqual([]);
+    expect(lakeAnimationCanRun(store.getSnapshot())).toBe(false);
+    store.setEnabled(true);
+    store.setLakeAnimationEnabled(true);
+    expect(lakeAnimationCanRun(store.getSnapshot())).toBe(true);
+    store.reset("lake_frame_3");
+    expect(store.getSnapshot().assets.lake).toBeDefined();
+    expect(store.getSnapshot().assets.lake_frame_3).toBeUndefined();
+    expect(store.getSnapshot().lakeAnimationEnabled).toBe(false);
+    expect(missingLakeAnimationAssets(store.getSnapshot())).toEqual(["lake_frame_3"]);
+    expect(lakeAnimationCanRun(store.getSnapshot())).toBe(false);
   });
   it("keeps owned/third-party cores, wall, and four flag slots independently adjustable", async () => {
     const store = new TileAssetStore(async () => asset("base-part.png"));

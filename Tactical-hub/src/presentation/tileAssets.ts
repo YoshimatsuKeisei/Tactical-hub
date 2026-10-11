@@ -1,7 +1,8 @@
 export const TILE_ASSET_KEYS = [
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "base_front_wall",
   "base_front_wall_third_party",
-  "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4", "lake", "obstacle",
+  "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
+  "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
 ] as const;
@@ -18,7 +19,10 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   base_flag_team_2: "Team 2 flag / チーム2旗",
   base_flag_team_3: "Team 3 flag / チーム3旗",
   base_flag_team_4: "Team 4 flag / チーム4旗",
-  lake: "Lake / 湖",
+  lake: "Frame 1: Lake (existing) / 湖",
+  lake_frame_2: "Frame 2 / Lake animation 2",
+  lake_frame_3: "Frame 3 / Lake animation 3",
+  lake_frame_4: "Frame 4 / Lake animation 4",
   obstacle: "Obstacle / 障害物",
   bridge_horizontal_start: "Bridge horizontal start",
   bridge_horizontal_middle: "Bridge horizontal middle",
@@ -62,6 +66,7 @@ export interface TileAsset extends AssetAdjustment {
 }
 export interface AssetSnapshot {
   enabled: boolean;
+  lakeAnimationEnabled?: boolean;
   renderError?: string;
   assets: Partial<Record<TileAssetKey, TileAsset>>;
   statuses: Partial<Record<TileAssetKey, string>>;
@@ -143,6 +148,9 @@ export class TileAssetStore {
   private publish(snapshot: AssetSnapshot) { this.snapshot = snapshot; this.listeners.forEach((listener) => listener()); }
   activate() { this.alive = true; } // React StrictMode effect replay
   setEnabled(enabled: boolean) { this.publish({ ...this.snapshot, enabled, renderError: undefined }); }
+  setLakeAnimationEnabled(enabled: boolean) {
+    this.publish({ ...this.snapshot, lakeAnimationEnabled: enabled });
+  }
   fallbackShapes(renderError: string) { this.publish({ ...this.snapshot, enabled: false, renderError }); }
   setRoadSouthShadowEnabled(enabled: boolean) {
     this.publish({ ...this.snapshot, roadSouthShadow: { ...roadSouthShadowSettings(this.snapshot), enabled } });
@@ -225,10 +233,28 @@ export class TileAssetStore {
     this.pending.get(key)?.abort(); this.pending.delete(key);
     const assets = { ...this.snapshot.assets }, statuses = { ...this.snapshot.statuses };
     delete assets[key]; delete statuses[key];
-    this.publish({ ...this.snapshot, assets, statuses });
+    this.publish({
+      ...this.snapshot,
+      assets,
+      statuses,
+      lakeAnimationEnabled: LAKE_FRAME_KEYS.includes(key as typeof LAKE_FRAME_KEYS[number])
+        ? false
+        : this.snapshot.lakeAnimationEnabled,
+    });
   }
   resetAll() { TILE_ASSET_KEYS.forEach((key) => { this.versions[key] = (this.versions[key] ?? 0) + 1; }); this.pending.forEach((controller) => controller.abort()); this.pending.clear(); this.publish(EMPTY_ASSETS); }
   dispose() { this.alive = false; this.resetAll(); }
+}
+
+export const LAKE_FRAME_KEYS = ["lake", "lake_frame_2", "lake_frame_3", "lake_frame_4"] as const;
+export type LakeFrameAssetKey = typeof LAKE_FRAME_KEYS[number];
+
+export function missingLakeAnimationAssets(snapshot: AssetSnapshot): LakeFrameAssetKey[] {
+  return LAKE_FRAME_KEYS.filter((key) => !snapshot.assets[key]);
+}
+
+export function lakeAnimationCanRun(snapshot: AssetSnapshot) {
+  return snapshot.enabled && snapshot.lakeAnimationEnabled === true && missingLakeAnimationAssets(snapshot).length === 0;
 }
 
 export function bridgeAssetKey(direction: "horizontal" | "vertical", segment: "start" | "middle" | "end"): TileAssetKey {
