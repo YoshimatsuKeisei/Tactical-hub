@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import { useTileAssets } from "./TileAssetProvider";
 
 function PixiTileCanvas() {
   const host = useRef<HTMLDivElement>(null);
+  const { store, snapshot } = useTileAssets();
+  const latest = useRef(snapshot); latest.current = snapshot;
+  const rendererRef = useRef<Awaited<ReturnType<typeof import("../presentation/pixiTilePreviewRenderer").mountPixiTilePreview>> | undefined>(undefined);
+  useEffect(() => {
+    try { rendererRef.current?.update(snapshot); }
+    catch (error) { if (snapshot.enabled) store?.fallbackShapes(String(error)); setStatus(`画像描画に失敗しました: ${String(error)}`); }
+  }, [snapshot, store]);
   const [status, setStatus] = useState("Initializing PixiJS…");
   useEffect(() => {
     const element = host.current;
@@ -10,14 +18,18 @@ function PixiTileCanvas() {
     let dispose: (() => void) | undefined;
     void import("../presentation/pixiTilePreviewRenderer").then(async ({ mountPixiTilePreview }) => {
       if (controller.signal.aborted) return;
-      dispose = await mountPixiTilePreview(element, controller.signal, setStatus);
+      const renderer = await mountPixiTilePreview(element, controller.signal, setStatus);
+      dispose = renderer.dispose;
       if (controller.signal.aborted) dispose();
-      else setStatus("Click either grid to inspect its logical cell (coordinates start at 0).");
+      else { rendererRef.current = renderer; renderer.update(latest.current); setStatus("Click either grid to inspect its logical cell (coordinates start at 0)."); }
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setStatus(`PixiJS initialization failed: ${String(error)}`);
+      if (!controller.signal.aborted) {
+        if (latest.current.enabled) store?.fallbackShapes(String(error));
+        setStatus(`PixiJS initialization failed: ${String(error)}`);
+      }
     });
-    return () => { controller.abort(); dispose?.(); };
-  }, []);
+    return () => { controller.abort(); dispose?.(); rendererRef.current = undefined; };
+  }, [store]);
   return <>
     <p aria-live="polite">{status}</p>
     <div className="pixi-tile-preview-scroll" ref={host} />

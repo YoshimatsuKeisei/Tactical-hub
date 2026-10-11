@@ -1,5 +1,53 @@
 # Tactical Hub
 
+## DEV Tile Asset Preview / Import
+
+Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
+at the top left. Select PNG files for road, base, lake, obstacle, the six bridge
+direction/segment slots, and optionally `road_south_face`. Each slot reports its
+filename, decoded dimensions, loading state, or failure reason. Invalid formats,
+signatures, and undecodable PNGs are rejected; the previous good asset is retained.
+
+Choose **インポート素材＋未設定は仮図形** to enable images in both the independent
+Flat/Raised preview and the real board's Pixi renderer. Loading a file alone
+does not enable images. The real board's **Terrain renderer (DEV)** remains CSS
+by default; choose PixiJS to inspect it. **仮図形（Graphics）** switches both Pixi
+views back to test shapes. CSS never uses imported images.
+
+Images are temporary browser-only data: no upload, asset-directory copy, or
+persistence. Refreshing or leaving the game clears them; closing the import
+panel or one preview keeps shared settings. **Reset image** removes one image;
+**Reset All** clears all images/settings and restores shapes mode. **Reset
+adjustment** keeps the image and restores scale 1, X/Y 0. Scale is 0.1–4; image
+width defaults to one cell with aspect ratio preserved. X/Y offsets are pixels
+at a 48px reference cell, proportionally scaled on the actual board. Adjustments
+change visuals only, not tile positions/hitboxes. Replacing an image initializes
+its placement settings.
+
+The two renderers share decoded CPU images through a DEV React provider outside
+GameState. Each Canvas owns and frees its own GPU ImageSource/Texture objects.
+Object URLs are revoked after decode, failure, or cancellation; replacement/reset
+cancels outdated requests. Unset or unavailable textures use Graphics. Neither
+renderer uses the former Tilemap/atlas sampling path for imported images.
+If GPU drawing raises an error, imported-image mode is disabled with a panel
+message; the real-board view also restores CSS. The decoded images remain available
+for reset/retry.
+
+`road` is also used by baseGate/reorganize. Lakes remain beneath transparent
+bridge overlays. Bridge direction/start/middle/end and active obstacles follow
+the existing presentation adapter. Optional south-face sprites are suppressed
+at shared road boundaries and in Flat mode. A sidewall baked into a road PNG
+cannot be removed automatically: use separate top/face images when needed.
+HTML characters still render above the complete Pixi scene, so exact character
+occlusion is unsupported. Large/offset art may overlap adjacent cells or clip at
+Canvas edges; logical cell interactions are unchanged.
+
+Manual checks: import recognizable PNGs and enable images; compare both views;
+adjust/reload/reset every slot, test bridge transparency and segment selection,
+scroll/resize/click overhangs, toggle CSS/Pixi and shapes/images, close/reopen either
+view while loading, and verify no renewed flicker. GPU rendering/resource behavior
+and browser visuals remain manual checks. No production images are supplied.
+
 ## DEV real-board PixiJS terrain (hybrid experiment)
 
 On the game board, **Terrain renderer (DEV)** starts at **CSS (default)**.
@@ -12,10 +60,9 @@ Gray road surfaces are shared by `road`, `baseGate`, and `reorganize`; bases are
 gold, lakes blue, and `outside` remains outside. Bridges retain the lake below
 them and use horizontal/vertical start/middle/end segments. Active obstacles are
 separate overlays. Same-height road neighbors suppress internal south faces.
-The diagnostic atlas is generated in memory, not a production image asset.
-The independent preview now uses that same single-source color atlas instead of
-multiple generated render-target textures. The reported all-gray issue still
-needs browser confirmation; its exact GPU/runtime cause is not established here.
+The real board keeps the Graphics baseline that the user reported resolved
+flicker. Both views now use the common Graphics/Sprite scene. The direct cause
+of the former Tilemap/atlas issue remains unconfirmed.
 
 Canvas positioning uses measured HTML tile rectangles, including fractional
 sizes and gaps. A ResizeObserver updates it when layout changes; canvas and
@@ -26,8 +73,8 @@ preview, and highlights remain the interaction layer.
 **Hybrid limitation:** every HTML character and highlight is above the complete
 Pixi terrain scene. Bridges/obstacles cannot correctly occlude character parts,
 even when the terrain's own row depth is correct. This is an experiment, not a
-fully depth-sorted game renderer. Real-board terrain currently uses per-cell
-atlas quads to match exact DOM rounding; batching/performance at scale remains
+fully depth-sorted game renderer. Real-board terrain uses measured DOM rectangles;
+batching/performance at scale remains
 to be assessed before production adoption.
 
 Manual checks: compare CSS/Pixi map locations and colors; build/reset both bridge
@@ -46,7 +93,7 @@ production; its Pixi renderer is loaded only when opened and destroyed when clos
 
 The independent synthetic 7×6 map compares flat and raised square tiles. Gray
 roads, gold bases, and blue lakes are disposable generated shapes, not production
-art. `@pixi/tilemap` batches fixed terrain. Row-sorted Containers hold road south
+art. Graphics supplies unset terrain; imported PNGs use Sprites. Row-sorted Containers hold road south
 faces, horizontal/vertical bridge segments (gold start/end caps), and tall red
 obstacles. Same-height roads to the south suppress internal road sidewalls.
 Lakes stay under bridges; bridge and obstacle overlays do not alter terrain.

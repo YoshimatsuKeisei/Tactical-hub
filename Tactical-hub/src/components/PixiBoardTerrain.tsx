@@ -1,15 +1,17 @@
 import { useEffect, useRef, type RefObject } from "react";
 import type { CellBounds, PixiBoardTerrain as Terrain } from "../presentation/pixiBoardTerrain";
 import { relativeCellBounds } from "../presentation/pixiBoardTerrain";
+import { useTileAssets } from "./TileAssetProvider";
 
 export function PixiBoardTerrain({ cells, boardRef, onError }: {
   cells: Terrain; boardRef: RefObject<HTMLDivElement | null>; onError: (message: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
-  const latest = useRef({ cells, onError });
-  latest.current = { cells, onError };
+  const { store, snapshot } = useTileAssets();
+  const latest = useRef({ cells, onError, snapshot, store });
+  latest.current = { cells, onError, snapshot, store };
   const refresh = useRef<() => void>(() => {});
-  useEffect(() => { refresh.current(); }, [cells]);
+  useEffect(() => { refresh.current(); }, [cells, snapshot]);
   useEffect(() => {
     const board = boardRef.current, element = host.current;
     if (!board || !element) return;
@@ -26,8 +28,11 @@ export function PixiBoardTerrain({ cells, boardRef, onError }: {
         const rect = tile.getBoundingClientRect();
         bounds.set(`${tile.dataset.boardX},${tile.dataset.boardY}`, relativeCellBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }, origin));
       });
-      try { renderer.update(latest.current.cells, bounds, origin.width, origin.height); }
-      catch (error) { latest.current.onError(String(error)); }
+      try { renderer.update(latest.current.cells, bounds, origin.width, origin.height, latest.current.snapshot); }
+      catch (error) {
+        if (latest.current.snapshot.enabled) latest.current.store?.fallbackShapes(String(error));
+        latest.current.onError(String(error));
+      }
     };
     refresh.current = () => { if (!pending) pending = requestAnimationFrame(draw); };
     void import("../presentation/pixiBoardRenderer").then(async ({ mountPixiBoard }) => {

@@ -810,3 +810,9 @@ pre {
 .board-pixi > .tile.attack-highlighted { z-index: 3; }
 .board-pixi > .tile.active-bridge:not(.bridge-candidate-marker)::before { content: none; }
 .board-pixi > .tile.active-obstacle:not(.construction-preview)::after { content: none; }
+
+.tile-asset-import { position: fixed; left: 12px; top: 12px; z-index: 101; }
+.tile-asset-import-panel { position: absolute; left: 0; top: calc(100% + 8px); width: min(700px, calc(100vw - 24px)); max-height: calc(100dvh - 90px); overflow: auto; box-sizing: border-box; padding: 12px; border: 1px solid #637a91; background: #182332; color: #fff; }
+.tile-asset-import-panel fieldset { margin: 10px 0; }
+.tile-asset-import-panel input[type="number"] { width: 70px; margin: 4px; }
+.tile-asset-import-panel input[type="file"] { max-width: 100%; }

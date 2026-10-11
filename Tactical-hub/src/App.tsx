@@ -4,6 +4,8 @@ import { CpuControlPanel, type CpuRunnerSpeed } from "./components/CpuControlPan
 import { GameDebugPanel } from "./components/GameDebugPanel";
 import { HdEnemyDevPreview } from "./components/HdEnemyDevPreview";
 import { PixiTileDevPreview } from "./components/PixiTileDevPreview";
+import { TileAssetProvider } from "./components/TileAssetProvider";
+import { TileAssetImportPanel } from "./components/TileAssetImportPanel";
 import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
 import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
@@ -35,7 +37,9 @@ export default function App() {
   const [screen, setScreen] = useState<AppScreen>("home");
   const [localCpuSettings, setLocalCpuSettings] = useState<CpuTeamSettings>(createDefaultLocalCpuSettings);
 
-  if (screen === "play") return <PlayScreen initialCpuSettings={localCpuSettings} />;
+  if (screen === "play") return (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV
+    ? <TileAssetProvider><PlayScreen initialCpuSettings={localCpuSettings} /></TileAssetProvider>
+    : <PlayScreen initialCpuSettings={localCpuSettings} />;
 
   return <AppNavigation
     screen={screen}
@@ -349,6 +353,7 @@ function PlayScreen({ initialCpuSettings }: { initialCpuSettings: CpuTeamSetting
       />
       {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV ? <HdEnemyDevPreview /> : null}
       {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV ? <PixiTileDevPreview /> : null}
+      {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV ? <TileAssetImportPanel /> : null}
     </main>
   );
 }
