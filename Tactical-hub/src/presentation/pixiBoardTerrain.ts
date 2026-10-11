@@ -7,6 +7,20 @@ export function pixiTerrainKind(terrain: Tile["terrain"]): keyof typeof TERRAIN_
   if (terrain === "base" || terrain === "lake") return terrain;
   return "road";
 }
+
+// Appearance and elevation are intentionally separate: bases retain their gold
+// top while sharing one raised surface with road/baseGate/reorganize.
+export function isRaisedRoadTerrain(terrain: Tile["terrain"]): boolean {
+  return terrain === "road" || terrain === "base" || terrain === "baseGate" || terrain === "reorganize";
+}
+
+export function shouldShowRoadSouthFace(
+  terrain: Tile["terrain"],
+  southTerrain?: Tile["terrain"],
+): boolean {
+  return isRaisedRoadTerrain(terrain) && (southTerrain === undefined || !isRaisedRoadTerrain(southTerrain));
+}
+
 export function buildPixiBoardTerrain(state: GameState) {
   return state.map.tiles.map((tile) => {
     const bridge = getConstructionAt(state, tile.x, tile.y, "bridge");
@@ -17,7 +31,7 @@ export function buildPixiBoardTerrain(state: GameState) {
     const kind = pixiTerrainKind(tile.terrain);
     return {
       x: tile.x, y: tile.y, kind,
-      southFace: kind === "road" && (!south || pixiTerrainKind(south.terrain) !== "road"),
+      southFace: shouldShowRoadSouthFace(tile.terrain, south?.terrain),
       bridge: bridge ? {
         direction: ordered[0]?.y === ordered.at(-1)?.y ? "horizontal" as const : "vertical" as const,
         segment: index === 0 ? "start" as const : index === ordered.length - 1 ? "end" as const : "middle" as const,

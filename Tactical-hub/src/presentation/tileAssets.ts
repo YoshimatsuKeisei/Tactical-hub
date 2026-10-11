@@ -1,9 +1,22 @@
 export const TILE_ASSET_KEYS = [
-  "road", "base", "lake", "obstacle", "road_south_face",
+  "road", "road_south_face", "base", "lake", "obstacle",
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
 ] as const;
 export type TileAssetKey = typeof TILE_ASSET_KEYS[number];
+export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
+  road: "Road top / 道路上面",
+  road_south_face: "Road south face / 道路南側面",
+  base: "Base / 拠点上面",
+  lake: "Lake / 湖",
+  obstacle: "Obstacle / 障害物",
+  bridge_horizontal_start: "Bridge horizontal start",
+  bridge_horizontal_middle: "Bridge horizontal middle",
+  bridge_horizontal_end: "Bridge horizontal end",
+  bridge_vertical_start: "Bridge vertical start",
+  bridge_vertical_middle: "Bridge vertical middle",
+  bridge_vertical_end: "Bridge vertical end",
+};
 export interface AssetAdjustment { scale: number; offsetX: number; offsetY: number }
 export interface TileAsset extends AssetAdjustment {
   image: HTMLImageElement; name: string; width: number; height: number;

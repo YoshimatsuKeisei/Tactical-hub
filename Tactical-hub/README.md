@@ -13,8 +13,9 @@ repeated GPU upload and empty display-tree interval that could produce PNG-only
 flashing. The exact browser/GPU cause still requires Windows visual confirmation.
 
 Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
-at the top left. Select PNG files for road, base, lake, obstacle, the six bridge
-direction/segment slots, and optionally `road_south_face`. Each slot reports its
+at the top left. Select separate transparent PNG files for **Road top / 道路上面**
+and optional **Road south face / 道路南側面**, plus base, lake, obstacle, and the
+six bridge direction/segment slots. Each slot reports its
 filename, decoded dimensions, loading state, or failure reason. Invalid formats,
 signatures, and undecodable PNGs are rejected; the previous good asset is retained.
 
@@ -43,10 +44,16 @@ If GPU drawing raises an error, imported-image mode is disabled with a panel
 message; the real-board view also restores CSS. The decoded images remain available
 for reset/retry.
 
-`road` is also used by baseGate/reorganize. Lakes remain beneath transparent
+`road` is also used by baseGate/reorganize. Road, base, baseGate, and reorganize
+share one raised elevation even though base keeps its gold/image top. Their south
+face is hidden when the south neighbor is any of those same-height terrains, and
+shown at the bottom edge or when the south neighbor is lake/outside. The separate
+`road_south_face` image is reused for every such exposed raised edge; when unset,
+the existing dark Graphics face is used. It is placed only below the top tile,
+after terrain tops and before bridge/obstacle overlays. Lakes remain beneath transparent
 bridge overlays. Bridge direction/start/middle/end and active obstacles follow
-the existing presentation adapter. Optional south-face sprites are suppressed
-at shared road boundaries and in Flat mode. A sidewall baked into a road PNG
+the existing presentation adapter. South-face sprites are also hidden in Flat
+preview mode. A sidewall baked into a road PNG
 cannot be removed automatically: use separate top/face images when needed.
 HTML characters still render above the complete Pixi scene, so exact character
 occlusion is unsupported. Large/offset art may overlap adjacent cells or clip at
@@ -67,7 +74,8 @@ CSS at any time; WebGL initialization errors also restore CSS. Production has no
 selector and always uses CSS.
 
 Gray road surfaces are shared by `road`, `baseGate`, and `reorganize`; bases are
-gold, lakes blue, and `outside` remains outside. Bridges retain the lake below
+gold, lakes blue, and `outside` remains outside. These road-like surfaces and bases
+share the same raised elevation for south-face suppression. Bridges retain the lake below
 them and use horizontal/vertical start/middle/end segments. Active obstacles are
 separate overlays. Same-height road neighbors suppress internal south faces.
 The real board keeps the Graphics baseline that the user reported resolved
@@ -105,7 +113,7 @@ The independent synthetic 7×6 map compares flat and raised square tiles. Gray
 roads, gold bases, and blue lakes are disposable generated shapes, not production
 art. Graphics supplies unset terrain; imported PNGs use Sprites. Row-sorted Containers hold road south
 faces, horizontal/vertical bridge segments (gold start/end caps), and tall red
-obstacles. Same-height roads to the south suppress internal road sidewalls.
+obstacles. Same-height road/base terrain to the south suppresses internal sidewalls.
 Lakes stay under bridges; bridge and obstacle overlays do not alter terrain.
 
 Manual checks: compare both panels; inspect road clusters and exposed south edges;

@@ -99,6 +99,26 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.roadSprite.visible).toBe(true);
   });
 
+  it("uses the separate south-face asset only for exposed faces in raised mode", () => {
+    const withFace: AssetSnapshot = {
+      ...imported,
+      assets: {
+        ...imported.assets,
+        road_south_face: { image, width: 128, height: 32, name: "road-face.png", ...DEFAULT_ADJUSTMENT },
+      },
+    };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, withFace, true);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    expect(objects.faceSprite.visible).toBe(true);
+    expect(objects.faceGraphics.visible).toBe(false);
+
+    scene.update([{ ...cell, southFace: false }], bounds, withFace, true);
+    expect(objects.faceSprite.visible).toBe(false);
+    scene.update([cell], bounds, withFace, false);
+    expect(objects.faceSprite.visible).toBe(false);
+  });
+
   it("redraws fallback only when its geometry changes", () => {
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     scene.update([cell], bounds, EMPTY_ASSETS);

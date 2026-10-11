@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createInitialGameState } from "../game/initialState";
 import { getConstructionAt } from "../game/engine/construction";
-import { buildPixiBoardTerrain, pixiTerrainKind, relativeCellBounds, TERRAIN_COLORS } from "./pixiBoardTerrain";
+import {
+  buildPixiBoardTerrain, isRaisedRoadTerrain, pixiTerrainKind, relativeCellBounds,
+  shouldShowRoadSouthFace, TERRAIN_COLORS,
+} from "./pixiBoardTerrain";
 import { TileView } from "../components/TileView";
 import { BoardView } from "../components/BoardView";
 
@@ -20,6 +23,18 @@ describe("real-map Pixi presentation adapter", () => {
     expect(pixiTerrainKind("lake")).toBe("lake");
     expect(pixiTerrainKind("outside")).toBeNull();
     expect(new Set(Object.values(TERRAIN_COLORS)).size).toBe(3);
+  });
+  it("shows a south face only where the shared raised terrain drops", () => {
+    for (const terrain of ["road", "base", "baseGate", "reorganize"] as const) {
+      expect(isRaisedRoadTerrain(terrain)).toBe(true);
+      expect(shouldShowRoadSouthFace("road", terrain)).toBe(false);
+    }
+    expect(isRaisedRoadTerrain("lake")).toBe(false);
+    expect(shouldShowRoadSouthFace("road", "lake")).toBe(true);
+    expect(shouldShowRoadSouthFace("base", "lake")).toBe(true);
+    expect(shouldShowRoadSouthFace("road", "outside")).toBe(true);
+    expect(shouldShowRoadSouthFace("road")).toBe(true);
+    expect(shouldShowRoadSouthFace("lake", "outside")).toBe(false);
   });
   it("matches BoardView active construction lookup, including reset constructions", () => {
     const state = createInitialGameState();
@@ -43,7 +58,7 @@ describe("real-map Pixi presentation adapter", () => {
       { direction: "vertical", segment: "start" }, { direction: "vertical", segment: "middle" }, { direction: "vertical", segment: "end" },
     ]);
   });
-  it("retains lake terrain below bridges and suppresses shared road-height faces", () => {
+  it("retains lake terrain below bridges and applies south faces from the map adapter", () => {
     const state = createInitialGameState();
     const tiles = state.map.tiles;
     tiles[0] = { ...tiles[0], x: 0, y: 0, terrain: "road" };
@@ -54,6 +69,7 @@ describe("real-map Pixi presentation adapter", () => {
     const cells = buildPixiBoardTerrain(state);
     expect(cells[0].southFace).toBe(false);
     expect(cells[1].southFace).toBe(true);
+    expect(cells[2].southFace).toBe(false);
     expect(cells[2].kind).toBe("lake");
     expect(cells[2].bridge).not.toBeNull();
   });

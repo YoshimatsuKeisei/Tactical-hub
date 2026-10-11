@@ -19,11 +19,13 @@ describe("independent square Pixi preview", () => {
     }
   });
   it("suppresses internal south walls, keeps exposed and bottom walls", () => {
-    const terrain = [["road", "road"], ["road", "lake"]] as const;
+    const terrain = [["road", "base", "road"], ["base", "road", "lake"]] as const;
     expect(hasPreviewRoadSouthFace(terrain, 0, 0)).toBe(false);
-    expect(hasPreviewRoadSouthFace(terrain, 1, 0)).toBe(true);
+    expect(hasPreviewRoadSouthFace(terrain, 1, 0)).toBe(false);
+    expect(hasPreviewRoadSouthFace(terrain, 2, 0)).toBe(true);
     expect(hasPreviewRoadSouthFace(terrain, 0, 1)).toBe(true);
-    expect(hasPreviewRoadSouthFace(terrain, 1, 1)).toBe(false);
+    expect(hasPreviewRoadSouthFace(terrain, 1, 1)).toBe(true);
+    expect(hasPreviewRoadSouthFace(terrain, 2, 1)).toBe(false);
   });
   it("orders lower rows in front", () => {
     expect(previewRowDepth(4)).toBeGreaterThan(previewRowDepth(3));

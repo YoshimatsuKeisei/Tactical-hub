@@ -34,12 +34,16 @@ export function previewCellAt(
   return cell.x >= 0 && cell.y >= 0 && cell.x < columns && cell.y < rows ? cell : null;
 }
 
+export function isPreviewRaisedTerrain(terrain: PreviewTerrain | undefined): boolean {
+  return terrain === "road" || terrain === "base";
+}
+
 // The only visible vertical face in this front-facing square projection is south.
-// Same-height road neighbors form one surface; zIndex alone cannot remove seams.
+// Road and base tops share one elevation; zIndex alone cannot remove internal faces.
 export function hasPreviewRoadSouthFace(
   terrain: readonly (readonly PreviewTerrain[])[], x: number, y: number,
 ): boolean {
-  return terrain[y]?.[x] === "road" && terrain[y + 1]?.[x] !== "road";
+  return isPreviewRaisedTerrain(terrain[y]?.[x]) && !isPreviewRaisedTerrain(terrain[y + 1]?.[x]);
 }
 
 export function previewRowDepth(y: number): number { return y; }

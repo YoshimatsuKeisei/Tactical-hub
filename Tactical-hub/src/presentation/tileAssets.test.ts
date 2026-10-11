@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assetPlacement, bridgeAssetKey, decodeTilePng, DEFAULT_ADJUSTMENT, EMPTY_ASSETS, TileAssetStore, type TileAsset } from "./tileAssets";
+import {
+  assetPlacement, bridgeAssetKey, decodeTilePng, DEFAULT_ADJUSTMENT, EMPTY_ASSETS,
+  TILE_ASSET_KEYS, TILE_ASSET_LABELS, TileAssetStore, type TileAsset,
+} from "./tileAssets";
 const asset = (name = "road.png"): TileAsset => ({ image: {} as HTMLImageElement, name, width: 128, height: 64, ...DEFAULT_ADJUSTMENT });
 const file = { name: "test.png", type: "image/png", slice: () => ({ arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer }) } as unknown as File;
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
@@ -56,6 +59,23 @@ describe("shared browser-only tile assets", () => {
     expect(store.getSnapshot().assets.road).toMatchObject(DEFAULT_ADJUSTMENT);
     store.reset("road"); expect(store.getSnapshot().assets.lake).toBeDefined();
     store.setEnabled(true); store.resetAll(); expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
+  });
+  it("keeps road top and south-face images as independent shared state", async () => {
+    const store = new TileAssetStore(async (_, signal) => {
+      expect(signal?.aborted).toBe(false);
+      return asset("selected.png");
+    });
+    expect(TILE_ASSET_KEYS.slice(0, 2)).toEqual(["road", "road_south_face"]);
+    expect(TILE_ASSET_LABELS.road).toContain("道路上面");
+    expect(TILE_ASSET_LABELS.road_south_face).toContain("道路南側面");
+    await store.importFile("road", file);
+    await store.importFile("road_south_face", file);
+    store.adjust("road_south_face", { scale: 1.5, offsetX: 2, offsetY: 6 });
+    store.reset("road");
+    expect(store.getSnapshot().assets.road).toBeUndefined();
+    expect(store.getSnapshot().assets.road_south_face).toMatchObject({ scale: 1.5, offsetX: 2, offsetY: 6 });
+    store.resetAll();
+    expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
   });
   it("session disposal cancels pending work and prevents late state resurrection", async () => {
     const pending = deferred<TileAsset>(); let signal: AbortSignal | undefined;

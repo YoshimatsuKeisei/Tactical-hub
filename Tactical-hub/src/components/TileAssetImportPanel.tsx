@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DEFAULT_ADJUSTMENT, TILE_ASSET_KEYS } from "../presentation/tileAssets";
+import { DEFAULT_ADJUSTMENT, TILE_ASSET_KEYS, TILE_ASSET_LABELS } from "../presentation/tileAssets";
 import { useTileAssets } from "./TileAssetProvider";
 export function TileAssetImportPanel() {
   const [open, setOpen] = useState(false);
@@ -15,11 +15,11 @@ export function TileAssetImportPanel() {
       <button type="button" onClick={() => store?.resetAll()}>Reset All</button>
       {snapshot.renderError && <p role="alert">画像描画に失敗したため仮図形へ戻しました：{snapshot.renderError}</p>}
       <p>実盤面はTerrain rendererをPixiJSに切り替えてください。CSSには適用されません。
-        X/Yは48px基準の位置調整。画像幅を1セルに合わせ、縦横比を維持します。焼き込み側面は自動除去できません。</p>
+        X/Yは48px基準の位置調整。画像幅を1セルに合わせ、縦横比を維持します。道路南側面は同じ高さが南へ続かない境界だけに表示します。焼き込み側面は自動除去できません。</p>
       {TILE_ASSET_KEYS.map((key) => {
         const asset = snapshot.assets[key];
         return <fieldset key={key}>
-          <legend>{key}{key === "road_south_face" ? " (optional display part)" : ""}</legend>
+          <legend>{TILE_ASSET_LABELS[key]}{key === "road_south_face" ? " (透過PNG・任意)" : ""}</legend>
           <input aria-label={`${key} PNG`} type="file" accept="image/png,.png" onChange={(event) => {
             const file = event.target.files?.[0]; event.target.value = "";
             if (file) void store?.importFile(key, file);
