@@ -1,30 +1,25 @@
 import { Application, Container, Graphics } from "pixi.js";
-import { Tilemap } from "@pixi/tilemap";
 import type { CellBounds, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { TERRAIN_COLORS } from "./pixiBoardTerrain";
-import { ATLAS_KINDS, ATLAS_SIZE, createTerrainAtlas } from "./pixiTerrainAtlas";
 
 export async function mountPixiBoard(host: HTMLDivElement, signal: AbortSignal) {
   const app = new Application();
   let initialized = false;
   let disposed = false;
-  let atlas: ReturnType<typeof createTerrainAtlas> | undefined;
   const dispose = () => {
     if (disposed) return;
     disposed = true;
     if (initialized) app.destroy(true, { children: true });
     else app.stage.destroy({ children: true });
-    atlas?.destroy(true);
   };
   try {
     await app.init({ width: 1, height: 1, backgroundAlpha: 0, preference: "webgl", autoStart: false, antialias: false, resolution: 1 });
     initialized = true;
     if (signal.aborted) { dispose(); return { dispose, update: () => {} }; }
-    atlas = createTerrainAtlas();
     host.appendChild(app.canvas);
     app.canvas.setAttribute("aria-hidden", "true");
     const update = (cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, width: number, height: number) => {
-      if (disposed || signal.aborted || !atlas || width <= 0 || height <= 0) return;
+      if (disposed || signal.aborted || width <= 0 || height <= 0) return;
       for (const child of app.stage.removeChildren()) child.destroy({ children: true });
       app.renderer.resize(width, height);
       const ground = new Container();
@@ -33,10 +28,9 @@ export async function mountPixiBoard(host: HTMLDivElement, signal: AbortSignal) 
       for (const cell of cells) {
         const rect = bounds.get(`${cell.x},${cell.y}`);
         if (!rect || !cell.kind) continue;
-        const tile = new Tilemap([atlas.source]);
-        tile.tile(0, 0, 0, { u: ATLAS_KINDS.indexOf(cell.kind) * ATLAS_SIZE, tileWidth: ATLAS_SIZE, tileHeight: ATLAS_SIZE });
+        // Stable real-board rendering path: Pixi Graphics avoids the observed Tilemap flicker.
+        const tile = new Graphics().rect(0, 0, rect.width, rect.height).fill(TERRAIN_COLORS[cell.kind]);
         tile.position.set(rect.x, rect.y);
-        tile.scale.set(rect.width / ATLAS_SIZE, rect.height / ATLAS_SIZE);
         ground.addChild(tile);
       }
       app.stage.addChild(ground);
