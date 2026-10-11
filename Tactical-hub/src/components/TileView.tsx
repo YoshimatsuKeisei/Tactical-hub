@@ -39,6 +39,8 @@ export function TileView({
 }: Props) {
   return (
     <button
+      data-board-x={tile.x}
+      data-board-y={tile.y}
       className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""} ${attackHighlighted ? "attack-highlighted" : ""} ${
         encourageHighlighted ? "encourage-highlighted" : ""
       } ${constructionPreview ? "construction-preview" : ""} ${bridgeCandidateMarker ? "bridge-candidate-marker" : ""} ${bridge ? "active-bridge" : ""} ${obstacle ? "active-obstacle" : ""

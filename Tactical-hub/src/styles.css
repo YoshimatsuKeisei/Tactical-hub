@@ -799,3 +799,14 @@ pre {
 .pixi-tile-preview-panel h2 { margin: 0; font-size: 1.1rem; }
 .pixi-tile-preview-scroll { max-width: 100%; overflow: auto; }
 .pixi-tile-preview-scroll canvas { display: block; }
+
+.board-renderer-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.board-pixi { position: relative; isolation: isolate; }
+.pixi-board-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.pixi-board-canvas canvas { display: block; }
+.board-pixi > .tile { background: transparent; border-color: transparent; z-index: 1; }
+.board-pixi > .tile.outside { background: #d8dde2; }
+.board-pixi > .tile.highlighted { z-index: 2; }
+.board-pixi > .tile.attack-highlighted { z-index: 3; }
+.board-pixi > .tile.active-bridge:not(.bridge-candidate-marker)::before { content: none; }
+.board-pixi > .tile.active-obstacle:not(.construction-preview)::after { content: none; }

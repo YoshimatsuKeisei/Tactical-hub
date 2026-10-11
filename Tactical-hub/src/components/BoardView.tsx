@@ -10,7 +10,9 @@ import type { UnitDeathOverlay as DeathOverlay, UnitVisualEvent } from "../prese
 import { TileView } from "./TileView";
 import { UnitDeathOverlay } from "./UnitDeathOverlay";
 import { UnitToken } from "./UnitToken";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { PixiBoardTerrain } from "./PixiBoardTerrain";
+import { buildPixiBoardTerrain } from "../presentation/pixiBoardTerrain";
 
 type Props = {
   state: GameState;
@@ -38,6 +40,11 @@ export function getMovementCandidateByBoardCell(
 }
 
 export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestination, onChooseAttackTarget, manualTeamId, constructionMode, onChooseConstruction, visualEvents = [], deathOverlays = [] }: Props) {
+  const [terrainMode, setTerrainMode] = useState("css");
+  const [terrainError, setTerrainError] = useState("");
+  const boardRef = useRef<HTMLDivElement>(null);
+  const usePixi = (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV && terrainMode === "pixi";
+  const terrain = useMemo(() => usePixi ? buildPixiBoardTerrain(state) : [], [usePixi, state.map, state.constructions]);
   const [hoveredBridge, setHoveredBridge] = useState<{ key: string; cells: { x: number; y: number }[] }>();
   const selectedCandidates = state.phase === "movement_input" && selectedUnitId ? getMovementCandidates(state, selectedUnitId) : [];
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
@@ -90,7 +97,16 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
   }
 
   return (
-    <div className="board" style={{ gridTemplateColumns: `repeat(${state.map.width}, minmax(26px, 1fr))` }}>
+    <>
+    {(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV && <div className="board-renderer-controls">
+      <label>Terrain renderer (DEV): <select value={terrainMode} onChange={(event) => { setTerrainError(""); setTerrainMode(event.target.value); }}>
+        <option value="css">CSS (default)</option><option value="pixi">PixiJS (experimental)</option>
+      </select></label>
+      {usePixi && <span>HTML units/highlights remain above all terrain; exact occlusion is not supported.</span>}
+      {terrainError && <span role="alert">PixiJS failed; using CSS: {terrainError}</span>}
+    </div>}
+    <div ref={boardRef} className={`board${usePixi ? " board-pixi" : ""}`} style={{ gridTemplateColumns: `repeat(${state.map.width}, minmax(26px, 1fr))` }}>
+      {usePixi && <PixiBoardTerrain cells={terrain} boardRef={boardRef} onError={(message) => { setTerrainError(message); setTerrainMode("css"); }} />}
       {state.map.tiles.map((tile) => {
         const boardUnit = getUnitAtBoardCell(state, tile.x, tile.y);
         const base = tile.baseId ? state.bases.find((candidate) => candidate.id === tile.baseId) : undefined;
@@ -167,5 +183,6 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
         );
       })}
     </div>
+    </>
   );
 }

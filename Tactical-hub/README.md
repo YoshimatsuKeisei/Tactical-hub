@@ -1,5 +1,42 @@
 # Tactical Hub
 
+## DEV real-board PixiJS terrain (hybrid experiment)
+
+On the game board, **Terrain renderer (DEV)** starts at **CSS (default)**.
+Choose **PixiJS (experimental)** to render the current `GameState.map` and active
+constructions behind the existing HTML buttons and unit sprites. Switch back to
+CSS at any time; WebGL initialization errors also restore CSS. Production has no
+selector and always uses CSS.
+
+Gray road surfaces are shared by `road`, `baseGate`, and `reorganize`; bases are
+gold, lakes blue, and `outside` remains outside. Bridges retain the lake below
+them and use horizontal/vertical start/middle/end segments. Active obstacles are
+separate overlays. Same-height road neighbors suppress internal south faces.
+The diagnostic atlas is generated in memory, not a production image asset.
+The independent preview now uses that same single-source color atlas instead of
+multiple generated render-target textures. The reported all-gray issue still
+needs browser confirmation; its exact GPU/runtime cause is not established here.
+
+Canvas positioning uses measured HTML tile rectangles, including fractional
+sizes and gaps. A ResizeObserver updates it when layout changes; canvas and
+buttons share the same scrolling parent. Canvas has no pointer events. Existing
+HTML unit/tile callbacks, keyboard focus, movement/attack selection, construction
+preview, and highlights remain the interaction layer.
+
+**Hybrid limitation:** every HTML character and highlight is above the complete
+Pixi terrain scene. Bridges/obstacles cannot correctly occlude character parts,
+even when the terrain's own row depth is correct. This is an experiment, not a
+fully depth-sorted game renderer. Real-board terrain currently uses per-cell
+atlas quads to match exact DOM rounding; batching/performance at scale remains
+to be assessed before production adoption.
+
+Manual checks: compare CSS/Pixi map locations and colors; build/reset both bridge
+orientations and obstacles; verify movement, attack, construction hover/click and
+highlights; scroll both axes and resize the window; repeatedly toggle modes.
+Confirm sprites and death animations remain unchanged, and inspect the stated
+occlusion limitation. Confirm production stays CSS. Browser alignment and GPU
+color rendering require local manual verification before production artwork.
+
 ## DEV PixiJS square tile experiment
 
 Run `npm run dev`, open the game screen, and select **Open PixiJS tile preview

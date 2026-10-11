@@ -5,6 +5,7 @@ import {
   PREVIEW_OBSTACLES, hasPreviewRoadSouthFace, previewCellAt, previewRowDepth,
   type PreviewTerrain,
 } from "./pixiTilePreview";
+import { ATLAS_KINDS, createTerrainAtlas } from "./pixiTerrainAtlas";
 
 const WIDTH = PREVIEW_TERRAIN[0].length * S;
 const HEIGHT = PREVIEW_TERRAIN.length * S;
@@ -36,17 +37,8 @@ export async function mountPixiTilePreview(
     host.appendChild(app.canvas);
     app.canvas.setAttribute("aria-label", "Flat and raised square tile comparison; click a logical cell");
     const colors: Record<PreviewTerrain, number> = { road: 0x999c96, base: 0xc6a253, lake: 0x338ac0 };
-    const tiles = {} as Record<PreviewTerrain, Texture>;
-    for (const kind of ["road", "base", "lake"] as const) {
-      const shape = new Graphics().rect(0, 0, S, S).fill(colors[kind]);
-      shape.rect(0.5, 0.5, S - 1, S - 1).stroke({ color: 0x243546, width: 1 });
-      if (kind === "lake") shape.moveTo(8, 24).lineTo(40, 24).stroke({ color: 0x83c6e5, width: 2 });
-      if (kind === "base") shape.rect(12, 12, 24, 24).stroke({ color: 0xffe7a2, width: 3 });
-      tiles[kind] = app.renderer.generateTexture(shape);
-      tiles[kind].source.scaleMode = "nearest";
-      textures.push(tiles[kind]);
-      shape.destroy();
-    }
+    const atlas = createTerrainAtlas();
+    textures.push(atlas);
     const highlights: Graphics[] = [];
     ORIGINS.forEach((origin, panelIndex) => {
       const raised = panelIndex === 1;
@@ -55,8 +47,8 @@ export async function mountPixiTilePreview(
       panel.position.set(origin.x, origin.y);
       panel.eventMode = "none";
       app.stage.addChild(panel);
-      const ground = new Tilemap(Object.values(tiles).map((texture) => texture.source));
-      PREVIEW_TERRAIN.forEach((row, y) => row.forEach((kind, x) => ground.tile(tiles[kind], x * S, y * S)));
+      const ground = new Tilemap([atlas.source]);
+      PREVIEW_TERRAIN.forEach((row, y) => row.forEach((kind, x) => ground.tile(0, x * S, y * S, { u: ATLAS_KINDS.indexOf(kind) * S, tileWidth: S, tileHeight: S })));
       panel.addChild(ground);
       const depth = new Container();
       depth.sortableChildren = true;
