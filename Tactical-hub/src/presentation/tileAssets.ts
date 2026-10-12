@@ -3,6 +3,7 @@ export const TILE_ASSET_KEYS = [
   "base_front_wall_third_party",
   "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
   "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
+  "bridge_top", "bridge_pillar", "bridge_shadow",
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
 ] as const;
@@ -24,6 +25,9 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   lake_frame_3: "Frame 3 / Lake animation 3",
   lake_frame_4: "Frame 4 / Lake animation 4",
   obstacle: "Obstacle / 障害物",
+  bridge_top: "Bridge top / 橋本体上面",
+  bridge_pillar: "Bridge pillar / 橋支柱",
+  bridge_shadow: "Bridge shadow / 橋陰影",
   bridge_horizontal_start: "Bridge horizontal start",
   bridge_horizontal_middle: "Bridge horizontal middle",
   bridge_horizontal_end: "Bridge horizontal end",
@@ -32,6 +36,7 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   bridge_vertical_end: "Bridge vertical end",
 };
 export interface AssetAdjustment { scale: number; offsetX: number; offsetY: number }
+export interface AxisAssetAdjustment { scaleX: number; scaleY: number; offsetX: number; offsetY: number }
 export interface RoadSouthShadowSettings {
   enabled: boolean;
   opacity: number;
@@ -62,6 +67,8 @@ export interface MoveHighlightSettings {
 }
 interface LegacyRoadSouthShadowSettings extends AssetAdjustment { enabled: boolean; opacity: number }
 export interface TileAsset extends AssetAdjustment {
+  scaleX?: number;
+  scaleY?: number;
   image: HTMLImageElement; name: string; width: number; height: number;
 }
 export interface AssetSnapshot {
@@ -74,6 +81,9 @@ export interface AssetSnapshot {
   moveHighlight?: MoveHighlightSettings;
 }
 export const DEFAULT_ADJUSTMENT: AssetAdjustment = { scale: 1, offsetX: 0, offsetY: 0 };
+export const DEFAULT_AXIS_ADJUSTMENT: AxisAssetAdjustment = { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 };
+export const BRIDGE_COMPONENT_ASSET_KEYS = ["bridge_top", "bridge_pillar", "bridge_shadow"] as const;
+export type BridgeComponentAssetKey = typeof BRIDGE_COMPONENT_ASSET_KEYS[number];
 export const DEFAULT_ROAD_SOUTH_SHADOW: RoadSouthShadowSettings = {
   enabled: true,
   opacity: 0.24,
@@ -203,8 +213,9 @@ export class TileAssetStore {
     const controller = new AbortController(); this.pending.set(key, controller);
     this.publish({ ...this.snapshot, statuses: { ...this.snapshot.statuses, [key]: "読み込み中…" } });
     try {
-      const asset = await this.decode(file, controller.signal);
+      const decoded = await this.decode(file, controller.signal);
       if (!this.alive || this.versions[key] !== version) return;
+      const asset = isBridgeComponentAssetKey(key) ? { ...decoded, ...DEFAULT_AXIS_ADJUSTMENT } : decoded;
       this.publish({ ...this.snapshot, assets: { ...this.snapshot.assets, [key]: asset }, statuses: { ...this.snapshot.statuses, [key]: "読み込み済み" } });
     } catch (error) {
       if (!this.alive || this.versions[key] !== version) return;
@@ -227,6 +238,18 @@ export class TileAssetStore {
     if (![next.scale, next.offsetX, next.offsetY].every(Number.isFinite)) return;
     next.scale = Math.min(4, Math.max(0.1, next.scale));
     this.publish({ ...this.snapshot, assets: { ...this.snapshot.assets, [key]: next } });
+  }
+  adjustBridgeAsset(key: BridgeComponentAssetKey, change: Partial<AxisAssetAdjustment>) {
+    const asset = this.snapshot.assets[key];
+    if (!asset) return;
+    const next = { ...asset, ...bridgeAssetAdjustment(asset), ...change };
+    if (![next.scaleX, next.scaleY, next.offsetX, next.offsetY].every(Number.isFinite)) return;
+    next.scaleX = Math.min(4, Math.max(0.1, next.scaleX));
+    next.scaleY = Math.min(4, Math.max(0.1, next.scaleY));
+    this.publish({ ...this.snapshot, assets: { ...this.snapshot.assets, [key]: next } });
+  }
+  resetBridgeAssetAdjustment(key: BridgeComponentAssetKey) {
+    this.adjustBridgeAsset(key, DEFAULT_AXIS_ADJUSTMENT);
   }
   reset(key: TileAssetKey) {
     this.versions[key] = (this.versions[key] ?? 0) + 1;
@@ -255,6 +278,29 @@ export function missingLakeAnimationAssets(snapshot: AssetSnapshot): LakeFrameAs
 
 export function lakeAnimationCanRun(snapshot: AssetSnapshot) {
   return snapshot.enabled && snapshot.lakeAnimationEnabled === true && missingLakeAnimationAssets(snapshot).length === 0;
+}
+
+export function isBridgeComponentAssetKey(key: TileAssetKey): key is BridgeComponentAssetKey {
+  return BRIDGE_COMPONENT_ASSET_KEYS.some((bridgeKey) => bridgeKey === key);
+}
+
+export function bridgeAssetAdjustment(asset?: Pick<TileAsset, "scale" | "scaleX" | "scaleY" | "offsetX" | "offsetY">): AxisAssetAdjustment {
+  return {
+    scaleX: asset?.scaleX ?? asset?.scale ?? 1,
+    scaleY: asset?.scaleY ?? asset?.scale ?? 1,
+    offsetX: asset?.offsetX ?? 0,
+    offsetY: asset?.offsetY ?? 0,
+  };
+}
+
+export function bridgeComponentPlacement(asset: TileAsset, rect: { x: number; y: number; width: number; height: number }) {
+  const adjustment = bridgeAssetAdjustment(asset);
+  return {
+    x: rect.x + adjustment.offsetX * rect.width / 48,
+    y: rect.y + adjustment.offsetY * rect.height / 48,
+    width: rect.width * adjustment.scaleX,
+    height: rect.height * adjustment.scaleY,
+  };
 }
 
 export function bridgeAssetKey(direction: "horizontal" | "vertical", segment: "start" | "middle" | "end"): TileAssetKey {

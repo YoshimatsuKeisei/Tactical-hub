@@ -2,7 +2,7 @@ import { Container, Graphics, ImageSource, Sprite, Texture } from "pixi.js";
 import type { CellBounds, PixiBaseGroup, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { baseGroupBounds, TERRAIN_COLORS } from "./pixiBoardTerrain";
 import {
-  assetPlacement, bridgeAssetKey, roadSouthShadowSettings, type AssetSnapshot,
+  assetPlacement, bridgeAssetKey, bridgeComponentPlacement, roadSouthShadowSettings, type AssetSnapshot,
   type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
 } from "./tileAssets";
 import type { LakeAnimationState } from "./pixiLakeAnimation";
@@ -63,6 +63,7 @@ const BASE_FOREGROUND_ASSET_KEYS = new Set<TileAssetKey>([
 const TERRAIN_ASSET_KEYS = new Set<TileAssetKey>([
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party",
   "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
+  "bridge_top", "bridge_pillar", "bridge_shadow",
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
 ]);
@@ -215,7 +216,12 @@ interface PersistentCell {
   topHighlight: PersistentOverlay;
   faceHighlight: PersistentOverlay;
   topOutline: PersistentOutline;
-  bridge: PersistentVisual;
+  bridgeShadow: PersistentVisual;
+  bridgePillar: PersistentVisual;
+  bridgeTop: PersistentVisual;
+  bridgeShadowLayer: Container;
+  bridgePillarLayer: Container;
+  bridgeTopLayer: Container;
   obstacle: PersistentVisual;
   layer: Container;
 }
@@ -283,6 +289,21 @@ export class PersistentTerrainScene {
     lakeBlend.visible = false;
     lakeBlend.zIndex = 1;
     this.groundLayer.addChild(lakeBlend);
+    const bridgeShadowLayer = new Container();
+    const bridgePillarLayer = new Container();
+    const bridgeTopLayer = new Container();
+    bridgeShadowLayer.label = `bridge-shadow-${key}`;
+    bridgePillarLayer.label = `bridge-pillar-${key}`;
+    bridgeTopLayer.label = `bridge-top-${key}`;
+    const face = new PersistentVisual(layer);
+    const topHighlight = new PersistentOverlay(layer);
+    const faceHighlight = new PersistentOverlay(layer);
+    const topOutline = new PersistentOutline(layer);
+    const bridgeShadow = new PersistentVisual(bridgeShadowLayer);
+    const bridgePillar = new PersistentVisual(bridgePillarLayer);
+    const bridgeTop = new PersistentVisual(bridgeTopLayer);
+    layer.addChild(bridgeShadowLayer, bridgePillarLayer, bridgeTopLayer);
+    const obstacle = new PersistentVisual(layer);
     const node = {
       outside: new PersistentOverlay(this.groundLayer),
       ground,
@@ -291,12 +312,17 @@ export class PersistentTerrainScene {
       lakePlacement: undefined,
       shadow: new PersistentVisual(this.shadowLayer),
       road: new PersistentVisual(this.roadLayer),
-      face: new PersistentVisual(layer),
-      topHighlight: new PersistentOverlay(layer),
-      faceHighlight: new PersistentOverlay(layer),
-      topOutline: new PersistentOutline(layer),
-      bridge: new PersistentVisual(layer),
-      obstacle: new PersistentVisual(layer),
+      face,
+      topHighlight,
+      faceHighlight,
+      topOutline,
+      bridgeShadow,
+      bridgePillar,
+      bridgeTop,
+      bridgeShadowLayer,
+      bridgePillarLayer,
+      bridgeTopLayer,
+      obstacle,
       layer,
     };
     this.nodes.set(key, node);
@@ -397,11 +423,26 @@ export class PersistentTerrainScene {
       }
 
       if (cell.bridge) {
-        const bridgeKey = bridgeAssetKey(cell.bridge.direction, cell.bridge.segment);
-        node.bridge.update(bridgeKey, rect, snapshot, this.cache,
-          `bridge:${cell.bridge.direction}:${cell.bridge.segment}:${raised}:${signature}`,
-          (g) => drawBridge(g, rect, cell.bridge!, raised, depth));
-      } else node.bridge.hide();
+        if (cell.bridge.direction === "horizontal") {
+          node.bridgeShadow.update("bridge_shadow", rect, snapshot, this.cache,
+            `bridge-shadow:${signature}`, () => {}, { placement: bridgeComponentPlacement, fallback: false });
+          node.bridgePillar.update("bridge_pillar", rect, snapshot, this.cache,
+            `bridge-pillar:${signature}`, () => {}, { placement: bridgeComponentPlacement, fallback: false });
+        } else {
+          node.bridgeShadow.hide();
+          node.bridgePillar.hide();
+        }
+        const legacyBridgeKey = bridgeAssetKey(cell.bridge.direction, cell.bridge.segment);
+        const bridgeTopKey = this.cache.get("bridge_top", snapshot) ? "bridge_top" : legacyBridgeKey;
+        node.bridgeTop.update(bridgeTopKey, rect, snapshot, this.cache,
+          `bridge-top:${cell.bridge.direction}:${cell.bridge.segment}:${raised}:${signature}`,
+          (g) => drawBridge(g, rect, cell.bridge!, raised, depth),
+          bridgeTopKey === "bridge_top" ? { placement: bridgeComponentPlacement } : undefined);
+      } else {
+        node.bridgeShadow.hide();
+        node.bridgePillar.hide();
+        node.bridgeTop.hide();
+      }
 
       if (cell.obstacle) {
         node.obstacle.update("obstacle", rect, snapshot, this.cache, `obstacle:${signature}`,
@@ -464,7 +505,13 @@ export class PersistentTerrainScene {
       topHighlightGraphics: node.topHighlight.graphics,
       faceHighlightGraphics: node.faceHighlight.graphics,
       topOutlineGraphics: node.topOutline.graphics,
-      bridgeGraphics: node.bridge.graphics, bridgeSprite: node.bridge.sprite,
+      bridgeGraphics: node.bridgeTop.graphics, bridgeSprite: node.bridgeTop.sprite,
+      bridgeShadowGraphics: node.bridgeShadow.graphics, bridgeShadowSprite: node.bridgeShadow.sprite,
+      bridgePillarGraphics: node.bridgePillar.graphics, bridgePillarSprite: node.bridgePillar.sprite,
+      bridgeTopGraphics: node.bridgeTop.graphics, bridgeTopSprite: node.bridgeTop.sprite,
+      bridgeShadowLayer: node.bridgeShadowLayer,
+      bridgePillarLayer: node.bridgePillarLayer,
+      bridgeTopLayer: node.bridgeTopLayer,
       obstacleGraphics: node.obstacle.graphics, obstacleSprite: node.obstacle.sprite,
     } : undefined;
   }
@@ -489,7 +536,9 @@ export class PersistentTerrainScene {
     node.topHighlight.hide();
     node.faceHighlight.hide();
     node.topOutline.hide();
-    node.bridge.hide();
+    node.bridgeShadow.hide();
+    node.bridgePillar.hide();
+    node.bridgeTop.hide();
     node.obstacle.hide();
     node.layer.visible = false;
   }
@@ -510,7 +559,12 @@ export class PersistentTerrainScene {
       node.topHighlight.destroy();
       node.faceHighlight.destroy();
       node.topOutline.destroy();
-      node.bridge.destroy();
+      node.bridgeShadow.destroy();
+      node.bridgePillar.destroy();
+      node.bridgeTop.destroy();
+      node.bridgeShadowLayer.destroy({ children: false });
+      node.bridgePillarLayer.destroy({ children: false });
+      node.bridgeTopLayer.destroy({ children: false });
       node.obstacle.destroy();
       node.layer.destroy({ children: false });
     }

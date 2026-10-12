@@ -344,6 +344,140 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.obstacleSprite.visible).toBe(true);
   });
 
+  it("layers independently adjusted bridge shadow, pillar and top without recreating display objects", () => {
+    const topImage = {} as HTMLImageElement, pillarImage = {} as HTMLImageElement;
+    const shadowImage = {} as HTMLImageElement, legacyImage = {} as HTMLImageElement;
+    const bridgeAssets: AssetSnapshot = {
+      enabled: true, statuses: {}, assets: {
+        bridge_top: { image: topImage, width: 96, height: 24, name: "top.png", ...DEFAULT_ADJUSTMENT,
+          scaleX: 1.5, scaleY: 0.75, offsetX: 2, offsetY: -1 },
+        bridge_pillar: { image: pillarImage, width: 32, height: 128, name: "pillar.png", ...DEFAULT_ADJUSTMENT,
+          scaleX: 0.5, scaleY: 2, offsetX: 12, offsetY: 8 },
+        bridge_shadow: { image: shadowImage, width: 64, height: 32, name: "shadow.png", ...DEFAULT_ADJUSTMENT,
+          scaleX: 2, scaleY: 1.25, offsetX: -4, offsetY: 6 },
+        bridge_horizontal_end: { image: legacyImage, width: 48, height: 48, name: "legacy.png", ...DEFAULT_ADJUSTMENT },
+      },
+    };
+    const bridgeCell = { ...cell, kind: "lake" as const, southFace: false,
+      bridge: { direction: "horizontal" as const, segment: "end" as const } };
+    const original = { ...bridgeCell, bridge: { ...bridgeCell.bridge } };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([bridgeCell], bounds, bridgeAssets);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+
+    expect(objects.bridgeTopSprite.visible).toBe(true);
+    expect(objects.bridgeTopGraphics.visible).toBe(false);
+    expect(objects.bridgeTopSprite.position.set).toHaveBeenLastCalledWith(2, -1);
+    expect(objects.bridgeTopSprite).toMatchObject({ width: 72, height: 36 });
+    expect(objects.bridgePillarSprite.position.set).toHaveBeenLastCalledWith(12, 8);
+    expect(objects.bridgePillarSprite).toMatchObject({ visible: true, width: 24, height: 96 });
+    expect(objects.bridgeShadowSprite.position.set).toHaveBeenLastCalledWith(-4, 6);
+    expect(objects.bridgeShadowSprite).toMatchObject({ visible: true, width: 96, height: 60 });
+    const depthLayer = scene.root.children[4] as { children: { children: unknown[] }[] };
+    const cellLayer = depthLayer.children[0];
+    expect(cellLayer.children.indexOf(objects.bridgeShadowLayer)).toBeLessThan(cellLayer.children.indexOf(objects.bridgePillarLayer));
+    expect(cellLayer.children.indexOf(objects.bridgePillarLayer)).toBeLessThan(cellLayer.children.indexOf(objects.bridgeTopLayer));
+    expect(bridgeCell).toEqual(original);
+
+    const topSprite = objects.bridgeTopSprite, topTexture = topSprite.texture;
+    const pillarSprite = objects.bridgePillarSprite, shadowSprite = objects.bridgeShadowSprite;
+    const adjusted = { ...bridgeAssets, assets: { ...bridgeAssets.assets,
+      bridge_top: { ...bridgeAssets.assets.bridge_top!, scaleX: 2, scaleY: 1.25, offsetX: -3, offsetY: 5 },
+    } };
+    scene.update([bridgeCell], bounds, adjusted);
+    expect(objects.bridgeTopSprite).toBe(topSprite);
+    expect(objects.bridgeTopSprite.texture).toBe(topTexture);
+    expect(objects.bridgeTopSprite.position.set).toHaveBeenLastCalledWith(-3, 5);
+    expect(objects.bridgeTopSprite).toMatchObject({ width: 96, height: 60 });
+    expect(objects.bridgePillarSprite).toBe(pillarSprite);
+    expect(objects.bridgeShadowSprite).toBe(shadowSprite);
+
+    const legacyOnly = { ...adjusted, assets: { ...adjusted.assets, bridge_top: undefined } };
+    scene.update([bridgeCell], bounds, legacyOnly);
+    expect(objects.bridgeTopSprite).toBe(topSprite);
+    expect(objects.bridgeTopSprite.texture).not.toBe(topTexture);
+    expect(objects.bridgeTopSprite).toMatchObject({ visible: true, width: 48, height: 48 });
+    scene.update([bridgeCell], bounds, EMPTY_ASSETS);
+    expect(objects.bridgeTopSprite.visible).toBe(false);
+    expect(objects.bridgeTopGraphics.visible).toBe(true);
+    expect(objects.bridgePillarSprite.visible).toBe(false);
+    expect(objects.bridgePillarGraphics.visible).toBe(false);
+    expect(objects.bridgeShadowSprite.visible).toBe(false);
+    expect(objects.bridgeShadowGraphics.visible).toBe(false);
+  });
+
+  it("shows pillar and shadow only for horizontal bridges and reuses their Sprites", () => {
+    const component = { image, width: 48, height: 48, name: "component.png", ...DEFAULT_ADJUSTMENT,
+      scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 12 };
+    const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: {
+      bridge_top: component, bridge_pillar: { ...component }, bridge_shadow: { ...component },
+    } };
+    const horizontal = { ...cell, kind: "lake" as const, southFace: false,
+      bridge: { direction: "horizontal" as const, segment: "middle" as const } };
+    const vertical = { ...horizontal,
+      bridge: { direction: "vertical" as const, segment: "middle" as const } };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([horizontal], bounds, snapshot);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    const pillarSprite = objects.bridgePillarSprite, shadowSprite = objects.bridgeShadowSprite;
+    expect(pillarSprite.visible).toBe(true);
+    expect(shadowSprite.visible).toBe(true);
+
+    scene.update([vertical], bounds, snapshot);
+    expect(objects.bridgeTopSprite.visible).toBe(true);
+    expect(pillarSprite.visible).toBe(false);
+    expect(shadowSprite.visible).toBe(false);
+    expect(objects.bridgePillarGraphics.visible).toBe(false);
+    expect(objects.bridgeShadowGraphics.visible).toBe(false);
+
+    scene.update([horizontal], bounds, snapshot);
+    expect(objects.bridgePillarSprite).toBe(pillarSprite);
+    expect(objects.bridgeShadowSprite).toBe(shadowSprite);
+    expect(pillarSprite.visible).toBe(true);
+    expect(shadowSprite.visible).toBe(true);
+  });
+
+  it("preserves all six direction and segment legacy bridge top fallbacks", () => {
+    const variants = [
+      ["horizontal", "start", "bridge_horizontal_start"],
+      ["horizontal", "middle", "bridge_horizontal_middle"],
+      ["horizontal", "end", "bridge_horizontal_end"],
+      ["vertical", "start", "bridge_vertical_start"],
+      ["vertical", "middle", "bridge_vertical_middle"],
+      ["vertical", "end", "bridge_vertical_end"],
+    ] as const;
+    for (const [direction, segment, key] of variants) {
+      const legacy = { image, width: 48, height: 48, name: `${key}.png`, ...DEFAULT_ADJUSTMENT };
+      const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: { [key]: legacy } };
+      const bridgeCell = { ...cell, kind: "lake" as const, southFace: false, bridge: { direction, segment } };
+      const scene = new PersistentTerrainScene(new TerrainTextureCache());
+      scene.update([bridgeCell], bounds, snapshot);
+      const objects = scene.getCellDisplayObjects("0,0")!;
+      expect(objects.bridgeTopSprite.visible, key).toBe(true);
+      expect(objects.bridgeTopGraphics.visible, key).toBe(false);
+    }
+  });
+
+  it("applies the same bridge component snapshot to preview and board scenes", () => {
+    const component = { image, width: 48, height: 48, name: "component.png", ...DEFAULT_ADJUSTMENT,
+      scaleX: 1.25, scaleY: 1.75, offsetX: 3, offsetY: 9 };
+    const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: {
+      bridge_top: component, bridge_pillar: { ...component }, bridge_shadow: { ...component },
+    } };
+    const bridgeCell = { ...cell, kind: "lake" as const, southFace: false,
+      bridge: { direction: "horizontal" as const, segment: "start" as const } };
+    const previewScene = new PersistentTerrainScene(new TerrainTextureCache());
+    const boardScene = new PersistentTerrainScene(new TerrainTextureCache());
+    previewScene.update([bridgeCell], bounds, snapshot, false);
+    boardScene.update([bridgeCell], bounds, snapshot, true);
+    for (const objects of [previewScene.getCellDisplayObjects("0,0")!, boardScene.getCellDisplayObjects("0,0")!]) {
+      for (const sprite of [objects.bridgeShadowSprite, objects.bridgePillarSprite, objects.bridgeTopSprite]) {
+        expect(sprite.position.set).toHaveBeenLastCalledWith(3, 9);
+        expect(sprite).toMatchObject({ visible: true, width: 60, height: 84 });
+      }
+    }
+  });
+
   it("draws four persistent road underlays behind one measured 2x2 base core", () => {
     const baseImage = {} as HTMLImageElement, roadImage = {} as HTMLImageElement;
     const snapshot: AssetSnapshot = {
@@ -643,6 +777,32 @@ const overflowAssets: AssetSnapshot = { enabled: true, statuses: {}, assets: {
 } };
 
 describe("shared Canvas extent", () => {
+  it("includes independently scaled and offset bridge layers outside the board", () => {
+    const bridgeCell = [{ ...cell, kind: "lake" as const, southFace: false,
+      bridge: { direction: "horizontal" as const, segment: "middle" as const } }];
+    const bridgeBounds = new Map([["0,0", { x: 0, y: 0, width: 40, height: 40 }]]);
+    const baseAsset = { image, width: 48, height: 48, name: "bridge.png", ...DEFAULT_ADJUSTMENT };
+    const bridgeAssets: AssetSnapshot = { enabled: true, statuses: {}, assets: {
+      bridge_top: { ...baseAsset, scaleX: 2, scaleY: 1, offsetX: 48, offsetY: 0 },
+      bridge_pillar: { ...baseAsset, scaleX: 1, scaleY: 2, offsetX: 0, offsetY: 48 },
+      bridge_shadow: { ...baseAsset, scaleX: 1, scaleY: 1, offsetX: -24, offsetY: 0 },
+    } };
+    expect(pixiBoardExtent(bridgeCell, bridgeBounds, 100, 100, bridgeAssets)).toEqual({
+      left: -20, top: 0, width: 140, height: 120,
+      paddingLeft: 20, paddingTop: 0, paddingRight: 20, paddingBottom: 20,
+    });
+    const verticalBridge = [{ ...bridgeCell[0],
+      bridge: { direction: "vertical" as const, segment: "middle" as const } }];
+    expect(pixiBoardExtent(verticalBridge, bridgeBounds, 100, 100, bridgeAssets)).toEqual({
+      left: 0, top: 0, width: 120, height: 100,
+      paddingLeft: 0, paddingTop: 0, paddingRight: 20, paddingBottom: 0,
+    });
+    expect(pixiBoardExtent(bridgeCell, bridgeBounds, 100, 100, { ...bridgeAssets, enabled: false })).toEqual({
+      left: 0, top: 0, width: 100, height: 100,
+      paddingLeft: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0,
+    });
+  });
+
   it("unions the actual core, wall and flag rectangles and resets without changing bounds", () => {
     const extent = pixiBoardExtent(baseCells, baseBounds, 100, 100, overflowAssets);
     expect(extent).toEqual({ left: -90, top: -80, width: 300, height: 460,

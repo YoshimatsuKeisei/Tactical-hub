@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  assetPlacement, bridgeAssetKey, decodeTilePng, DEFAULT_ADJUSTMENT, EMPTY_ASSETS,
+  assetPlacement, bridgeAssetAdjustment, bridgeAssetKey, bridgeComponentPlacement,
+  BRIDGE_COMPONENT_ASSET_KEYS, decodeTilePng, DEFAULT_ADJUSTMENT, DEFAULT_AXIS_ADJUSTMENT, EMPTY_ASSETS,
   DEFAULT_MOVE_HIGHLIGHT, DEFAULT_ROAD_SOUTH_SHADOW, lakeAnimationCanRun, LAKE_FRAME_KEYS,
   missingLakeAnimationAssets, moveHighlightSettings, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
   TileAssetStore, type TileAsset,
@@ -122,6 +123,46 @@ describe("shared browser-only tile assets", () => {
     store.resetAll();
     expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
     expect(keys.every((key) => TILE_ASSET_LABELS[key].length > 0)).toBe(true);
+  });
+  it("imports, adjusts and resets the three bridge layers independently on both axes", async () => {
+    const store = new TileAssetStore(async (selected) => asset(selected.name));
+    expect(BRIDGE_COMPONENT_ASSET_KEYS).toEqual(["bridge_top", "bridge_pillar", "bridge_shadow"]);
+    expect(BRIDGE_COMPONENT_ASSET_KEYS.map((key) => TILE_ASSET_LABELS[key])).toEqual([
+      "Bridge top / 橋本体上面", "Bridge pillar / 橋支柱", "Bridge shadow / 橋陰影",
+    ]);
+    for (const key of BRIDGE_COMPONENT_ASSET_KEYS) await store.importFile(key, { ...file, name: `${key}.png` } as File);
+    for (const key of BRIDGE_COMPONENT_ASSET_KEYS) {
+      expect(store.getSnapshot().assets[key]).toMatchObject({ name: `${key}.png`, ...DEFAULT_AXIS_ADJUSTMENT });
+    }
+
+    store.adjustBridgeAsset("bridge_top", { scaleX: 1.5, scaleY: 0.75, offsetX: -3, offsetY: 6 });
+    store.adjustBridgeAsset("bridge_pillar", { scaleX: 2, scaleY: 3, offsetX: 4, offsetY: 12 });
+    store.adjustBridgeAsset("bridge_shadow", { scaleX: 9, scaleY: -2, offsetX: 7, offsetY: 15 });
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top)).toEqual({ scaleX: 1.5, scaleY: 0.75, offsetX: -3, offsetY: 6 });
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_pillar)).toEqual({ scaleX: 2, scaleY: 3, offsetX: 4, offsetY: 12 });
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow)).toEqual({ scaleX: 4, scaleY: 0.1, offsetX: 7, offsetY: 15 });
+
+    store.resetBridgeAssetAdjustment("bridge_pillar");
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_pillar)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top)).not.toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    store.resetBridgeAssetAdjustment("bridge_top");
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow)).not.toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    store.resetBridgeAssetAdjustment("bridge_shadow");
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    store.reset("bridge_shadow");
+    expect(store.getSnapshot().assets.bridge_shadow).toBeUndefined();
+    expect(store.getSnapshot().assets.bridge_top).toBeDefined();
+    store.resetAll();
+    expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
+  });
+  it("places bridge layers from the logical cell with independent X/Y scaling and offsets", () => {
+    const bridgeAsset = {
+      ...asset("bridge.png"), scaleX: 1.5, scaleY: 2.25, offsetX: -4, offsetY: 8,
+    };
+    expect(bridgeComponentPlacement(bridgeAsset, { x: 100, y: 200, width: 24, height: 36 })).toEqual({
+      x: 98, y: 206, width: 36, height: 81,
+    });
   });
   it("keeps shadow enable, opacity, and placement settings without a PNG", () => {
     const store = new TileAssetStore(async () => asset());

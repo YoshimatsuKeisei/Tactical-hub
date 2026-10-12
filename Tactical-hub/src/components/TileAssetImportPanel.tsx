@@ -1,7 +1,8 @@
 import { useState } from "react";
 import {
-  DEFAULT_ADJUSTMENT, LAKE_FRAME_KEYS, missingLakeAnimationAssets, moveHighlightSettings,
-  roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS, type TileAssetKey,
+  bridgeAssetAdjustment, BRIDGE_COMPONENT_ASSET_KEYS, DEFAULT_ADJUSTMENT, LAKE_FRAME_KEYS,
+  missingLakeAnimationAssets, moveHighlightSettings, roadSouthShadowSettings,
+  TILE_ASSET_KEYS, TILE_ASSET_LABELS, type BridgeComponentAssetKey, type TileAssetKey,
 } from "../presentation/tileAssets";
 import { useTileAssets } from "./TileAssetProvider";
 export function TileAssetImportPanel() {
@@ -47,6 +48,31 @@ export function TileAssetImportPanel() {
       </div>}
     </fieldset>;
   };
+  const bridgeAssetField = (key: BridgeComponentAssetKey) => {
+    const asset = snapshot.assets[key];
+    const adjustment = bridgeAssetAdjustment(asset);
+    return <fieldset key={key}>
+      <legend>{TILE_ASSET_LABELS[key]} (透過PNG・任意)</legend>
+      <input aria-label={`${key} PNG`} type="file" accept="image/png,.png" onChange={(event) => {
+        const file = event.target.files?.[0]; event.target.value = "";
+        if (file) void store?.importFile(key, file);
+      }} />
+      <span role="status">{snapshot.statuses[key] ?? (key === "bridge_top" ? "未設定：従来の橋表示" : "未設定：非表示")}
+        {asset ? ` — ${asset.name} ${asset.width}×${asset.height}` : ""}</span>
+      <button type="button" onClick={() => store?.reset(key)}>Reset image</button>
+      <div>
+        {(["scaleX", "scaleY", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
+          <input type="number" aria-label={`${key} ${property}`}
+            step={property === "scaleX" || property === "scaleY" ? 0.1 : 1}
+            min={property === "scaleX" || property === "scaleY" ? 0.1 : undefined}
+            max={property === "scaleX" || property === "scaleY" ? 4 : undefined}
+            disabled={!asset} value={adjustment[property]}
+            onChange={(event) => { if (event.target.value !== "") store?.adjustBridgeAsset(key, { [property]: Number(event.target.value) }); }} />
+        </label>)}
+        <button type="button" disabled={!asset} onClick={() => store?.resetBridgeAssetAdjustment(key)}>Reset adjustment</button>
+      </div>
+    </fieldset>;
+  };
   return <section className="tile-asset-import">
     <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>Tile Asset Preview / Import {open ? "— Close" : "(DEV)"}</button>
     {open && <div className="tile-asset-import-panel">
@@ -71,6 +97,11 @@ export function TileAssetImportPanel() {
           : <p role="status">4枚読み込み済み。湖面アニメーションを有効化できます。</p>}
       </fieldset>
       {LAKE_FRAME_KEYS.map(assetField)}
+      <section className="bridge-asset-import">
+        <h3>Bridge layers / 橋レイヤー</h3>
+        <p>3画像は同じ橋セルを基準に配置します。scaleX / scaleY と offsetX / offsetY は各画像で独立しています。</p>
+        {BRIDGE_COMPONENT_ASSET_KEYS.map(bridgeAssetField)}
+      </section>
       <fieldset>
         <legend>Normal unit move highlight / 通常ユニット移動強調</legend>
         <label><input type="checkbox" checked={moveHighlight.normal.enabled}
@@ -103,7 +134,9 @@ export function TileAssetImportPanel() {
           onChange={(event) => store?.adjustMoveHighlight("ninja", { outlineEnabled: event.target.checked })} /> 境界線を表示</label>
         <button type="button" onClick={() => store?.resetMoveHighlightSettings("ninja")}>Reset ninja highlight</button>
       </fieldset>
-      {TILE_ASSET_KEYS.filter((key) => !LAKE_FRAME_KEYS.some((lakeKey) => lakeKey === key)).map(assetField)}
+      {TILE_ASSET_KEYS.filter((key) =>
+        !LAKE_FRAME_KEYS.some((lakeKey) => lakeKey === key) &&
+        !BRIDGE_COMPONENT_ASSET_KEYS.some((bridgeKey) => bridgeKey === key)).map(assetField)}
       <p>拠点前壁はclick-throughの前景Canvasでキャラ本体より手前、HP・badge・選択表示より奥へ配置します。
         その他の障害物とHTMLキャラの正確な部分遮蔽は未対応です。</p>
     </div>}

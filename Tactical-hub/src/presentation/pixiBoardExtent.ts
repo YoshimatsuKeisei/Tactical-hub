@@ -1,25 +1,37 @@
 import { baseGroupBounds, type CellBounds, type PixiBoardTerrain } from "./pixiBoardTerrain";
 import { baseAssetPlacement } from "./pixiTerrainScene";
-import type { AssetSnapshot, TileAssetKey } from "./tileAssets";
+import { bridgeComponentPlacement, BRIDGE_COMPONENT_ASSET_KEYS, type AssetSnapshot, type TileAssetKey } from "./tileAssets";
 
 export function pixiBoardExtent(cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, width: number, height: number, snapshot: AssetSnapshot) {
   let left = 0, top = 0, right = width, bottom = height;
+  const include = (placed: CellBounds) => {
+    left = Math.min(left, placed.x);
+    top = Math.min(top, placed.y);
+    right = Math.max(right, placed.x + placed.width);
+    bottom = Math.max(bottom, placed.y + placed.height);
+  };
   if (snapshot.enabled) for (const cell of cells) {
     const group = cell.baseGroup;
-    if (!group) continue;
-    const rect = baseGroupBounds(group, bounds);
-    if (!rect) continue;
-    const wall: TileAssetKey = group.thirdParty && snapshot.assets.base_front_wall_third_party
-      ? "base_front_wall_third_party" : "base_front_wall";
-    const keys = [group.coreAssetKey, wall, group.flagAssetKey];
-    for (const key of keys) {
-      const asset = key ? snapshot.assets[key] : undefined;
-      if (!asset) continue;
-      const placed = baseAssetPlacement(asset, rect);
-      left = Math.min(left, placed.x);
-      top = Math.min(top, placed.y);
-      right = Math.max(right, placed.x + placed.width);
-      bottom = Math.max(bottom, placed.y + placed.height);
+    if (group) {
+      const rect = baseGroupBounds(group, bounds);
+      if (rect) {
+        const wall: TileAssetKey = group.thirdParty && snapshot.assets.base_front_wall_third_party
+          ? "base_front_wall_third_party" : "base_front_wall";
+        const keys = [group.coreAssetKey, wall, group.flagAssetKey];
+        for (const key of keys) {
+          const asset = key ? snapshot.assets[key] : undefined;
+          if (asset) include(baseAssetPlacement(asset, rect));
+        }
+      }
+    }
+    if (cell.bridge) {
+      const rect = bounds.get(`${cell.x},${cell.y}`);
+      if (!rect) continue;
+      for (const key of BRIDGE_COMPONENT_ASSET_KEYS) {
+        if (cell.bridge.direction === "vertical" && key !== "bridge_top") continue;
+        const asset = snapshot.assets[key];
+        if (asset) include(bridgeComponentPlacement(asset, rect));
+      }
     }
   }
   // Outward rounding ensures fractional CSS pixels fit both render targets.
