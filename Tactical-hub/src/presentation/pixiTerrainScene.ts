@@ -262,6 +262,7 @@ export class PersistentTerrainScene {
   private readonly roadLayer = new Container();
   private readonly baseLayer = new Container();
   private readonly shadowLayer = new Container();
+  private readonly faceLayer = new Container();
   private readonly depthLayer = new Container();
   private readonly nodes = new Map<string, PersistentCell>();
   private readonly baseNodes = new Map<string, PersistentBaseCore>();
@@ -272,8 +273,9 @@ export class PersistentTerrainScene {
     this.bridgeLayer.sortableChildren = true;
     this.depthLayer.sortableChildren = true;
     this.roadLayer.sortableChildren = true;
-    // Bridges cover lake terrain but are covered by roads at their entrances.
-    this.root.addChild(this.groundLayer, this.bridgeLayer, this.roadLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
+    // Road tops, their drop shadows and south faces sit behind all bridge components.
+    // Keep interactive terrain overlays and obstacles in the depth layer above bridges.
+    this.root.addChild(this.groundLayer, this.roadLayer, this.baseLayer, this.shadowLayer, this.faceLayer, this.bridgeLayer, this.depthLayer);
   }
 
   private makeBase(id: string) {
@@ -304,7 +306,7 @@ export class PersistentTerrainScene {
     bridgeShadowLayer.zIndex = row;
     bridgePillarLayer.zIndex = row;
     bridgeTopLayer.zIndex = row;
-    const face = new PersistentVisual(layer);
+    const face = new PersistentVisual(this.faceLayer);
     const topHighlight = new PersistentOverlay(layer);
     const faceHighlight = new PersistentOverlay(layer);
     const topOutline = new PersistentOutline(layer);
@@ -588,6 +590,7 @@ export class PersistentTerrainScene {
     this.roadLayer.destroy({ children: false });
     this.baseLayer.destroy({ children: false });
     this.shadowLayer.destroy({ children: false });
+    this.faceLayer.destroy({ children: false });
     this.depthLayer.destroy({ children: false });
     this.root.destroy({ children: false });
   }

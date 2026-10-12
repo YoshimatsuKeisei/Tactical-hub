@@ -241,7 +241,7 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.shadowGraphics.visible).toBe(true);
     expect(objects.shadowSprite.visible).toBe(false);
     expect(objects.shadowGraphics.alpha).toBe(0.24);
-    expect((scene.root.children[4] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
+    expect((scene.root.children[3] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
     const shadowRects = vi.mocked(objects.shadowGraphics.rect).mock.calls;
     expect(shadowRects).toHaveLength(3);
     expect(shadowRects[0][0]).toBe(0);
@@ -346,6 +346,44 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.obstacleSprite.visible).toBe(true);
   });
 
+  it("draws modular bridges above neighboring road tops, south faces and shadows", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    const component = { image, width: 48, height: 48, name: "bridge.png", ...DEFAULT_ADJUSTMENT };
+    const snapshot: AssetSnapshot = {
+      ...imported,
+      assets: {
+        ...imported.assets,
+        bridge_top_team_1: component,
+        bridge_pillar_team_1: component,
+        bridge_shadow: component,
+      },
+    };
+    const verticalBridge = {
+      ...cell, x: 0, y: 1, kind: "lake" as const, southFace: false,
+      bridge: { direction: "vertical" as const, segment: "start" as const, ownerAssetSlot: "team_1" as const },
+    };
+    scene.update([{ ...cell, southFace: true }, verticalBridge], new Map([
+      ["0,0", { x: 0, y: 0, width: 48, height: 48 }],
+      ["0,1", { x: 0, y: 48, width: 48, height: 48 }],
+    ]), snapshot);
+    const road = scene.getCellDisplayObjects("0,0")!;
+    const bridge = scene.getCellDisplayObjects("0,1")!;
+    const layers = scene.root.children as unknown as { children: unknown[] }[];
+    expect(road.roadSprite.visible).toBe(true);
+    expect(road.shadowGraphics.visible).toBe(true);
+    expect(road.faceGraphics.visible).toBe(true);
+    expect(bridge.bridgeTopSprite.visible).toBe(true);
+    expect(bridge.bridgePillarSprite.visible).toBe(true);
+    expect(bridge.bridgeShadowSprite.visible).toBe(true);
+    expect(layers[1].children).toContain(road.roadSprite);
+    expect(layers[3].children).toContain(road.shadowGraphics);
+    expect(layers[4].children).toContain(road.faceGraphics);
+    expect(layers[5].children).toContain(bridge.bridgeTopLayer);
+    expect(layers[5].children).toContain(bridge.bridgePillarLayer);
+    expect(layers[5].children).toContain(bridge.bridgeShadowLayer);
+    expect(layers[6].children).toContain(road.topHighlightGraphics);
+  });
+
   it("uses a complete modular team set ahead of legacy and falls back as one system", () => {
     const topImage = {} as HTMLImageElement, pillarImage = {} as HTMLImageElement;
     const shadowImage = {} as HTMLImageElement, legacyImage = {} as HTMLImageElement;
@@ -373,10 +411,10 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.bridgePillarSprite).toMatchObject({ visible: true, width: 24, height: 96 });
     expect(objects.bridgeShadowSprite).toMatchObject({ visible: true, width: 96, height: 60 });
     expect(objects.bridgeTopGraphics.visible).toBe(false);
-    const bridgeLayer = scene.root.children[1] as { children: unknown[]; sortableChildren: boolean };
+    const bridgeLayer = scene.root.children[5] as { children: unknown[]; sortableChildren: boolean };
     expect(bridgeLayer.sortableChildren).toBe(true);
     expect((scene.root.children[0] as { children: unknown[] }).children).toContain(objects.groundSprite);
-    expect((scene.root.children[2] as { children: unknown[] }).children).toContain(objects.roadSprite);
+    expect((scene.root.children[1] as { children: unknown[] }).children).toContain(objects.roadSprite);
     expect(bridgeLayer.children.indexOf(objects.bridgeShadowLayer)).toBeLessThan(bridgeLayer.children.indexOf(objects.bridgePillarLayer));
     expect(bridgeLayer.children.indexOf(objects.bridgePillarLayer)).toBeLessThan(bridgeLayer.children.indexOf(objects.bridgeTopLayer));
     expect(bridgeCell).toEqual(original);
