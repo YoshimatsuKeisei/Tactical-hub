@@ -2,7 +2,8 @@ import { Container, Graphics, ImageSource, Sprite, Texture } from "pixi.js";
 import type { CellBounds, PixiBaseGroup, PixiBoardTerrain } from "./pixiBoardTerrain";
 import { baseGroupBounds, TERRAIN_COLORS } from "./pixiBoardTerrain";
 import {
-  assetPlacement, bridgeAssetKey, bridgeComponentPlacement, roadSouthShadowSettings, type AssetSnapshot,
+  assetPlacement, bridgeAssetKey, bridgeComponentPlacement, hasCompleteModularBridgeAssets,
+  LEGACY_BRIDGE_ASSET_KEYS, modularBridgeAssetKeys, MODULAR_BRIDGE_ASSET_KEYS, roadSouthShadowSettings, type AssetSnapshot,
   type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
 } from "./tileAssets";
 import type { LakeAnimationState } from "./pixiLakeAnimation";
@@ -63,15 +64,15 @@ const BASE_FOREGROUND_ASSET_KEYS = new Set<TileAssetKey>([
 const TERRAIN_ASSET_KEYS = new Set<TileAssetKey>([
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party",
   "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
-  "bridge_top", "bridge_pillar", "bridge_shadow",
-  "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
-  "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
+  ...MODULAR_BRIDGE_ASSET_KEYS,
+  ...LEGACY_BRIDGE_ASSET_KEYS,
 ]);
 
 type FallbackDraw = (graphics: Graphics) => void;
+type VisualPlacement = CellBounds & { rotation?: number; anchorX?: number; anchorY?: number };
 interface VisualOptions {
   opacity?: number;
-  placement?: (asset: TileAsset, rect: CellBounds) => CellBounds;
+  placement?: (asset: TileAsset, rect: CellBounds) => VisualPlacement;
   tint?: number;
   fallback?: boolean;
 }
@@ -102,11 +103,13 @@ class PersistentVisual {
     this.sprite.tint = options.tint ?? 0xffffff;
     this.graphics.alpha = opacity;
     if (asset && texture) {
-      const placement = options.placement ? options.placement(asset, rect) : assetPlacement(asset, rect);
+      const placement: VisualPlacement = options.placement ? options.placement(asset, rect) : assetPlacement(asset, rect);
       this.sprite.texture = texture;
       this.sprite.position.set(placement.x, placement.y);
       this.sprite.width = placement.width;
       this.sprite.height = placement.height;
+      this.sprite.anchor.set(placement.anchorX ?? 0, placement.anchorY ?? 0);
+      this.sprite.rotation = placement.rotation ?? 0;
       this.sprite.visible = true;
       this.graphics.visible = false;
       return placement;
@@ -423,21 +426,26 @@ export class PersistentTerrainScene {
       }
 
       if (cell.bridge) {
-        if (cell.bridge.direction === "horizontal") {
-          node.bridgeShadow.update("bridge_shadow", rect, snapshot, this.cache,
-            `bridge-shadow:${signature}`, () => {}, { placement: bridgeComponentPlacement, fallback: false });
-          node.bridgePillar.update("bridge_pillar", rect, snapshot, this.cache,
-            `bridge-pillar:${signature}`, () => {}, { placement: bridgeComponentPlacement, fallback: false });
+        const modularKeys = modularBridgeAssetKeys(cell.bridge.ownerAssetSlot);
+        const modularReady = snapshot.enabled && hasCompleteModularBridgeAssets(snapshot, cell.bridge.ownerAssetSlot) &&
+          Object.values(modularKeys).every((assetKey) => this.cache.get(assetKey, snapshot));
+        if (modularReady) {
+          const placement = (asset: TileAsset, target: CellBounds) =>
+            bridgeComponentPlacement(asset, target, cell.bridge!.direction);
+          node.bridgeShadow.update(modularKeys.shadow, rect, snapshot, this.cache,
+            `bridge-shadow:${cell.bridge.direction}:${signature}`, () => {}, { placement, fallback: false });
+          node.bridgePillar.update(modularKeys.pillar, rect, snapshot, this.cache,
+            `bridge-pillar:${cell.bridge.direction}:${signature}`, () => {}, { placement, fallback: false });
+          node.bridgeTop.update(modularKeys.top, rect, snapshot, this.cache,
+            `bridge-top:${cell.bridge.direction}:${signature}`, () => {}, { placement, fallback: false });
         } else {
           node.bridgeShadow.hide();
           node.bridgePillar.hide();
+          const legacyBridgeKey = bridgeAssetKey(cell.bridge.direction, cell.bridge.segment);
+          node.bridgeTop.update(legacyBridgeKey, rect, snapshot, this.cache,
+            `bridge-top:${cell.bridge.direction}:${cell.bridge.segment}:${raised}:${signature}`,
+            (g) => drawBridge(g, rect, cell.bridge!, raised, depth));
         }
-        const legacyBridgeKey = bridgeAssetKey(cell.bridge.direction, cell.bridge.segment);
-        const bridgeTopKey = this.cache.get("bridge_top", snapshot) ? "bridge_top" : legacyBridgeKey;
-        node.bridgeTop.update(bridgeTopKey, rect, snapshot, this.cache,
-          `bridge-top:${cell.bridge.direction}:${cell.bridge.segment}:${raised}:${signature}`,
-          (g) => drawBridge(g, rect, cell.bridge!, raised, depth),
-          bridgeTopKey === "bridge_top" ? { placement: bridgeComponentPlacement } : undefined);
       } else {
         node.bridgeShadow.hide();
         node.bridgePillar.hide();

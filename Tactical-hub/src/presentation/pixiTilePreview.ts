@@ -4,6 +4,7 @@ export interface PreviewCell { x: number; y: number }
 export interface PreviewBridge extends PreviewCell {
   direction: "horizontal" | "vertical";
   segment: "start" | "middle" | "end";
+  ownerAssetSlot: "team_1" | "team_2";
 }
 export const PREVIEW_CELL_SIZE = 48;
 export const PREVIEW_DEPTH = 10;
@@ -16,12 +17,12 @@ export const PREVIEW_TERRAIN: readonly (readonly PreviewTerrain[])[] = [
   ["road", "road", "base", "base", "road", "road", "road"],
 ];
 export const PREVIEW_BRIDGES: readonly PreviewBridge[] = [
-  { x: 1, y: 1, direction: "horizontal", segment: "start" },
-  { x: 2, y: 1, direction: "horizontal", segment: "middle" },
-  { x: 3, y: 1, direction: "horizontal", segment: "end" },
-  { x: 5, y: 2, direction: "vertical", segment: "start" },
-  { x: 5, y: 3, direction: "vertical", segment: "middle" },
-  { x: 5, y: 4, direction: "vertical", segment: "end" },
+  { x: 1, y: 1, direction: "horizontal", segment: "start", ownerAssetSlot: "team_1" },
+  { x: 2, y: 1, direction: "horizontal", segment: "middle", ownerAssetSlot: "team_1" },
+  { x: 3, y: 1, direction: "horizontal", segment: "end", ownerAssetSlot: "team_1" },
+  { x: 5, y: 2, direction: "vertical", segment: "start", ownerAssetSlot: "team_2" },
+  { x: 5, y: 3, direction: "vertical", segment: "middle", ownerAssetSlot: "team_2" },
+  { x: 5, y: 4, direction: "vertical", segment: "end", ownerAssetSlot: "team_2" },
 ];
 export const PREVIEW_OBSTACLES: readonly PreviewCell[] = [{ x: 1, y: 4 }, { x: 5, y: 3 }];
 

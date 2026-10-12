@@ -1,6 +1,9 @@
 import { baseGroupBounds, type CellBounds, type PixiBoardTerrain } from "./pixiBoardTerrain";
 import { baseAssetPlacement } from "./pixiTerrainScene";
-import { bridgeComponentPlacement, BRIDGE_COMPONENT_ASSET_KEYS, type AssetSnapshot, type TileAssetKey } from "./tileAssets";
+import {
+  bridgeComponentBounds, hasCompleteModularBridgeAssets, modularBridgeAssetKeys,
+  type AssetSnapshot, type TileAssetKey,
+} from "./tileAssets";
 
 export function pixiBoardExtent(cells: PixiBoardTerrain, bounds: ReadonlyMap<string, CellBounds>, width: number, height: number, snapshot: AssetSnapshot) {
   let left = 0, top = 0, right = width, bottom = height;
@@ -27,10 +30,10 @@ export function pixiBoardExtent(cells: PixiBoardTerrain, bounds: ReadonlyMap<str
     if (cell.bridge) {
       const rect = bounds.get(`${cell.x},${cell.y}`);
       if (!rect) continue;
-      for (const key of BRIDGE_COMPONENT_ASSET_KEYS) {
-        if (cell.bridge.direction === "vertical" && key !== "bridge_top") continue;
+      if (!hasCompleteModularBridgeAssets(snapshot, cell.bridge.ownerAssetSlot)) continue;
+      for (const key of Object.values(modularBridgeAssetKeys(cell.bridge.ownerAssetSlot))) {
         const asset = snapshot.assets[key];
-        if (asset) include(bridgeComponentPlacement(asset, rect));
+        if (asset) include(bridgeComponentBounds(asset, rect, cell.bridge.direction));
       }
     }
   }

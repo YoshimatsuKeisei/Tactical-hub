@@ -1,6 +1,6 @@
 import type { GameState, Tile, Unit } from "../game/types";
 import { getConstructionAt } from "../game/engine/construction";
-import type { MoveHighlightSettings, TileAssetKey } from "./tileAssets";
+import type { BridgeOwnerAssetSlot, MoveHighlightSettings, TileAssetKey } from "./tileAssets";
 
 export const TERRAIN_COLORS = { road: 0x999c96, base: 0xc6a253, lake: 0x338ac0 };
 export function pixiTerrainKind(terrain: Tile["terrain"]): keyof typeof TERRAIN_COLORS | null {
@@ -48,6 +48,17 @@ export function baseFlagAssetKey(state: Pick<GameState, "teams">, ownerTeamId: s
   return index >= 0 && index < 4 ? `base_flag_team_${index + 1}` as PixiBaseGroup["flagAssetKey"] : undefined;
 }
 
+export function bridgeOwnerAssetSlot(
+  state: Pick<GameState, "teams">,
+  ownerTeamId?: string,
+): BridgeOwnerAssetSlot {
+  const owner = state.teams.find((team) => team.id === ownerTeamId);
+  if (!owner || owner.isNeutral || owner.status === "neutral") return "third_party";
+  const playableTeams = state.teams.filter((team) => !team.isNeutral && team.status !== "neutral");
+  const index = playableTeams.findIndex((team) => team.id === ownerTeamId);
+  return index >= 0 && index < 4 ? `team_${index + 1}` as BridgeOwnerAssetSlot : "third_party";
+}
+
 export function buildPixiBaseGroups(state: Pick<GameState, "bases" | "teams">): PixiBaseGroup[] {
   return state.bases.flatMap((base) => {
     if (!isTwoByTwoBase(base.coords)) return [];
@@ -87,6 +98,7 @@ export function buildPixiBoardTerrain(state: GameState) {
       bridge: bridge ? {
         direction: ordered[0]?.y === ordered.at(-1)?.y ? "horizontal" as const : "vertical" as const,
         segment: index === 0 ? "start" as const : index === ordered.length - 1 ? "end" as const : "middle" as const,
+        ownerAssetSlot: bridgeOwnerAssetSlot(state, bridge.ownerTeamId),
       } : null,
       obstacle: Boolean(obstacle),
     };
@@ -99,7 +111,11 @@ export interface BuiltPixiBoardCell {
   baseGroupId?: string;
   baseGroup?: PixiBaseGroup;
   southFace: boolean;
-  bridge: { direction: "horizontal" | "vertical"; segment: "start" | "middle" | "end" } | null;
+  bridge: {
+    direction: "horizontal" | "vertical";
+    segment: "start" | "middle" | "end";
+    ownerAssetSlot: BridgeOwnerAssetSlot;
+  } | null;
   obstacle: boolean;
 }
 export interface PixiMoveHighlight {

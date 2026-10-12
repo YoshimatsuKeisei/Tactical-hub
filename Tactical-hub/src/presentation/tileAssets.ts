@@ -1,11 +1,23 @@
+export const BRIDGE_OWNER_ASSET_SLOTS = ["team_1", "team_2", "team_3", "team_4", "third_party"] as const;
+export type BridgeOwnerAssetSlot = typeof BRIDGE_OWNER_ASSET_SLOTS[number];
+export const BRIDGE_TOP_ASSET_KEYS = [
+  "bridge_top_team_1", "bridge_top_team_2", "bridge_top_team_3", "bridge_top_team_4", "bridge_top_third_party",
+] as const;
+export const BRIDGE_PILLAR_ASSET_KEYS = [
+  "bridge_pillar_team_1", "bridge_pillar_team_2", "bridge_pillar_team_3", "bridge_pillar_team_4", "bridge_pillar_third_party",
+] as const;
+export const MODULAR_BRIDGE_ASSET_KEYS = [...BRIDGE_TOP_ASSET_KEYS, ...BRIDGE_PILLAR_ASSET_KEYS, "bridge_shadow"] as const;
+export const LEGACY_BRIDGE_ASSET_KEYS = [
+  "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
+  "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
+] as const;
 export const TILE_ASSET_KEYS = [
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "base_front_wall",
   "base_front_wall_third_party",
   "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
   "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
-  "bridge_top", "bridge_pillar", "bridge_shadow",
-  "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
-  "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
+  ...MODULAR_BRIDGE_ASSET_KEYS,
+  ...LEGACY_BRIDGE_ASSET_KEYS,
 ] as const;
 export type TileAssetKey = typeof TILE_ASSET_KEYS[number];
 export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
@@ -25,8 +37,16 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   lake_frame_3: "Frame 3 / Lake animation 3",
   lake_frame_4: "Frame 4 / Lake animation 4",
   obstacle: "Obstacle / 障害物",
-  bridge_top: "Bridge top / 橋本体上面",
-  bridge_pillar: "Bridge pillar / 橋支柱",
+  bridge_top_team_1: "Team 1 bridge top / チーム1橋本体",
+  bridge_top_team_2: "Team 2 bridge top / チーム2橋本体",
+  bridge_top_team_3: "Team 3 bridge top / チーム3橋本体",
+  bridge_top_team_4: "Team 4 bridge top / チーム4橋本体",
+  bridge_top_third_party: "Third-party bridge top / 第三者橋本体",
+  bridge_pillar_team_1: "Team 1 bridge pillar / チーム1橋支柱",
+  bridge_pillar_team_2: "Team 2 bridge pillar / チーム2橋支柱",
+  bridge_pillar_team_3: "Team 3 bridge pillar / チーム3橋支柱",
+  bridge_pillar_team_4: "Team 4 bridge pillar / チーム4橋支柱",
+  bridge_pillar_third_party: "Third-party bridge pillar / 第三者橋支柱",
   bridge_shadow: "Bridge shadow / 橋陰影",
   bridge_horizontal_start: "Bridge horizontal start",
   bridge_horizontal_middle: "Bridge horizontal middle",
@@ -36,7 +56,7 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   bridge_vertical_end: "Bridge vertical end",
 };
 export interface AssetAdjustment { scale: number; offsetX: number; offsetY: number }
-export interface AxisAssetAdjustment { scaleX: number; scaleY: number; offsetX: number; offsetY: number }
+export interface AxisAssetAdjustment { scaleX: number; scaleY: number; offsetX: number; offsetY: number; rotation: number }
 export interface RoadSouthShadowSettings {
   enabled: boolean;
   opacity: number;
@@ -69,6 +89,7 @@ interface LegacyRoadSouthShadowSettings extends AssetAdjustment { enabled: boole
 export interface TileAsset extends AssetAdjustment {
   scaleX?: number;
   scaleY?: number;
+  rotation?: number;
   image: HTMLImageElement; name: string; width: number; height: number;
 }
 export interface AssetSnapshot {
@@ -81,9 +102,9 @@ export interface AssetSnapshot {
   moveHighlight?: MoveHighlightSettings;
 }
 export const DEFAULT_ADJUSTMENT: AssetAdjustment = { scale: 1, offsetX: 0, offsetY: 0 };
-export const DEFAULT_AXIS_ADJUSTMENT: AxisAssetAdjustment = { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 };
-export const BRIDGE_COMPONENT_ASSET_KEYS = ["bridge_top", "bridge_pillar", "bridge_shadow"] as const;
-export type BridgeComponentAssetKey = typeof BRIDGE_COMPONENT_ASSET_KEYS[number];
+export const DEFAULT_AXIS_ADJUSTMENT: AxisAssetAdjustment = { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0, rotation: 0 };
+export const BRIDGE_COMPONENT_ASSET_KEYS = MODULAR_BRIDGE_ASSET_KEYS;
+export type BridgeComponentAssetKey = typeof MODULAR_BRIDGE_ASSET_KEYS[number];
 export const DEFAULT_ROAD_SOUTH_SHADOW: RoadSouthShadowSettings = {
   enabled: true,
   opacity: 0.24,
@@ -243,7 +264,7 @@ export class TileAssetStore {
     const asset = this.snapshot.assets[key];
     if (!asset) return;
     const next = { ...asset, ...bridgeAssetAdjustment(asset), ...change };
-    if (![next.scaleX, next.scaleY, next.offsetX, next.offsetY].every(Number.isFinite)) return;
+    if (![next.scaleX, next.scaleY, next.offsetX, next.offsetY, next.rotation].every(Number.isFinite)) return;
     next.scaleX = Math.min(4, Math.max(0.1, next.scaleX));
     next.scaleY = Math.min(4, Math.max(0.1, next.scaleY));
     this.publish({ ...this.snapshot, assets: { ...this.snapshot.assets, [key]: next } });
@@ -281,26 +302,65 @@ export function lakeAnimationCanRun(snapshot: AssetSnapshot) {
 }
 
 export function isBridgeComponentAssetKey(key: TileAssetKey): key is BridgeComponentAssetKey {
-  return BRIDGE_COMPONENT_ASSET_KEYS.some((bridgeKey) => bridgeKey === key);
+  return MODULAR_BRIDGE_ASSET_KEYS.some((bridgeKey) => bridgeKey === key);
 }
 
-export function bridgeAssetAdjustment(asset?: Pick<TileAsset, "scale" | "scaleX" | "scaleY" | "offsetX" | "offsetY">): AxisAssetAdjustment {
+export function bridgeAssetAdjustment(asset?: Pick<TileAsset, "scale" | "scaleX" | "scaleY" | "offsetX" | "offsetY" | "rotation">): AxisAssetAdjustment {
   return {
     scaleX: asset?.scaleX ?? asset?.scale ?? 1,
     scaleY: asset?.scaleY ?? asset?.scale ?? 1,
     offsetX: asset?.offsetX ?? 0,
     offsetY: asset?.offsetY ?? 0,
+    rotation: asset?.rotation ?? 0,
   };
 }
 
-export function bridgeComponentPlacement(asset: TileAsset, rect: { x: number; y: number; width: number; height: number }) {
+export function bridgeTopAssetKey(slot: BridgeOwnerAssetSlot): typeof BRIDGE_TOP_ASSET_KEYS[number] {
+  return `bridge_top_${slot}`;
+}
+
+export function bridgePillarAssetKey(slot: BridgeOwnerAssetSlot): typeof BRIDGE_PILLAR_ASSET_KEYS[number] {
+  return `bridge_pillar_${slot}`;
+}
+
+export function modularBridgeAssetKeys(slot: BridgeOwnerAssetSlot) {
+  return { top: bridgeTopAssetKey(slot), pillar: bridgePillarAssetKey(slot), shadow: "bridge_shadow" as const };
+}
+
+export function hasCompleteModularBridgeAssets(snapshot: AssetSnapshot, slot: BridgeOwnerAssetSlot) {
+  const keys = modularBridgeAssetKeys(slot);
+  return Boolean(snapshot.assets[keys.top] && snapshot.assets[keys.pillar] && snapshot.assets[keys.shadow]);
+}
+
+export function bridgeComponentPlacement(
+  asset: TileAsset,
+  rect: { x: number; y: number; width: number; height: number },
+  direction: "horizontal" | "vertical" = "horizontal",
+) {
   const adjustment = bridgeAssetAdjustment(asset);
+  const degrees = (direction === "vertical" ? 90 : 0) + adjustment.rotation;
   return {
-    x: rect.x + adjustment.offsetX * rect.width / 48,
-    y: rect.y + adjustment.offsetY * rect.height / 48,
+    x: rect.x + rect.width / 2 + adjustment.offsetX * rect.width / 48,
+    y: rect.y + rect.height / 2 + adjustment.offsetY * rect.height / 48,
     width: rect.width * adjustment.scaleX,
     height: rect.height * adjustment.scaleY,
+    rotation: degrees * Math.PI / 180,
+    anchorX: 0.5,
+    anchorY: 0.5,
   };
+}
+
+export function bridgeComponentBounds(
+  asset: TileAsset,
+  rect: { x: number; y: number; width: number; height: number },
+  direction: "horizontal" | "vertical" = "horizontal",
+) {
+  const placed = bridgeComponentPlacement(asset, rect, direction);
+  const cosine = Math.abs(Math.cos(placed.rotation));
+  const sine = Math.abs(Math.sin(placed.rotation));
+  const width = (cosine < 1e-10 ? 0 : cosine) * placed.width + (sine < 1e-10 ? 0 : sine) * placed.height;
+  const height = (sine < 1e-10 ? 0 : sine) * placed.width + (cosine < 1e-10 ? 0 : cosine) * placed.height;
+  return { x: placed.x - width / 2, y: placed.y - height / 2, width, height };
 }
 
 export function bridgeAssetKey(direction: "horizontal" | "vertical", segment: "start" | "middle" | "end"): TileAssetKey {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  assetPlacement, bridgeAssetAdjustment, bridgeAssetKey, bridgeComponentPlacement,
-  BRIDGE_COMPONENT_ASSET_KEYS, decodeTilePng, DEFAULT_ADJUSTMENT, DEFAULT_AXIS_ADJUSTMENT, EMPTY_ASSETS,
+  assetPlacement, bridgeAssetAdjustment, bridgeAssetKey, bridgeComponentBounds, bridgeComponentPlacement,
+  BRIDGE_COMPONENT_ASSET_KEYS, BRIDGE_OWNER_ASSET_SLOTS, BRIDGE_PILLAR_ASSET_KEYS, BRIDGE_TOP_ASSET_KEYS,
+  decodeTilePng, DEFAULT_ADJUSTMENT, DEFAULT_AXIS_ADJUSTMENT, EMPTY_ASSETS, hasCompleteModularBridgeAssets,
   DEFAULT_MOVE_HIGHLIGHT, DEFAULT_ROAD_SOUTH_SHADOW, lakeAnimationCanRun, LAKE_FRAME_KEYS,
   missingLakeAnimationAssets, moveHighlightSettings, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
   TileAssetStore, type TileAsset,
@@ -124,45 +125,58 @@ describe("shared browser-only tile assets", () => {
     expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
     expect(keys.every((key) => TILE_ASSET_LABELS[key].length > 0)).toBe(true);
   });
-  it("imports, adjusts and resets the three bridge layers independently on both axes", async () => {
+  it("imports, adjusts and resets every team bridge layer and the common shadow", async () => {
     const store = new TileAssetStore(async (selected) => asset(selected.name));
-    expect(BRIDGE_COMPONENT_ASSET_KEYS).toEqual(["bridge_top", "bridge_pillar", "bridge_shadow"]);
-    expect(BRIDGE_COMPONENT_ASSET_KEYS.map((key) => TILE_ASSET_LABELS[key])).toEqual([
-      "Bridge top / 橋本体上面", "Bridge pillar / 橋支柱", "Bridge shadow / 橋陰影",
-    ]);
+    expect(BRIDGE_OWNER_ASSET_SLOTS).toEqual(["team_1", "team_2", "team_3", "team_4", "third_party"]);
+    expect(BRIDGE_TOP_ASSET_KEYS).toHaveLength(5);
+    expect(BRIDGE_PILLAR_ASSET_KEYS).toHaveLength(5);
+    expect(BRIDGE_COMPONENT_ASSET_KEYS).toHaveLength(11);
     for (const key of BRIDGE_COMPONENT_ASSET_KEYS) await store.importFile(key, { ...file, name: `${key}.png` } as File);
     for (const key of BRIDGE_COMPONENT_ASSET_KEYS) {
       expect(store.getSnapshot().assets[key]).toMatchObject({ name: `${key}.png`, ...DEFAULT_AXIS_ADJUSTMENT });
+      expect(TILE_ASSET_LABELS[key]).toBeTruthy();
     }
+    for (const slot of BRIDGE_OWNER_ASSET_SLOTS) expect(hasCompleteModularBridgeAssets(store.getSnapshot(), slot)).toBe(true);
 
-    store.adjustBridgeAsset("bridge_top", { scaleX: 1.5, scaleY: 0.75, offsetX: -3, offsetY: 6 });
-    store.adjustBridgeAsset("bridge_pillar", { scaleX: 2, scaleY: 3, offsetX: 4, offsetY: 12 });
-    store.adjustBridgeAsset("bridge_shadow", { scaleX: 9, scaleY: -2, offsetX: 7, offsetY: 15 });
-    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top)).toEqual({ scaleX: 1.5, scaleY: 0.75, offsetX: -3, offsetY: 6 });
-    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_pillar)).toEqual({ scaleX: 2, scaleY: 3, offsetX: 4, offsetY: 12 });
-    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow)).toEqual({ scaleX: 4, scaleY: 0.1, offsetX: 7, offsetY: 15 });
+    store.adjustBridgeAsset("bridge_top_team_1", { scaleX: 1.5, scaleY: 0.75, offsetX: -3, offsetY: 6, rotation: 12 });
+    store.adjustBridgeAsset("bridge_pillar_team_2", { scaleX: 2, scaleY: 3, offsetX: 4, offsetY: 12, rotation: -8 });
+    store.adjustBridgeAsset("bridge_shadow", { scaleX: 9, scaleY: -2, offsetX: 7, offsetY: 15, rotation: 4 });
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top_team_1))
+      .toEqual({ scaleX: 1.5, scaleY: 0.75, offsetX: -3, offsetY: 6, rotation: 12 });
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_pillar_team_2))
+      .toEqual({ scaleX: 2, scaleY: 3, offsetX: 4, offsetY: 12, rotation: -8 });
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow))
+      .toEqual({ scaleX: 4, scaleY: 0.1, offsetX: 7, offsetY: 15, rotation: 4 });
 
-    store.resetBridgeAssetAdjustment("bridge_pillar");
-    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_pillar)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
-    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top)).not.toEqual(DEFAULT_AXIS_ADJUSTMENT);
-    store.resetBridgeAssetAdjustment("bridge_top");
-    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    store.resetBridgeAssetAdjustment("bridge_pillar_team_2");
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_pillar_team_2)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top_team_1)).not.toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    store.resetBridgeAssetAdjustment("bridge_top_team_1");
+    expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_top_team_1)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
     expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow)).not.toEqual(DEFAULT_AXIS_ADJUSTMENT);
     store.resetBridgeAssetAdjustment("bridge_shadow");
     expect(bridgeAssetAdjustment(store.getSnapshot().assets.bridge_shadow)).toEqual(DEFAULT_AXIS_ADJUSTMENT);
+    store.reset("bridge_pillar_team_1");
+    expect(store.getSnapshot().assets.bridge_pillar_team_1).toBeUndefined();
+    expect(store.getSnapshot().assets.bridge_top_team_1).toBeDefined();
+    expect(hasCompleteModularBridgeAssets(store.getSnapshot(), "team_1")).toBe(false);
     store.reset("bridge_shadow");
     expect(store.getSnapshot().assets.bridge_shadow).toBeUndefined();
-    expect(store.getSnapshot().assets.bridge_top).toBeDefined();
+    expect(BRIDGE_OWNER_ASSET_SLOTS.every((slot) => !hasCompleteModularBridgeAssets(store.getSnapshot(), slot))).toBe(true);
     store.resetAll();
     expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
   });
-  it("places bridge layers from the logical cell with independent X/Y scaling and offsets", () => {
+  it("places and rotates bridge layers around the logical cell center", () => {
     const bridgeAsset = {
-      ...asset("bridge.png"), scaleX: 1.5, scaleY: 2.25, offsetX: -4, offsetY: 8,
+      ...asset("bridge.png"), scaleX: 1.5, scaleY: 2.25, offsetX: -4, offsetY: 8, rotation: 10,
     };
     expect(bridgeComponentPlacement(bridgeAsset, { x: 100, y: 200, width: 24, height: 36 })).toEqual({
-      x: 98, y: 206, width: 36, height: 81,
+      x: 110, y: 224, width: 36, height: 81, rotation: 10 * Math.PI / 180, anchorX: 0.5, anchorY: 0.5,
     });
+    expect(bridgeComponentPlacement(bridgeAsset, { x: 100, y: 200, width: 24, height: 36 }, "vertical").rotation)
+      .toBeCloseTo(100 * Math.PI / 180);
+    const bounds = bridgeComponentBounds({ ...bridgeAsset, offsetX: 0, offsetY: 0, rotation: 0 }, { x: 0, y: 0, width: 40, height: 40 }, "vertical");
+    expect(bounds).toEqual({ x: -25, y: -10, width: 90, height: 60 });
   });
   it("keeps shadow enable, opacity, and placement settings without a PNG", () => {
     const store = new TileAssetStore(async () => asset());

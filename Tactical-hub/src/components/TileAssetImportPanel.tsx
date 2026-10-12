@@ -1,7 +1,8 @@
 import { useState } from "react";
 import {
-  bridgeAssetAdjustment, BRIDGE_COMPONENT_ASSET_KEYS, DEFAULT_ADJUSTMENT, LAKE_FRAME_KEYS,
-  missingLakeAnimationAssets, moveHighlightSettings, roadSouthShadowSettings,
+  bridgeAssetAdjustment, BRIDGE_OWNER_ASSET_SLOTS, BRIDGE_PILLAR_ASSET_KEYS, BRIDGE_TOP_ASSET_KEYS,
+  DEFAULT_ADJUSTMENT, hasCompleteModularBridgeAssets, LAKE_FRAME_KEYS, LEGACY_BRIDGE_ASSET_KEYS,
+  missingLakeAnimationAssets, MODULAR_BRIDGE_ASSET_KEYS, moveHighlightSettings, roadSouthShadowSettings,
   TILE_ASSET_KEYS, TILE_ASSET_LABELS, type BridgeComponentAssetKey, type TileAssetKey,
 } from "../presentation/tileAssets";
 import { useTileAssets } from "./TileAssetProvider";
@@ -10,6 +11,7 @@ export function TileAssetImportPanel() {
   const { store, snapshot } = useTileAssets();
   const moveHighlight = moveHighlightSettings(snapshot);
   const missingLakeFrames = missingLakeAnimationAssets(snapshot);
+  const readyBridgeSlots = BRIDGE_OWNER_ASSET_SLOTS.filter((slot) => hasCompleteModularBridgeAssets(snapshot, slot));
   const assetField = (key: TileAssetKey) => {
     const asset = snapshot.assets[key];
     const isShadow = key === "road_south_shadow";
@@ -57,11 +59,12 @@ export function TileAssetImportPanel() {
         const file = event.target.files?.[0]; event.target.value = "";
         if (file) void store?.importFile(key, file);
       }} />
-      <span role="status">{snapshot.statuses[key] ?? (key === "bridge_top" ? "未設定：従来の橋表示" : "未設定：非表示")}
+      <span role="status">{snapshot.statuses[key] ?? "未設定：新方式は対象所属で無効"}
         {asset ? ` — ${asset.name} ${asset.width}×${asset.height}` : ""}</span>
       <button type="button" onClick={() => store?.reset(key)}>Reset image</button>
       <div>
-        {(["scaleX", "scaleY", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
+        {(["scaleX", "scaleY", "offsetX", "offsetY", "rotation"] as const).map((property) => <label key={property}>
+          {property === "rotation" ? "rotation (deg)" : property}
           <input type="number" aria-label={`${key} ${property}`}
             step={property === "scaleX" || property === "scaleY" ? 0.1 : 1}
             min={property === "scaleX" || property === "scaleY" ? 0.1 : undefined}
@@ -98,9 +101,25 @@ export function TileAssetImportPanel() {
       </fieldset>
       {LAKE_FRAME_KEYS.map(assetField)}
       <section className="bridge-asset-import">
-        <h3>Bridge layers / 橋レイヤー</h3>
-        <p>3画像は同じ橋セルを基準に配置します。scaleX / scaleY と offsetX / offsetY は各画像で独立しています。</p>
-        {BRIDGE_COMPONENT_ASSET_KEYS.map(bridgeAssetField)}
+        <h3>Bridge assets (new modular system)</h3>
+        <p>本体・支柱は非中立チーム順のTeam 1～4とThird-party、陰影は全チーム共通です。
+          各画像のscaleX / scaleY、offsetX / offsetY、追加rotation（度）を独立調整できます。縦橋は自動90度に追加rotationを加えます。</p>
+        <p role="status">{!snapshot.enabled
+          ? "現在：Pixi素材表示が仮図形のためlegacy bridge systemを使用"
+          : readyBridgeSlots.length > 0
+            ? `現在：new modular bridge system使用可能 — ${readyBridgeSlots.join(", ")}（素材不足の所属はlegacyへフォールバック）`
+            : "現在：必要素材不足のためlegacy bridge systemを使用"}</p>
+        <h4>Bridge top / 橋本体</h4>
+        {BRIDGE_TOP_ASSET_KEYS.map(bridgeAssetField)}
+        <h4>Bridge pillar / 橋支柱</h4>
+        {BRIDGE_PILLAR_ASSET_KEYS.map(bridgeAssetField)}
+        <h4>Common bridge shadow / 共通橋陰影</h4>
+        {bridgeAssetField("bridge_shadow")}
+      </section>
+      <section className="legacy-bridge-asset-import">
+        <h3>Legacy bridge assets</h3>
+        <p>対象所属の本体・支柱・共通陰影が1点でも不足する場合だけ使用します。</p>
+        {LEGACY_BRIDGE_ASSET_KEYS.map(assetField)}
       </section>
       <fieldset>
         <legend>Normal unit move highlight / 通常ユニット移動強調</legend>
@@ -136,7 +155,8 @@ export function TileAssetImportPanel() {
       </fieldset>
       {TILE_ASSET_KEYS.filter((key) =>
         !LAKE_FRAME_KEYS.some((lakeKey) => lakeKey === key) &&
-        !BRIDGE_COMPONENT_ASSET_KEYS.some((bridgeKey) => bridgeKey === key)).map(assetField)}
+        !MODULAR_BRIDGE_ASSET_KEYS.some((bridgeKey) => bridgeKey === key) &&
+        !LEGACY_BRIDGE_ASSET_KEYS.some((bridgeKey) => bridgeKey === key)).map(assetField)}
       <p>拠点前壁はclick-throughの前景Canvasでキャラ本体より手前、HP・badge・選択表示より奥へ配置します。
         その他の障害物とHTMLキャラの正確な部分遮蔽は未対応です。</p>
     </div>}

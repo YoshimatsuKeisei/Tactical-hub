@@ -33,8 +33,10 @@ vi.mock("pixi.js", () => {
   Texture.EMPTY = new Texture({ empty: true });
   class Sprite {
     position = { set: vi.fn() };
+    anchor = { set: vi.fn() };
     width = 0;
     height = 0;
+    rotation = 0;
     visible = true;
     alpha = 1;
     tint = 0xffffff;
@@ -317,7 +319,7 @@ describe("persistent Pixi terrain scene", () => {
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     scene.update([cell], bounds, EMPTY_ASSETS);
     const objects = scene.getCellDisplayObjects("0,0")!;
-    const constructed = [{ ...cell, bridge: { direction: "horizontal" as const, segment: "middle" as const }, obstacle: true }];
+    const constructed = [{ ...cell, bridge: { direction: "horizontal" as const, segment: "middle" as const, ownerAssetSlot: "team_1" as const }, obstacle: true }];
     scene.update(constructed, bounds, EMPTY_ASSETS);
     expect(scene.getCellDisplayObjects("0,0")!.bridgeGraphics).toBe(objects.bridgeGraphics);
     expect(objects.bridgeGraphics.visible).toBe(true);
@@ -337,42 +339,40 @@ describe("persistent Pixi terrain scene", () => {
       },
     };
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
-    scene.update([{ ...cell, kind: "lake", southFace: false, bridge: { direction: "vertical", segment: "end" }, obstacle: true }], bounds, allImported);
+    scene.update([{ ...cell, kind: "lake", southFace: false, bridge: { direction: "vertical", segment: "end", ownerAssetSlot: "team_1" }, obstacle: true }], bounds, allImported);
     const objects = scene.getCellDisplayObjects("0,0")!;
     expect(objects.groundSprite.visible).toBe(true);
     expect(objects.bridgeSprite.visible).toBe(true);
     expect(objects.obstacleSprite.visible).toBe(true);
   });
 
-  it("layers independently adjusted bridge shadow, pillar and top without recreating display objects", () => {
+  it("uses a complete modular team set ahead of legacy and falls back as one system", () => {
     const topImage = {} as HTMLImageElement, pillarImage = {} as HTMLImageElement;
     const shadowImage = {} as HTMLImageElement, legacyImage = {} as HTMLImageElement;
     const bridgeAssets: AssetSnapshot = {
       enabled: true, statuses: {}, assets: {
-        bridge_top: { image: topImage, width: 96, height: 24, name: "top.png", ...DEFAULT_ADJUSTMENT,
-          scaleX: 1.5, scaleY: 0.75, offsetX: 2, offsetY: -1 },
-        bridge_pillar: { image: pillarImage, width: 32, height: 128, name: "pillar.png", ...DEFAULT_ADJUSTMENT,
-          scaleX: 0.5, scaleY: 2, offsetX: 12, offsetY: 8 },
+        bridge_top_team_1: { image: topImage, width: 96, height: 24, name: "top.png", ...DEFAULT_ADJUSTMENT,
+          scaleX: 1.5, scaleY: 0.75, offsetX: 2, offsetY: -1, rotation: 5 },
+        bridge_pillar_team_1: { image: pillarImage, width: 32, height: 128, name: "pillar.png", ...DEFAULT_ADJUSTMENT,
+          scaleX: 0.5, scaleY: 2, offsetX: 12, offsetY: 8, rotation: -3 },
         bridge_shadow: { image: shadowImage, width: 64, height: 32, name: "shadow.png", ...DEFAULT_ADJUSTMENT,
-          scaleX: 2, scaleY: 1.25, offsetX: -4, offsetY: 6 },
+          scaleX: 2, scaleY: 1.25, offsetX: -4, offsetY: 6, rotation: 2 },
         bridge_horizontal_end: { image: legacyImage, width: 48, height: 48, name: "legacy.png", ...DEFAULT_ADJUSTMENT },
       },
     };
     const bridgeCell = { ...cell, kind: "lake" as const, southFace: false,
-      bridge: { direction: "horizontal" as const, segment: "end" as const } };
+      bridge: { direction: "horizontal" as const, segment: "end" as const, ownerAssetSlot: "team_1" as const } };
     const original = { ...bridgeCell, bridge: { ...bridgeCell.bridge } };
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     scene.update([bridgeCell], bounds, bridgeAssets);
     const objects = scene.getCellDisplayObjects("0,0")!;
 
-    expect(objects.bridgeTopSprite.visible).toBe(true);
-    expect(objects.bridgeTopGraphics.visible).toBe(false);
-    expect(objects.bridgeTopSprite.position.set).toHaveBeenLastCalledWith(2, -1);
-    expect(objects.bridgeTopSprite).toMatchObject({ width: 72, height: 36 });
-    expect(objects.bridgePillarSprite.position.set).toHaveBeenLastCalledWith(12, 8);
+    expect(objects.bridgeTopSprite).toMatchObject({ visible: true, width: 72, height: 36 });
+    expect(objects.bridgeTopSprite.position.set).toHaveBeenLastCalledWith(26, 23);
+    expect(objects.bridgeTopSprite.rotation).toBeCloseTo(5 * Math.PI / 180);
     expect(objects.bridgePillarSprite).toMatchObject({ visible: true, width: 24, height: 96 });
-    expect(objects.bridgeShadowSprite.position.set).toHaveBeenLastCalledWith(-4, 6);
     expect(objects.bridgeShadowSprite).toMatchObject({ visible: true, width: 96, height: 60 });
+    expect(objects.bridgeTopGraphics.visible).toBe(false);
     const depthLayer = scene.root.children[4] as { children: { children: unknown[] }[] };
     const cellLayer = depthLayer.children[0];
     expect(cellLayer.children.indexOf(objects.bridgeShadowLayer)).toBeLessThan(cellLayer.children.indexOf(objects.bridgePillarLayer));
@@ -382,59 +382,90 @@ describe("persistent Pixi terrain scene", () => {
     const topSprite = objects.bridgeTopSprite, topTexture = topSprite.texture;
     const pillarSprite = objects.bridgePillarSprite, shadowSprite = objects.bridgeShadowSprite;
     const adjusted = { ...bridgeAssets, assets: { ...bridgeAssets.assets,
-      bridge_top: { ...bridgeAssets.assets.bridge_top!, scaleX: 2, scaleY: 1.25, offsetX: -3, offsetY: 5 },
+      bridge_top_team_1: { ...bridgeAssets.assets.bridge_top_team_1!, scaleX: 2, scaleY: 1.25, offsetX: -3, offsetY: 5, rotation: 11 },
     } };
     scene.update([bridgeCell], bounds, adjusted);
     expect(objects.bridgeTopSprite).toBe(topSprite);
     expect(objects.bridgeTopSprite.texture).toBe(topTexture);
-    expect(objects.bridgeTopSprite.position.set).toHaveBeenLastCalledWith(-3, 5);
+    expect(objects.bridgeTopSprite.position.set).toHaveBeenLastCalledWith(21, 29);
     expect(objects.bridgeTopSprite).toMatchObject({ width: 96, height: 60 });
+    expect(objects.bridgeTopSprite.rotation).toBeCloseTo(11 * Math.PI / 180);
     expect(objects.bridgePillarSprite).toBe(pillarSprite);
     expect(objects.bridgeShadowSprite).toBe(shadowSprite);
 
-    const legacyOnly = { ...adjusted, assets: { ...adjusted.assets, bridge_top: undefined } };
-    scene.update([bridgeCell], bounds, legacyOnly);
+    const incomplete = { ...adjusted, assets: { ...adjusted.assets, bridge_pillar_team_1: undefined } };
+    scene.update([bridgeCell], bounds, incomplete);
     expect(objects.bridgeTopSprite).toBe(topSprite);
     expect(objects.bridgeTopSprite.texture).not.toBe(topTexture);
-    expect(objects.bridgeTopSprite).toMatchObject({ visible: true, width: 48, height: 48 });
+    expect(objects.bridgeTopSprite).toMatchObject({ visible: true, width: 48, height: 48, rotation: 0 });
+    expect(objects.bridgePillarSprite.visible).toBe(false);
+    expect(objects.bridgeShadowSprite.visible).toBe(false);
+
     scene.update([bridgeCell], bounds, EMPTY_ASSETS);
     expect(objects.bridgeTopSprite.visible).toBe(false);
     expect(objects.bridgeTopGraphics.visible).toBe(true);
-    expect(objects.bridgePillarSprite.visible).toBe(false);
     expect(objects.bridgePillarGraphics.visible).toBe(false);
-    expect(objects.bridgeShadowSprite.visible).toBe(false);
     expect(objects.bridgeShadowGraphics.visible).toBe(false);
   });
 
-  it("shows pillar and shadow only for horizontal bridges and reuses their Sprites", () => {
+  it("adds 90 degrees for vertical modular bridges and reuses Sprites, Textures and Containers", () => {
     const component = { image, width: 48, height: 48, name: "component.png", ...DEFAULT_ADJUSTMENT,
-      scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 12 };
+      scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 12, rotation: 7 };
     const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: {
-      bridge_top: component, bridge_pillar: { ...component }, bridge_shadow: { ...component },
+      bridge_top_team_1: component,
+      bridge_pillar_team_1: { ...component, rotation: -4 },
+      bridge_shadow: { ...component, rotation: 2 },
     } };
     const horizontal = { ...cell, kind: "lake" as const, southFace: false,
-      bridge: { direction: "horizontal" as const, segment: "middle" as const } };
+      bridge: { direction: "horizontal" as const, segment: "middle" as const, ownerAssetSlot: "team_1" as const } };
     const vertical = { ...horizontal,
-      bridge: { direction: "vertical" as const, segment: "middle" as const } };
+      bridge: { direction: "vertical" as const, segment: "middle" as const, ownerAssetSlot: "team_1" as const } };
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     scene.update([horizontal], bounds, snapshot);
     const objects = scene.getCellDisplayObjects("0,0")!;
-    const pillarSprite = objects.bridgePillarSprite, shadowSprite = objects.bridgeShadowSprite;
-    expect(pillarSprite.visible).toBe(true);
-    expect(shadowSprite.visible).toBe(true);
+    const sprites = [objects.bridgeShadowSprite, objects.bridgePillarSprite, objects.bridgeTopSprite];
+    const textures = sprites.map((sprite) => sprite.texture);
+    const layers = [objects.bridgeShadowLayer, objects.bridgePillarLayer, objects.bridgeTopLayer];
+    expect(sprites.map((sprite) => sprite.rotation)).toEqual([
+      2 * Math.PI / 180, -4 * Math.PI / 180, 7 * Math.PI / 180,
+    ]);
 
     scene.update([vertical], bounds, snapshot);
-    expect(objects.bridgeTopSprite.visible).toBe(true);
-    expect(pillarSprite.visible).toBe(false);
-    expect(shadowSprite.visible).toBe(false);
-    expect(objects.bridgePillarGraphics.visible).toBe(false);
-    expect(objects.bridgeShadowGraphics.visible).toBe(false);
+    expect(objects.bridgeShadowSprite.rotation).toBeCloseTo(92 * Math.PI / 180);
+    expect(objects.bridgePillarSprite.rotation).toBeCloseTo(86 * Math.PI / 180);
+    expect(objects.bridgeTopSprite.rotation).toBeCloseTo(97 * Math.PI / 180);
+    expect([objects.bridgeShadowSprite, objects.bridgePillarSprite, objects.bridgeTopSprite]).toEqual(sprites);
+    expect(sprites.map((sprite) => sprite.texture)).toEqual(textures);
+    expect([objects.bridgeShadowLayer, objects.bridgePillarLayer, objects.bridgeTopLayer]).toEqual(layers);
 
     scene.update([horizontal], bounds, snapshot);
-    expect(objects.bridgePillarSprite).toBe(pillarSprite);
-    expect(objects.bridgeShadowSprite).toBe(shadowSprite);
-    expect(pillarSprite.visible).toBe(true);
-    expect(shadowSprite.visible).toBe(true);
+    expect(objects.bridgeTopSprite.rotation).toBeCloseTo(7 * Math.PI / 180);
+    expect(objects.bridgePillarSprite.visible).toBe(true);
+    expect(objects.bridgeShadowSprite.visible).toBe(true);
+  });
+
+  it("switches team assets without recreating the scene display objects", () => {
+    const team1 = {} as HTMLImageElement, team2 = {} as HTMLImageElement, shadow = {} as HTMLImageElement;
+    const make = (image: HTMLImageElement, name: string) => ({ image, width: 48, height: 48, name, ...DEFAULT_ADJUSTMENT,
+      scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0, rotation: 0 });
+    const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: {
+      bridge_top_team_1: make(team1, "team1-top.png"), bridge_pillar_team_1: make(team1, "team1-pillar.png"),
+      bridge_top_team_2: make(team2, "team2-top.png"), bridge_pillar_team_2: make(team2, "team2-pillar.png"),
+      bridge_shadow: make(shadow, "shadow.png"),
+    } };
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    const bridgeCell = (ownerAssetSlot: "team_1" | "team_2") => ({ ...cell, kind: "lake" as const, southFace: false,
+      bridge: { direction: "horizontal" as const, segment: "start" as const, ownerAssetSlot } });
+    scene.update([bridgeCell("team_1")], bounds, snapshot);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    const topSprite = objects.bridgeTopSprite, team1Texture = topSprite.texture;
+    scene.update([bridgeCell("team_2")], bounds, snapshot);
+    const team2Texture = topSprite.texture;
+    expect(objects.bridgeTopSprite).toBe(topSprite);
+    expect(team2Texture).not.toBe(team1Texture);
+    scene.update([bridgeCell("team_1")], bounds, snapshot);
+    expect(objects.bridgeTopSprite).toBe(topSprite);
+    expect(objects.bridgeTopSprite.texture).toBe(team1Texture);
   });
 
   it("preserves all six direction and segment legacy bridge top fallbacks", () => {
@@ -449,31 +480,35 @@ describe("persistent Pixi terrain scene", () => {
     for (const [direction, segment, key] of variants) {
       const legacy = { image, width: 48, height: 48, name: `${key}.png`, ...DEFAULT_ADJUSTMENT };
       const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: { [key]: legacy } };
-      const bridgeCell = { ...cell, kind: "lake" as const, southFace: false, bridge: { direction, segment } };
+      const bridgeCell = { ...cell, kind: "lake" as const, southFace: false,
+        bridge: { direction, segment, ownerAssetSlot: "team_1" as const } };
       const scene = new PersistentTerrainScene(new TerrainTextureCache());
       scene.update([bridgeCell], bounds, snapshot);
       const objects = scene.getCellDisplayObjects("0,0")!;
       expect(objects.bridgeTopSprite.visible, key).toBe(true);
       expect(objects.bridgeTopGraphics.visible, key).toBe(false);
+      expect(objects.bridgePillarSprite.visible, key).toBe(false);
+      expect(objects.bridgeShadowSprite.visible, key).toBe(false);
     }
   });
 
-  it("applies the same bridge component snapshot to preview and board scenes", () => {
+  it("applies the same modular bridge snapshot to preview and board scenes", () => {
     const component = { image, width: 48, height: 48, name: "component.png", ...DEFAULT_ADJUSTMENT,
-      scaleX: 1.25, scaleY: 1.75, offsetX: 3, offsetY: 9 };
+      scaleX: 1.25, scaleY: 1.75, offsetX: 3, offsetY: 9, rotation: 6 };
     const snapshot: AssetSnapshot = { enabled: true, statuses: {}, assets: {
-      bridge_top: component, bridge_pillar: { ...component }, bridge_shadow: { ...component },
+      bridge_top_team_1: component, bridge_pillar_team_1: { ...component }, bridge_shadow: { ...component },
     } };
     const bridgeCell = { ...cell, kind: "lake" as const, southFace: false,
-      bridge: { direction: "horizontal" as const, segment: "start" as const } };
+      bridge: { direction: "horizontal" as const, segment: "start" as const, ownerAssetSlot: "team_1" as const } };
     const previewScene = new PersistentTerrainScene(new TerrainTextureCache());
     const boardScene = new PersistentTerrainScene(new TerrainTextureCache());
     previewScene.update([bridgeCell], bounds, snapshot, false);
     boardScene.update([bridgeCell], bounds, snapshot, true);
     for (const objects of [previewScene.getCellDisplayObjects("0,0")!, boardScene.getCellDisplayObjects("0,0")!]) {
       for (const sprite of [objects.bridgeShadowSprite, objects.bridgePillarSprite, objects.bridgeTopSprite]) {
-        expect(sprite.position.set).toHaveBeenLastCalledWith(3, 9);
+        expect(sprite.position.set).toHaveBeenLastCalledWith(27, 33);
         expect(sprite).toMatchObject({ visible: true, width: 60, height: 84 });
+        expect(sprite.rotation).toBeCloseTo(6 * Math.PI / 180);
       }
     }
   });
@@ -777,25 +812,34 @@ const overflowAssets: AssetSnapshot = { enabled: true, statuses: {}, assets: {
 } };
 
 describe("shared Canvas extent", () => {
-  it("includes independently scaled and offset bridge layers outside the board", () => {
+  it("includes scaled, offset and rotated modular bridge layers outside the board", () => {
     const bridgeCell = [{ ...cell, kind: "lake" as const, southFace: false,
-      bridge: { direction: "horizontal" as const, segment: "middle" as const } }];
+      bridge: { direction: "horizontal" as const, segment: "middle" as const, ownerAssetSlot: "team_1" as const } }];
     const bridgeBounds = new Map([["0,0", { x: 0, y: 0, width: 40, height: 40 }]]);
     const baseAsset = { image, width: 48, height: 48, name: "bridge.png", ...DEFAULT_ADJUSTMENT };
     const bridgeAssets: AssetSnapshot = { enabled: true, statuses: {}, assets: {
-      bridge_top: { ...baseAsset, scaleX: 2, scaleY: 1, offsetX: 48, offsetY: 0 },
-      bridge_pillar: { ...baseAsset, scaleX: 1, scaleY: 2, offsetX: 0, offsetY: 48 },
-      bridge_shadow: { ...baseAsset, scaleX: 1, scaleY: 1, offsetX: -24, offsetY: 0 },
+      bridge_top_team_1: { ...baseAsset, scaleX: 2, scaleY: 1, offsetX: 72, offsetY: 0, rotation: 0 },
+      bridge_pillar_team_1: { ...baseAsset, scaleX: 1, scaleY: 2, offsetX: 0, offsetY: 72, rotation: 0 },
+      bridge_shadow: { ...baseAsset, scaleX: 1, scaleY: 1, offsetX: -24, offsetY: 0, rotation: 0 },
     } };
     expect(pixiBoardExtent(bridgeCell, bridgeBounds, 100, 100, bridgeAssets)).toEqual({
       left: -20, top: 0, width: 140, height: 120,
       paddingLeft: 20, paddingTop: 0, paddingRight: 20, paddingBottom: 20,
     });
     const verticalBridge = [{ ...bridgeCell[0],
-      bridge: { direction: "vertical" as const, segment: "middle" as const } }];
+      bridge: { direction: "vertical" as const, segment: "middle" as const, ownerAssetSlot: "team_1" as const } }];
     expect(pixiBoardExtent(verticalBridge, bridgeBounds, 100, 100, bridgeAssets)).toEqual({
-      left: 0, top: 0, width: 120, height: 100,
-      paddingLeft: 0, paddingTop: 0, paddingRight: 20, paddingBottom: 0,
+      left: -20, top: -20, width: 120, height: 120,
+      paddingLeft: 20, paddingTop: 20, paddingRight: 0, paddingBottom: 0,
+    });
+    const rotated = { ...bridgeAssets, assets: {
+      bridge_top_team_1: { ...baseAsset, scaleX: 2, scaleY: 2, offsetX: 0, offsetY: 0, rotation: 45 },
+      bridge_pillar_team_1: { ...baseAsset, scaleX: 2, scaleY: 2, offsetX: 0, offsetY: 0, rotation: 45 },
+      bridge_shadow: { ...baseAsset, scaleX: 2, scaleY: 2, offsetX: 0, offsetY: 0, rotation: 45 },
+    } };
+    expect(pixiBoardExtent(bridgeCell, bridgeBounds, 100, 100, rotated)).toEqual({
+      left: -37, top: -37, width: 137, height: 137,
+      paddingLeft: 37, paddingTop: 37, paddingRight: 0, paddingBottom: 0,
     });
     expect(pixiBoardExtent(bridgeCell, bridgeBounds, 100, 100, { ...bridgeAssets, enabled: false })).toEqual({
       left: 0, top: 0, width: 100, height: 100,

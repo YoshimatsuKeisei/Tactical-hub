@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createInitialGameState } from "../game/initialState";
 import { getConstructionAt } from "../game/engine/construction";
 import {
-  applyMoveHighlights, baseFlagAssetKey, baseGroupBounds, buildPixiBaseGroups, buildPixiBoardTerrain, getMoveHighlightStyle,
+  applyMoveHighlights, baseFlagAssetKey, baseGroupBounds, bridgeOwnerAssetSlot, buildPixiBaseGroups, buildPixiBoardTerrain, getMoveHighlightStyle,
   isRaisedRoadTerrain, isTwoByTwoBase, pixiTerrainKind, relativeCellBounds, shouldShowRoadSouthFace, TERRAIN_COLORS,
 } from "./pixiBoardTerrain";
 import { DEFAULT_MOVE_HIGHLIGHT } from "./tileAssets";
@@ -50,6 +50,14 @@ describe("real-map Pixi presentation adapter", () => {
     neutral.ownerTeamId = "team-4";
     group = buildPixiBaseGroups(state).find((candidate) => candidate.id === neutral.id)!;
     expect(group).toMatchObject({ thirdParty: false, coreAssetKey: "base", flagAssetKey: "base_flag_team_4" });
+  });
+  it("maps bridge owners from non-neutral team order and falls back to third-party", () => {
+    const state = createInitialGameState();
+    const reordered = { teams: [state.teams[2], state.teams[0], state.teams[3], state.teams[1], state.teams[4]] };
+    expect(bridgeOwnerAssetSlot(reordered, "team-3")).toBe("team_1");
+    expect(bridgeOwnerAssetSlot(reordered, "team-1")).toBe("team_2");
+    expect(bridgeOwnerAssetSlot(reordered, "neutral")).toBe("third_party");
+    expect(bridgeOwnerAssetSlot(reordered, undefined)).toBe("third_party");
   });
   it("leaves non-2x2 bases on the compatible per-cell rendering path", () => {
     const state = createInitialGameState();
@@ -134,8 +142,8 @@ describe("real-map Pixi presentation adapter", () => {
     const horizontal = [{ x: 4, y: 3 }, { x: 5, y: 3 }, { x: 6, y: 3 }];
     const vertical = [{ x: 9, y: 4 }, { x: 9, y: 3 }, { x: 9, y: 2 }];
     state.constructions = [
-      { id: "h", kind: "bridge", active: true, placedTurn: 1, tiles: horizontal },
-      { id: "v", kind: "bridge", active: true, placedTurn: 1, tiles: vertical },
+      { id: "h", kind: "bridge", ownerTeamId: "team-1", active: true, placedTurn: 1, tiles: horizontal },
+      { id: "v", kind: "bridge", ownerTeamId: "team-2", active: true, placedTurn: 1, tiles: vertical },
       { id: "o", kind: "obstacle", active: true, placedTurn: 1, tiles: [horizontal[1]] },
       { id: "reset", kind: "obstacle", active: false, placedTurn: 1, tiles: [horizontal[0]] },
     ];
@@ -145,10 +153,14 @@ describe("real-map Pixi presentation adapter", () => {
       expect(cell.obstacle).toBe(Boolean(getConstructionAt(state, cell.x, cell.y, "obstacle")));
     }
     expect(horizontal.map((p) => cells.find((c) => c.x === p.x && c.y === p.y)?.bridge)).toEqual([
-      { direction: "horizontal", segment: "start" }, { direction: "horizontal", segment: "middle" }, { direction: "horizontal", segment: "end" },
+      { direction: "horizontal", segment: "start", ownerAssetSlot: "team_1" },
+      { direction: "horizontal", segment: "middle", ownerAssetSlot: "team_1" },
+      { direction: "horizontal", segment: "end", ownerAssetSlot: "team_1" },
     ]);
     expect([...vertical].reverse().map((p) => cells.find((c) => c.x === p.x && c.y === p.y)?.bridge)).toEqual([
-      { direction: "vertical", segment: "start" }, { direction: "vertical", segment: "middle" }, { direction: "vertical", segment: "end" },
+      { direction: "vertical", segment: "start", ownerAssetSlot: "team_2" },
+      { direction: "vertical", segment: "middle", ownerAssetSlot: "team_2" },
+      { direction: "vertical", segment: "end", ownerAssetSlot: "team_2" },
     ]);
   });
   it("retains lake terrain below bridges and applies south faces from the map adapter", () => {

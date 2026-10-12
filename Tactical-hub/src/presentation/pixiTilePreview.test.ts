@@ -36,6 +36,10 @@ describe("independent square Pixi preview", () => {
       expect(PREVIEW_BRIDGES.filter((b) => b.direction === direction).map((b) => b.segment))
         .toEqual(["start", "middle", "end"]);
     }
+    expect(new Set(PREVIEW_BRIDGES.filter((b) => b.direction === "horizontal").map((b) => b.ownerAssetSlot)))
+      .toEqual(new Set(["team_1"]));
+    expect(new Set(PREVIEW_BRIDGES.filter((b) => b.direction === "vertical").map((b) => b.ownerAssetSlot)))
+      .toEqual(new Set(["team_2"]));
   });
   it("places separate obstacles on road and bridge", () => {
     expect(PREVIEW_TERRAIN[PREVIEW_OBSTACLES[0].y][PREVIEW_OBSTACLES[0].x]).toBe("road");
