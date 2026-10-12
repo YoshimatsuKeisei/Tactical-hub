@@ -258,6 +258,7 @@ export function baseAssetPlacement(asset: TileAsset, rect: CellBounds): CellBoun
 export class PersistentTerrainScene {
   readonly root = new Container();
   private readonly groundLayer = new Container();
+  private readonly bridgeLayer = new Container();
   private readonly roadLayer = new Container();
   private readonly baseLayer = new Container();
   private readonly shadowLayer = new Container();
@@ -268,9 +269,11 @@ export class PersistentTerrainScene {
   constructor(private readonly cache: TerrainTextureCache) {
     this.root.eventMode = "none";
     this.groundLayer.sortableChildren = true;
+    this.bridgeLayer.sortableChildren = true;
     this.depthLayer.sortableChildren = true;
     this.roadLayer.sortableChildren = true;
-    this.root.addChild(this.groundLayer, this.roadLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
+    // Bridges cover lake terrain but are covered by roads at their entrances.
+    this.root.addChild(this.groundLayer, this.bridgeLayer, this.roadLayer, this.baseLayer, this.shadowLayer, this.depthLayer);
   }
 
   private makeBase(id: string) {
@@ -298,6 +301,9 @@ export class PersistentTerrainScene {
     bridgeShadowLayer.label = `bridge-shadow-${key}`;
     bridgePillarLayer.label = `bridge-pillar-${key}`;
     bridgeTopLayer.label = `bridge-top-${key}`;
+    bridgeShadowLayer.zIndex = row;
+    bridgePillarLayer.zIndex = row;
+    bridgeTopLayer.zIndex = row;
     const face = new PersistentVisual(layer);
     const topHighlight = new PersistentOverlay(layer);
     const faceHighlight = new PersistentOverlay(layer);
@@ -305,7 +311,7 @@ export class PersistentTerrainScene {
     const bridgeShadow = new PersistentVisual(bridgeShadowLayer);
     const bridgePillar = new PersistentVisual(bridgePillarLayer);
     const bridgeTop = new PersistentVisual(bridgeTopLayer);
-    layer.addChild(bridgeShadowLayer, bridgePillarLayer, bridgeTopLayer);
+    this.bridgeLayer.addChild(bridgeShadowLayer, bridgePillarLayer, bridgeTopLayer);
     const obstacle = new PersistentVisual(layer);
     const node = {
       outside: new PersistentOverlay(this.groundLayer),
@@ -578,6 +584,7 @@ export class PersistentTerrainScene {
     }
     this.nodes.clear();
     this.groundLayer.destroy({ children: false });
+    this.bridgeLayer.destroy({ children: false });
     this.roadLayer.destroy({ children: false });
     this.baseLayer.destroy({ children: false });
     this.shadowLayer.destroy({ children: false });

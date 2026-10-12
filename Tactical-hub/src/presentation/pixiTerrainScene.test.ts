@@ -241,7 +241,7 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.shadowGraphics.visible).toBe(true);
     expect(objects.shadowSprite.visible).toBe(false);
     expect(objects.shadowGraphics.alpha).toBe(0.24);
-    expect((scene.root.children[3] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
+    expect((scene.root.children[4] as { children: unknown[] }).children).toContain(objects.shadowGraphics);
     const shadowRects = vi.mocked(objects.shadowGraphics.rect).mock.calls;
     expect(shadowRects).toHaveLength(3);
     expect(shadowRects[0][0]).toBe(0);
@@ -373,10 +373,11 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.bridgePillarSprite).toMatchObject({ visible: true, width: 24, height: 96 });
     expect(objects.bridgeShadowSprite).toMatchObject({ visible: true, width: 96, height: 60 });
     expect(objects.bridgeTopGraphics.visible).toBe(false);
-    const depthLayer = scene.root.children[4] as { children: { children: unknown[] }[] };
-    const cellLayer = depthLayer.children[0];
-    expect(cellLayer.children.indexOf(objects.bridgeShadowLayer)).toBeLessThan(cellLayer.children.indexOf(objects.bridgePillarLayer));
-    expect(cellLayer.children.indexOf(objects.bridgePillarLayer)).toBeLessThan(cellLayer.children.indexOf(objects.bridgeTopLayer));
+    const bridgeLayer = scene.root.children[1] as { children: unknown[]; sortableChildren: boolean };
+    expect(bridgeLayer.sortableChildren).toBe(true);
+    expect(scene.root.children.indexOf(bridgeLayer)).toBeLessThan(scene.root.children.indexOf(scene.root.children[2]));
+    expect(bridgeLayer.children.indexOf(objects.bridgeShadowLayer)).toBeLessThan(bridgeLayer.children.indexOf(objects.bridgePillarLayer));
+    expect(bridgeLayer.children.indexOf(objects.bridgePillarLayer)).toBeLessThan(bridgeLayer.children.indexOf(objects.bridgeTopLayer));
     expect(bridgeCell).toEqual(original);
 
     const topSprite = objects.bridgeTopSprite, topTexture = topSprite.texture;
