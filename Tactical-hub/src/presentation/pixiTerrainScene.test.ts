@@ -375,7 +375,8 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.bridgeTopGraphics.visible).toBe(false);
     const bridgeLayer = scene.root.children[1] as { children: unknown[]; sortableChildren: boolean };
     expect(bridgeLayer.sortableChildren).toBe(true);
-    expect(scene.root.children.indexOf(bridgeLayer)).toBeLessThan(scene.root.children.indexOf(scene.root.children[2]));
+    expect((scene.root.children[0] as { children: unknown[] }).children).toContain(objects.groundSprite);
+    expect((scene.root.children[2] as { children: unknown[] }).children).toContain(objects.roadSprite);
     expect(bridgeLayer.children.indexOf(objects.bridgeShadowLayer)).toBeLessThan(bridgeLayer.children.indexOf(objects.bridgePillarLayer));
     expect(bridgeLayer.children.indexOf(objects.bridgePillarLayer)).toBeLessThan(bridgeLayer.children.indexOf(objects.bridgeTopLayer));
     expect(bridgeCell).toEqual(original);
