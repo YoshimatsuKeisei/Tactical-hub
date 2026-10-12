@@ -1,10 +1,11 @@
 import { Container, Graphics, ImageSource, Sprite, Texture } from "pixi.js";
 import type { CellBounds, PixiBaseGroup, PixiBoardTerrain } from "./pixiBoardTerrain";
-import { baseGroupBounds, TERRAIN_COLORS } from "./pixiBoardTerrain";
+import { baseGroupBounds, roadDecorationVisibility, TERRAIN_COLORS } from "./pixiBoardTerrain";
 import {
   assetPlacement, bridgeAssetKey, bridgeComponentPlacement, hasCompleteModularBridgeAssets,
   LEGACY_BRIDGE_ASSET_KEYS, modularBridgeAssetKeys, MODULAR_BRIDGE_ASSET_KEYS, roadSouthShadowSettings, type AssetSnapshot,
-  type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
+  ROAD_DECORATION_ASSET_KEYS, ROAD_EDGE_ASSET_KEYS,
+  type RoadDecorationAssetKey, type RoadSouthShadowSettings, type TileAsset, type TileAssetKey,
 } from "./tileAssets";
 import type { LakeAnimationState } from "./pixiLakeAnimation";
 
@@ -63,6 +64,7 @@ const BASE_FOREGROUND_ASSET_KEYS = new Set<TileAssetKey>([
 ]);
 const TERRAIN_ASSET_KEYS = new Set<TileAssetKey>([
   "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party",
+  ...ROAD_DECORATION_ASSET_KEYS,
   "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
   ...MODULAR_BRIDGE_ASSET_KEYS,
   ...LEGACY_BRIDGE_ASSET_KEYS,
@@ -214,6 +216,7 @@ interface PersistentCell {
   isLake: boolean;
   lakePlacement?: CellBounds;
   road: PersistentVisual;
+  roadDecorations: Record<RoadDecorationAssetKey, PersistentVisual>;
   face: PersistentVisual;
   shadow: PersistentVisual;
   topHighlight: PersistentOverlay;
@@ -315,6 +318,9 @@ export class PersistentTerrainScene {
     const bridgeTop = new PersistentVisual(bridgeTopLayer);
     this.bridgeLayer.addChild(bridgeShadowLayer, bridgePillarLayer, bridgeTopLayer);
     const obstacle = new PersistentVisual(layer);
+    const roadDecorations = Object.fromEntries(ROAD_DECORATION_ASSET_KEYS.map((assetKey) => [
+      assetKey, new PersistentVisual(this.roadLayer),
+    ])) as Record<RoadDecorationAssetKey, PersistentVisual>;
     const node = {
       outside: new PersistentOverlay(this.groundLayer),
       ground,
@@ -323,6 +329,7 @@ export class PersistentTerrainScene {
       lakePlacement: undefined,
       shadow: new PersistentVisual(this.shadowLayer),
       road: new PersistentVisual(this.roadLayer),
+      roadDecorations,
       face,
       topHighlight,
       faceHighlight,
@@ -344,6 +351,7 @@ export class PersistentTerrainScene {
     this.cache.sync(snapshot, TERRAIN_ASSET_KEYS);
     this.updateBases(cells.flatMap((cell) => cell.baseGroup ? [cell.baseGroup] : []), bounds, snapshot);
     const seen = new Set<string>();
+    const roadKeys = new Set(cells.filter((cell) => cell.kind === "road").map((cell) => `${cell.x},${cell.y}`));
     const outlinedKeys = new Set(cells
       .filter((cell) => cell.kind && bounds.has(`${cell.x},${cell.y}`) && cell.moveHighlight?.outlineEnabled && cell.moveHighlight.outlineOpacity > 0)
       .map((cell) => `${cell.x},${cell.y}`));
@@ -359,8 +367,8 @@ export class PersistentTerrainScene {
       node ??= this.makeCell(key, cell.y);
       node.layer.visible = true;
       node.layer.zIndex = cell.y;
-      node.road.sprite.zIndex = cell.y;
-      node.road.graphics.zIndex = cell.y;
+      node.road.sprite.zIndex = cell.y * 3;
+      node.road.graphics.zIndex = cell.y * 3;
       const { x, y, width: w, height: h } = rect;
       const signature = rectSignature(rect);
 
@@ -393,6 +401,19 @@ export class PersistentTerrainScene {
         node.ground.update(cell.kind, rect, snapshot, this.cache, `${cell.kind}:${signature}`,
           (g) => g.rect(x, y, w, h).fill(TERRAIN_COLORS[cell.kind!]));
       }
+
+      if (cell.kind === "road") {
+        const visibility = roadDecorationVisibility(roadKeys, cell.x, cell.y);
+        for (const assetKey of ROAD_DECORATION_ASSET_KEYS) {
+          const decoration = node.roadDecorations[assetKey];
+          const layerOffset = ROAD_EDGE_ASSET_KEYS.includes(assetKey as typeof ROAD_EDGE_ASSET_KEYS[number]) ? 1 : 2;
+          decoration.sprite.zIndex = cell.y * 3 + layerOffset;
+          decoration.graphics.zIndex = cell.y * 3 + layerOffset;
+          if (visibility[assetKey]) decoration.update(assetKey, rect, snapshot, this.cache,
+            `road-decoration:${assetKey}:${signature}`, () => {}, { fallback: false });
+          else decoration.hide();
+        }
+      } else for (const decoration of Object.values(node.roadDecorations)) decoration.hide();
 
       const depth = raised ? Math.min(10, h * 0.2) : 0;
       let displayedFace: CellBounds | undefined;
@@ -516,6 +537,10 @@ export class PersistentTerrainScene {
       groundGraphics: node.ground.graphics, groundSprite: node.ground.sprite,
       lakeBlendSprite: node.lakeBlend,
       roadGraphics: node.road.graphics, roadSprite: node.road.sprite,
+      roadDecorationGraphics: Object.fromEntries(ROAD_DECORATION_ASSET_KEYS.map((assetKey) =>
+        [assetKey, node.roadDecorations[assetKey].graphics])) as Record<RoadDecorationAssetKey, Graphics>,
+      roadDecorationSprites: Object.fromEntries(ROAD_DECORATION_ASSET_KEYS.map((assetKey) =>
+        [assetKey, node.roadDecorations[assetKey].sprite])) as Record<RoadDecorationAssetKey, Sprite>,
       faceGraphics: node.face.graphics, faceSprite: node.face.sprite,
       shadowGraphics: node.shadow.graphics, shadowSprite: node.shadow.sprite,
       topHighlightGraphics: node.topHighlight.graphics,
@@ -547,6 +572,7 @@ export class PersistentTerrainScene {
     node.isLake = false;
     node.lakePlacement = undefined;
     node.road.hide();
+    for (const decoration of Object.values(node.roadDecorations)) decoration.hide();
     node.face.hide();
     node.shadow.hide();
     node.topHighlight.hide();
@@ -570,6 +596,7 @@ export class PersistentTerrainScene {
       node.ground.destroy();
       node.lakeBlend.destroy({ texture: false, textureSource: false });
       node.road.destroy();
+      for (const decoration of Object.values(node.roadDecorations)) decoration.destroy();
       node.face.destroy();
       node.shadow.destroy();
       node.topHighlight.destroy();

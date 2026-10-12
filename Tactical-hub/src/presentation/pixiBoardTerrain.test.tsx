@@ -4,7 +4,8 @@ import { createInitialGameState } from "../game/initialState";
 import { getConstructionAt } from "../game/engine/construction";
 import {
   applyMoveHighlights, baseFlagAssetKey, baseGroupBounds, bridgeOwnerAssetSlot, buildPixiBaseGroups, buildPixiBoardTerrain, getMoveHighlightStyle,
-  isRaisedRoadTerrain, isTwoByTwoBase, pixiTerrainKind, relativeCellBounds, shouldShowRoadSouthFace, TERRAIN_COLORS,
+  isRaisedRoadTerrain, isTwoByTwoBase, pixiTerrainKind, relativeCellBounds, roadDecorationVisibility,
+  shouldShowRoadSouthFace, TERRAIN_COLORS,
 } from "./pixiBoardTerrain";
 import { DEFAULT_MOVE_HIGHLIGHT } from "./tileAssets";
 import { TileView } from "../components/TileView";
@@ -13,6 +14,9 @@ import { UnitToken } from "../components/UnitToken";
 import { PixiBoardTerrain } from "../components/PixiBoardTerrain";
 
 describe("real-map Pixi presentation adapter", () => {
+  const roadVisibility = (coords: readonly (readonly [number, number])[], x: number, y: number) =>
+    roadDecorationVisibility(new Set(coords.map(([roadX, roadY]) => `${roadX},${roadY}`)), x, y);
+
   it("preserves every real-map coordinate and terrain without mutating state", () => {
     const state = createInitialGameState(), before = JSON.stringify(state);
     const cells = buildPixiBoardTerrain(state);
@@ -95,6 +99,44 @@ describe("real-map Pixi presentation adapter", () => {
     expect(shouldShowRoadSouthFace("road", "outside")).toBe(true);
     expect(shouldShowRoadSouthFace("road")).toBe(true);
     expect(shouldShowRoadSouthFace("lake", "outside")).toBe(false);
+  });
+  it("shows road edges only on cardinal exterior boundaries and corners only between two exterior edges", () => {
+    const single = roadVisibility([[0, 0]], 0, 0);
+    expect(Object.values(single).every(Boolean)).toBe(true);
+
+    expect(roadVisibility([[0, 0], [1, 0]], 0, 0)).toMatchObject({
+      road_edge_top: true, road_edge_right: false, road_edge_bottom: true, road_edge_left: true,
+      road_corner_top_left: true, road_corner_top_right: false,
+      road_corner_bottom_left: true, road_corner_bottom_right: false,
+    });
+    expect(roadVisibility([[0, 0], [0, 1]], 0, 0)).toMatchObject({
+      road_edge_top: true, road_edge_right: true, road_edge_bottom: false, road_edge_left: true,
+      road_corner_top_left: true, road_corner_top_right: true,
+      road_corner_bottom_left: false, road_corner_bottom_right: false,
+    });
+  });
+  it("handles L, T, cross and staircase roads without diagonal-only corner rules", () => {
+    const lCorner = roadVisibility([[0, 0], [1, 0], [0, 1]], 0, 0);
+    expect(lCorner.road_corner_top_left).toBe(true);
+    expect(lCorner.road_corner_top_right).toBe(false);
+    expect(lCorner.road_corner_bottom_left).toBe(false);
+    expect(lCorner.road_corner_bottom_right).toBe(false);
+
+    const tCenter = roadVisibility([[0, 0], [-1, 0], [1, 0], [0, -1]], 0, 0);
+    expect(tCenter.road_edge_bottom).toBe(true);
+    expect(Object.entries(tCenter).filter(([key]) => key.startsWith("road_corner_")).every(([, value]) => !value)).toBe(true);
+
+    const crossCenter = roadVisibility([[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]], 0, 0);
+    expect(Object.values(crossCenter).every((value) => !value)).toBe(true);
+
+    const staircase = [[0, 0], [1, 0], [1, 1], [2, 1]] as const;
+    const stair = roadVisibility(staircase, 1, 0);
+    expect(stair).toMatchObject({
+      road_edge_top: true, road_edge_right: true, road_edge_bottom: false, road_edge_left: false,
+      road_corner_top_right: true,
+    });
+    expect(stair.road_corner_top_left).toBe(false);
+    expect(stair.road_corner_bottom_right).toBe(false);
   });
   it("uses a darkened team color for normal units and team-independent gray for ninja", () => {
     const normal = getMoveHighlightStyle({ type: "cavalry" }, "#d94a4a", DEFAULT_MOVE_HIGHLIGHT);

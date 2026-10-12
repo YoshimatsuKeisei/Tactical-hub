@@ -1,6 +1,6 @@
 import type { GameState, Tile, Unit } from "../game/types";
 import { getConstructionAt } from "../game/engine/construction";
-import type { BridgeOwnerAssetSlot, MoveHighlightSettings, TileAssetKey } from "./tileAssets";
+import type { BridgeOwnerAssetSlot, MoveHighlightSettings, RoadDecorationAssetKey, TileAssetKey } from "./tileAssets";
 
 export const TERRAIN_COLORS = { road: 0x999c96, base: 0xc6a253, lake: 0x338ac0 };
 export function pixiTerrainKind(terrain: Tile["terrain"]): keyof typeof TERRAIN_COLORS | null {
@@ -130,6 +130,27 @@ export interface PixiMoveHighlight {
 }
 export type PixiBoardCell = BuiltPixiBoardCell & { moveHighlight?: PixiMoveHighlight };
 export type PixiBoardTerrain = PixiBoardCell[];
+
+export function roadDecorationVisibility(
+  roadKeys: ReadonlySet<string>,
+  x: number,
+  y: number,
+): Record<RoadDecorationAssetKey, boolean> {
+  const top = !roadKeys.has(`${x},${y - 1}`);
+  const right = !roadKeys.has(`${x + 1},${y}`);
+  const bottom = !roadKeys.has(`${x},${y + 1}`);
+  const left = !roadKeys.has(`${x - 1},${y}`);
+  return {
+    road_edge_top: top,
+    road_edge_right: right,
+    road_edge_bottom: bottom,
+    road_edge_left: left,
+    road_corner_top_left: top && left,
+    road_corner_top_right: top && right,
+    road_corner_bottom_left: bottom && left,
+    road_corner_bottom_right: bottom && right,
+  };
+}
 
 function parseHexColor(value: string | undefined): number {
   if (!value || !/^#[0-9a-f]{6}$/i.test(value)) return 0x777777;

@@ -3,6 +3,7 @@ import {
   bridgeAssetAdjustment, BRIDGE_OWNER_ASSET_SLOTS, BRIDGE_PILLAR_ASSET_KEYS, BRIDGE_TOP_ASSET_KEYS,
   DEFAULT_ADJUSTMENT, hasCompleteModularBridgeAssets, LAKE_FRAME_KEYS, LEGACY_BRIDGE_ASSET_KEYS,
   missingLakeAnimationAssets, MODULAR_BRIDGE_ASSET_KEYS, moveHighlightSettings, roadSouthShadowSettings,
+  ROAD_CORNER_ASSET_KEYS, ROAD_DECORATION_ASSET_KEYS, ROAD_EDGE_ASSET_KEYS, ROAD_SURFACE_ASSET_KEYS,
   TILE_ASSET_KEYS, TILE_ASSET_LABELS, type BridgeComponentAssetKey, type TileAssetKey,
 } from "../presentation/tileAssets";
 import { useTileAssets } from "./TileAssetProvider";
@@ -15,8 +16,11 @@ export function TileAssetImportPanel() {
   const assetField = (key: TileAssetKey) => {
     const asset = snapshot.assets[key];
     const isShadow = key === "road_south_shadow";
+    const isRoadDecoration = ROAD_DECORATION_ASSET_KEYS.some((decorationKey) => decorationKey === key);
     const isAdditionalLakeFrame = key !== "lake" && LAKE_FRAME_KEYS.some((lakeKey) => lakeKey === key);
-    const transparentOptional = key === "road_south_face" || isShadow || key.startsWith("base_front_wall") || key.startsWith("base_flag_");
+    const transparentOptional = key === "road_south_face" || isShadow ||
+      isRoadDecoration ||
+      key.startsWith("base_front_wall") || key.startsWith("base_flag_");
     const shadowSettings = roadSouthShadowSettings(snapshot);
     return <fieldset key={key}>
       <legend>{TILE_ASSET_LABELS[key]}{transparentOptional ? " (透過PNG・任意)" : ""}</legend>
@@ -28,7 +32,7 @@ export function TileAssetImportPanel() {
         const file = event.target.files?.[0]; event.target.value = "";
         if (file) void store?.importFile(key, file);
       }} />
-      <span role="status">{snapshot.statuses[key] ?? (isAdditionalLakeFrame ? "未設定：アニメーション停止" : "未設定：仮図形")}{asset ? ` — ${asset.name} ${asset.width}×${asset.height}` : ""}</span>
+      <span role="status">{snapshot.statuses[key] ?? (isRoadDecoration ? "未設定：表示なし" : isAdditionalLakeFrame ? "未設定：アニメーション停止" : "未設定：仮図形")}{asset ? ` — ${asset.name} ${asset.width}×${asset.height}` : ""}</span>
       <button type="button" onClick={() => store?.reset(key)}>Reset image</button>
       {isShadow ? <div>
         {(["scaleX", "scaleY", "offsetX", "offsetY"] as const).map((property) => <label key={property}>{property}
@@ -89,6 +93,16 @@ export function TileAssetImportPanel() {
       <p>実盤面はTerrain rendererをPixiJSに切り替えてください。CSSには適用されません。
         X/Yは48px基準の位置調整。通常画像は幅1セル、拠点部品は2×2実測範囲を基準に縦横比を維持します。
         Team 1～4 flagは現在の非中立チーム定義順に対応し、ID文字列は解析しません。道路南側面は同じ高さが南へ続かない境界だけに表示します。</p>
+      <section className="road-asset-import">
+        <h3>Road assets / 道路素材</h3>
+        {ROAD_SURFACE_ASSET_KEYS.map(assetField)}
+        <h4>Road outer edges / 道路外周の辺装飾</h4>
+        <p>上下左右に道路がない辺だけへ重ねます。未設定の画像は表示しません。</p>
+        {ROAD_EDGE_ASSET_KEYS.map(assetField)}
+        <h4>Road outer corners / 道路外周の角装飾</h4>
+        <p>接する2辺が両方とも外周の場合だけ、辺装飾より手前へ重ねます。</p>
+        {ROAD_CORNER_ASSET_KEYS.map(assetField)}
+      </section>
       <fieldset>
         <legend>Lake animation (DEV)</legend>
         <label><input type="checkbox" checked={snapshot.lakeAnimationEnabled === true}
@@ -154,6 +168,8 @@ export function TileAssetImportPanel() {
         <button type="button" onClick={() => store?.resetMoveHighlightSettings("ninja")}>Reset ninja highlight</button>
       </fieldset>
       {TILE_ASSET_KEYS.filter((key) =>
+        !ROAD_SURFACE_ASSET_KEYS.some((roadKey) => roadKey === key) &&
+        !ROAD_DECORATION_ASSET_KEYS.some((roadKey) => roadKey === key) &&
         !LAKE_FRAME_KEYS.some((lakeKey) => lakeKey === key) &&
         !MODULAR_BRIDGE_ASSET_KEYS.some((bridgeKey) => bridgeKey === key) &&
         !LEGACY_BRIDGE_ASSET_KEYS.some((bridgeKey) => bridgeKey === key)).map(assetField)}

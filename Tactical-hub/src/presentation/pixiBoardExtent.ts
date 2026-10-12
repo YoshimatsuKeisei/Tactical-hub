@@ -1,7 +1,7 @@
-import { baseGroupBounds, type CellBounds, type PixiBoardTerrain } from "./pixiBoardTerrain";
+import { baseGroupBounds, roadDecorationVisibility, type CellBounds, type PixiBoardTerrain } from "./pixiBoardTerrain";
 import { baseAssetPlacement } from "./pixiTerrainScene";
 import {
-  bridgeComponentBounds, hasCompleteModularBridgeAssets, modularBridgeAssetKeys,
+  assetPlacement, bridgeComponentBounds, hasCompleteModularBridgeAssets, modularBridgeAssetKeys, ROAD_DECORATION_ASSET_KEYS,
   type AssetSnapshot, type TileAssetKey,
 } from "./tileAssets";
 
@@ -13,6 +13,7 @@ export function pixiBoardExtent(cells: PixiBoardTerrain, bounds: ReadonlyMap<str
     right = Math.max(right, placed.x + placed.width);
     bottom = Math.max(bottom, placed.y + placed.height);
   };
+  const roadKeys = new Set(cells.filter((cell) => cell.kind === "road").map((cell) => `${cell.x},${cell.y}`));
   if (snapshot.enabled) for (const cell of cells) {
     const group = cell.baseGroup;
     if (group) {
@@ -34,6 +35,15 @@ export function pixiBoardExtent(cells: PixiBoardTerrain, bounds: ReadonlyMap<str
       for (const key of Object.values(modularBridgeAssetKeys(cell.bridge.ownerAssetSlot))) {
         const asset = snapshot.assets[key];
         if (asset) include(bridgeComponentBounds(asset, rect, cell.bridge.direction));
+      }
+    }
+    if (cell.kind === "road") {
+      const rect = bounds.get(`${cell.x},${cell.y}`);
+      if (!rect) continue;
+      const visibility = roadDecorationVisibility(roadKeys, cell.x, cell.y);
+      for (const key of ROAD_DECORATION_ASSET_KEYS) {
+        const asset = visibility[key] ? snapshot.assets[key] : undefined;
+        if (asset) include(assetPlacement(asset, rect));
       }
     }
   }

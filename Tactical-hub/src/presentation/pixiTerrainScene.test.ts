@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_ADJUSTMENT, EMPTY_ASSETS, type AssetSnapshot, type TileAssetKey } from "./tileAssets";
+import {
+  DEFAULT_ADJUSTMENT, EMPTY_ASSETS, ROAD_DECORATION_ASSET_KEYS, type AssetSnapshot, type TileAssetKey,
+} from "./tileAssets";
 
 vi.mock("pixi.js", () => {
   class Container {
@@ -68,6 +70,13 @@ const imported: AssetSnapshot = {
   enabled: true,
   statuses: {},
   assets: { road: { image, width: 128, height: 128, name: "road.png", ...DEFAULT_ADJUSTMENT } },
+};
+const roadDecorations: AssetSnapshot = {
+  enabled: true,
+  statuses: {},
+  assets: Object.fromEntries(ROAD_DECORATION_ASSET_KEYS.map((key) => [
+    key, { image, width: 48, height: 48, name: `${key}.png`, ...DEFAULT_ADJUSTMENT },
+  ])),
 };
 const cell = { x: 0, y: 0, kind: "road" as const, southFace: true, bridge: null, obstacle: false };
 const bounds = new Map([["0,0", { x: 0, y: 0, width: 48, height: 48 }]]);
@@ -209,6 +218,76 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.roadSprite.visible).toBe(true);
   });
 
+  it("draws road perimeter edges and corners over the road in stable layer order", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, roadDecorations);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    for (const key of ROAD_DECORATION_ASSET_KEYS) {
+      expect(objects.roadDecorationSprites[key].visible).toBe(true);
+      expect(objects.roadDecorationGraphics[key].visible).toBe(false);
+      expect(objects.roadDecorationSprites[key].position.set).toHaveBeenLastCalledWith(0, 0);
+      expect(objects.roadDecorationSprites[key].width).toBe(48);
+      expect(objects.roadDecorationSprites[key].height).toBe(48);
+    }
+    expect(objects.roadDecorationSprites.road_edge_top.zIndex).toBeGreaterThan(objects.roadSprite.zIndex);
+    expect(objects.roadDecorationSprites.road_corner_top_left.zIndex)
+      .toBeGreaterThan(objects.roadDecorationSprites.road_edge_top.zIndex);
+  });
+
+  it("hides decorations on shared road boundaries and their dependent corners", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    const cells = [cell, { ...cell, x: 1 }];
+    const twoBounds = new Map([
+      ["0,0", { x: 0, y: 0, width: 48, height: 48 }],
+      ["1,0", { x: 48, y: 0, width: 48, height: 48 }],
+    ]);
+    scene.update(cells, twoBounds, roadDecorations);
+    const left = scene.getCellDisplayObjects("0,0")!.roadDecorationSprites;
+    const right = scene.getCellDisplayObjects("1,0")!.roadDecorationSprites;
+    expect(left.road_edge_right.visible).toBe(false);
+    expect(left.road_corner_top_right.visible).toBe(false);
+    expect(left.road_corner_bottom_right.visible).toBe(false);
+    expect(right.road_edge_left.visible).toBe(false);
+    expect(right.road_corner_top_left.visible).toBe(false);
+    expect(right.road_corner_bottom_left.visible).toBe(false);
+    expect(left.road_edge_left.visible).toBe(true);
+    expect(right.road_edge_right.visible).toBe(true);
+  });
+
+  it("keeps existing road, south face, and shadow fallbacks safe when decoration images are unset", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, EMPTY_ASSETS, true);
+    const objects = scene.getCellDisplayObjects("0,0")!;
+    expect(objects.roadGraphics.visible).toBe(true);
+    expect(objects.faceGraphics.visible).toBe(true);
+    expect(objects.shadowGraphics.visible).toBe(true);
+    for (const key of ROAD_DECORATION_ASSET_KEYS) {
+      expect(objects.roadDecorationSprites[key].visible).toBe(false);
+      expect(objects.roadDecorationGraphics[key].visible).toBe(false);
+    }
+  });
+
+  it("updates road adjacency while reusing decoration Sprites and Textures", () => {
+    const scene = new PersistentTerrainScene(new TerrainTextureCache());
+    scene.update([cell], bounds, roadDecorations);
+    const sprite = scene.getCellDisplayObjects("0,0")!.roadDecorationSprites.road_edge_right;
+    const texture = sprite.texture;
+    expect(sprite.visible).toBe(true);
+
+    scene.update([cell, { ...cell, x: 1 }], new Map([
+      ["0,0", { x: 0, y: 0, width: 48, height: 48 }],
+      ["1,0", { x: 48, y: 0, width: 48, height: 48 }],
+    ]), roadDecorations);
+    expect(scene.getCellDisplayObjects("0,0")!.roadDecorationSprites.road_edge_right).toBe(sprite);
+    expect(sprite.texture).toBe(texture);
+    expect(sprite.visible).toBe(false);
+
+    scene.update([cell], bounds, roadDecorations);
+    expect(scene.getCellDisplayObjects("0,0")!.roadDecorationSprites.road_edge_right).toBe(sprite);
+    expect(sprite.texture).toBe(texture);
+    expect(sprite.visible).toBe(true);
+  });
+
   it("uses the separate south-face asset only for exposed faces in raised mode", () => {
     const withFace: AssetSnapshot = {
       ...imported,
@@ -346,13 +425,15 @@ describe("persistent Pixi terrain scene", () => {
     expect(objects.obstacleSprite.visible).toBe(true);
   });
 
-  it("draws modular bridges above neighboring road tops, south faces and shadows", () => {
+  it("draws modular bridges above neighboring road decorations, south faces and shadows", () => {
     const scene = new PersistentTerrainScene(new TerrainTextureCache());
     const component = { image, width: 48, height: 48, name: "bridge.png", ...DEFAULT_ADJUSTMENT };
     const snapshot: AssetSnapshot = {
       ...imported,
       assets: {
         ...imported.assets,
+        road_edge_top: roadDecorations.assets.road_edge_top,
+        road_corner_top_left: roadDecorations.assets.road_corner_top_left,
         bridge_top_team_1: component,
         bridge_pillar_team_1: component,
         bridge_shadow: component,
@@ -370,12 +451,16 @@ describe("persistent Pixi terrain scene", () => {
     const bridge = scene.getCellDisplayObjects("0,1")!;
     const layers = scene.root.children as unknown as { children: unknown[] }[];
     expect(road.roadSprite.visible).toBe(true);
+    expect(road.roadDecorationSprites.road_edge_top.visible).toBe(true);
+    expect(road.roadDecorationSprites.road_corner_top_left.visible).toBe(true);
     expect(road.shadowGraphics.visible).toBe(true);
     expect(road.faceGraphics.visible).toBe(true);
     expect(bridge.bridgeTopSprite.visible).toBe(true);
     expect(bridge.bridgePillarSprite.visible).toBe(true);
     expect(bridge.bridgeShadowSprite.visible).toBe(true);
     expect(layers[1].children).toContain(road.roadSprite);
+    expect(layers[1].children).toContain(road.roadDecorationSprites.road_edge_top);
+    expect(layers[1].children).toContain(road.roadDecorationSprites.road_corner_top_left);
     expect(layers[3].children).toContain(road.shadowGraphics);
     expect(layers[4].children).toContain(road.faceGraphics);
     expect(layers[5].children).toContain(bridge.bridgeTopLayer);
@@ -825,7 +910,7 @@ describe("Phase 2 fortress overflow", () => {
           expect(layers[1].children).toContain(objects.roadGraphics);
           expect(objects.roadSprite.visible).toBe(Boolean(assets.assets.road));
           expect(objects.roadGraphics.visible).toBe(!assets.assets.road);
-          expect(layers[4].children.some((node) => (node as { children: unknown[] }).children.includes(objects.faceGraphics))).toBe(true);
+          expect(layers[4].children).toContain(objects.faceGraphics);
         } else if (kind === "lake") {
           expect(layers[0].children).toContain(objects.groundGraphics);
           expect(objects.groundGraphics.visible).toBe(true);
@@ -852,6 +937,33 @@ const overflowAssets: AssetSnapshot = { enabled: true, statuses: {}, assets: {
 } };
 
 describe("shared Canvas extent", () => {
+  it("includes only visible road decorations with their scale and offsets", () => {
+    const decorated: AssetSnapshot = {
+      enabled: true,
+      statuses: {},
+      assets: {
+        road_edge_top: { image, width: 48, height: 48, name: "top.png", scale: 2, offsetX: -24, offsetY: -12 },
+        road_edge_right: { image, width: 48, height: 48, name: "right.png", scale: 2, offsetX: 36, offsetY: 24 },
+      },
+    };
+    expect(pixiBoardExtent([cell], bounds, 48, 48, decorated)).toEqual({
+      left: -24, top: -12, width: 156, height: 132,
+      paddingLeft: 24, paddingTop: 12, paddingRight: 84, paddingBottom: 72,
+    });
+
+    const connected = [cell, { ...cell, x: 1 }];
+    const connectedBounds = new Map([
+      ["0,0", { x: 0, y: 0, width: 48, height: 48 }],
+      ["1,0", { x: 48, y: 0, width: 48, height: 48 }],
+    ]);
+    const rightOnly: AssetSnapshot = {
+      enabled: true, statuses: {}, assets: { road_edge_right: decorated.assets.road_edge_right },
+    };
+    const extent = pixiBoardExtent(connected, connectedBounds, 96, 48, rightOnly);
+    expect(extent.left).toBe(0);
+    expect(extent.paddingRight).toBe(84);
+  });
+
   it("includes scaled, offset and rotated modular bridge layers outside the board", () => {
     const bridgeCell = [{ ...cell, kind: "lake" as const, southFace: false,
       bridge: { direction: "horizontal" as const, segment: "middle" as const, ownerAssetSlot: "team_1" as const } }];

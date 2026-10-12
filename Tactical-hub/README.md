@@ -15,7 +15,9 @@ flashing. The exact browser/GPU cause still requires Windows visual confirmation
 Run `npm run dev`, enter the game, and open **Tile Asset Preview / Import (DEV)**
 at the top left. Select separate transparent PNG files for **Road top / 道路上面**
 and optional **Road south face / 道路南側面** and **Road south shadow /
-道路南側の落ち影**, plus owned/third-party base cores, owned and third-party base front walls,
+道路南側の落ち影**. The Road section also has four optional edge slots (top,
+right, bottom, left) and four optional outer-corner slots (top-left, top-right,
+bottom-left, bottom-right), plus owned/third-party base cores, owned and third-party base front walls,
 four team flags, lake, obstacle, and the
 six bridge direction/segment slots. Each slot reports its
 filename, decoded dimensions, loading state, or failure reason. Invalid formats,
@@ -70,6 +72,14 @@ bridge overlays. Bridge direction/start/middle/end and active obstacles follow
 the existing presentation adapter. South-face sprites are also hidden in Flat
 preview mode. A sidewall baked into a road PNG
 cannot be removed automatically: use separate top/face images when needed.
+Road perimeter decorations are transparent overlays in the road tile coordinate
+system. Each edge is shown only when the cardinal neighbor is not a road, and an
+outer corner is shown only when both adjoining edges are exterior. Diagonal cells
+do not create corners. Corners render over edges, and both render over the road
+top. Unset decoration slots stay hidden without replacing the normal road with a
+fallback. The same in-memory assets and adjustments drive both Pixi previews and
+the real Pixi board; scale/offset overflow participates in the shared Canvas
+extent calculation.
 Valid 2×2 bases use one measured group rectangle rather than repeating the base
 image in each logical cell. The existing `base` slot is the team-owned core;
 `base_core_third_party` is selected while the current owner is the neutral team.

@@ -4,7 +4,8 @@ import {
   BRIDGE_COMPONENT_ASSET_KEYS, BRIDGE_OWNER_ASSET_SLOTS, BRIDGE_PILLAR_ASSET_KEYS, BRIDGE_TOP_ASSET_KEYS,
   decodeTilePng, DEFAULT_ADJUSTMENT, DEFAULT_AXIS_ADJUSTMENT, EMPTY_ASSETS, hasCompleteModularBridgeAssets,
   DEFAULT_MOVE_HIGHLIGHT, DEFAULT_ROAD_SOUTH_SHADOW, lakeAnimationCanRun, LAKE_FRAME_KEYS,
-  missingLakeAnimationAssets, moveHighlightSettings, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
+  missingLakeAnimationAssets, moveHighlightSettings, ROAD_CORNER_ASSET_KEYS, ROAD_DECORATION_ASSET_KEYS,
+  ROAD_EDGE_ASSET_KEYS, ROAD_SURFACE_ASSET_KEYS, roadSouthShadowSettings, TILE_ASSET_KEYS, TILE_ASSET_LABELS,
   TileAssetStore, type TileAsset,
 } from "./tileAssets";
 const asset = (name = "road.png"): TileAsset => ({ image: {} as HTMLImageElement, name, width: 128, height: 64, ...DEFAULT_ADJUSTMENT });
@@ -78,6 +79,35 @@ describe("shared browser-only tile assets", () => {
     store.reset("road");
     expect(store.getSnapshot().assets.road).toBeUndefined();
     expect(store.getSnapshot().assets.road_south_face).toMatchObject({ scale: 1.5, offsetX: 2, offsetY: 6 });
+    store.resetAll();
+    expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
+  });
+  it("imports, adjusts, and resets all eight road perimeter decoration slots independently", async () => {
+    const store = new TileAssetStore(async (selected) => asset(selected.name));
+    expect(ROAD_SURFACE_ASSET_KEYS).toEqual(["road", "road_south_face", "road_south_shadow"]);
+    expect(ROAD_EDGE_ASSET_KEYS).toEqual([
+      "road_edge_top", "road_edge_right", "road_edge_bottom", "road_edge_left",
+    ]);
+    expect(ROAD_CORNER_ASSET_KEYS).toEqual([
+      "road_corner_top_left", "road_corner_top_right", "road_corner_bottom_left", "road_corner_bottom_right",
+    ]);
+    expect(ROAD_DECORATION_ASSET_KEYS).toHaveLength(8);
+
+    for (const key of ROAD_DECORATION_ASSET_KEYS) {
+      await store.importFile(key, { ...file, name: `${key}.png` } as File);
+      expect(store.getSnapshot().assets[key]).toMatchObject({ name: `${key}.png`, ...DEFAULT_ADJUSTMENT });
+      expect(TILE_ASSET_LABELS[key]).toBeTruthy();
+    }
+    store.adjust("road_edge_top", { scale: 1.5, offsetX: 3, offsetY: -4 });
+    store.adjust("road_corner_bottom_right", { scale: 0.75, offsetX: -2, offsetY: 5 });
+    expect(store.getSnapshot().assets.road_edge_top).toMatchObject({ scale: 1.5, offsetX: 3, offsetY: -4 });
+    expect(store.getSnapshot().assets.road_corner_bottom_right).toMatchObject({ scale: 0.75, offsetX: -2, offsetY: 5 });
+
+    store.adjust("road_edge_top", DEFAULT_ADJUSTMENT);
+    expect(store.getSnapshot().assets.road_edge_top).toMatchObject(DEFAULT_ADJUSTMENT);
+    store.reset("road_edge_top");
+    expect(store.getSnapshot().assets.road_edge_top).toBeUndefined();
+    expect(store.getSnapshot().assets.road_corner_bottom_right).toBeDefined();
     store.resetAll();
     expect(store.getSnapshot()).toBe(EMPTY_ASSETS);
   });

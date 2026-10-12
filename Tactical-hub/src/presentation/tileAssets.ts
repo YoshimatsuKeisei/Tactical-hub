@@ -11,8 +11,18 @@ export const LEGACY_BRIDGE_ASSET_KEYS = [
   "bridge_horizontal_start", "bridge_horizontal_middle", "bridge_horizontal_end",
   "bridge_vertical_start", "bridge_vertical_middle", "bridge_vertical_end",
 ] as const;
+export const ROAD_SURFACE_ASSET_KEYS = ["road", "road_south_face", "road_south_shadow"] as const;
+export const ROAD_EDGE_ASSET_KEYS = [
+  "road_edge_top", "road_edge_right", "road_edge_bottom", "road_edge_left",
+] as const;
+export const ROAD_CORNER_ASSET_KEYS = [
+  "road_corner_top_left", "road_corner_top_right", "road_corner_bottom_left", "road_corner_bottom_right",
+] as const;
+export const ROAD_DECORATION_ASSET_KEYS = [...ROAD_EDGE_ASSET_KEYS, ...ROAD_CORNER_ASSET_KEYS] as const;
+export type RoadDecorationAssetKey = typeof ROAD_DECORATION_ASSET_KEYS[number];
+export const ROAD_ASSET_KEYS = [...ROAD_SURFACE_ASSET_KEYS, ...ROAD_DECORATION_ASSET_KEYS] as const;
 export const TILE_ASSET_KEYS = [
-  "road", "road_south_face", "road_south_shadow", "base", "base_core_third_party", "base_front_wall",
+  ...ROAD_ASSET_KEYS, "base", "base_core_third_party", "base_front_wall",
   "base_front_wall_third_party",
   "base_flag_team_1", "base_flag_team_2", "base_flag_team_3", "base_flag_team_4",
   "lake", "lake_frame_2", "lake_frame_3", "lake_frame_4", "obstacle",
@@ -24,6 +34,14 @@ export const TILE_ASSET_LABELS: Record<TileAssetKey, string> = {
   road: "Road top / 道路上面",
   road_south_face: "Road south face / 道路南側面",
   road_south_shadow: "Road south shadow / 道路南側の落ち影",
+  road_edge_top: "Road edge top / 道路上辺装飾",
+  road_edge_right: "Road edge right / 道路右辺装飾",
+  road_edge_bottom: "Road edge bottom / 道路下辺装飾",
+  road_edge_left: "Road edge left / 道路左辺装飾",
+  road_corner_top_left: "Road corner top-left / 道路左上角装飾",
+  road_corner_top_right: "Road corner top-right / 道路右上角装飾",
+  road_corner_bottom_left: "Road corner bottom-left / 道路左下角装飾",
+  road_corner_bottom_right: "Road corner bottom-right / 道路右下角装飾",
   base: "Base core - Team owned / 所属拠点本体",
   base_core_third_party: "Base core - Third party / 第三者拠点本体",
   base_front_wall: "Base front wall / 拠点前側城壁",
