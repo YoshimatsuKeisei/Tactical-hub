@@ -381,7 +381,7 @@ describe("persistent Pixi terrain scene", () => {
     expect(layers[5].children).toContain(bridge.bridgeTopLayer);
     expect(layers[5].children).toContain(bridge.bridgePillarLayer);
     expect(layers[5].children).toContain(bridge.bridgeShadowLayer);
-    expect(layers[6].children).toContain(road.topHighlightGraphics);
+    expect(layers[6].children.some((node) => (node as { children: unknown[] }).children.includes(road.topHighlightGraphics))).toBe(true);
   });
 
   it("uses a complete modular team set ahead of legacy and falls back as one system", () => {
