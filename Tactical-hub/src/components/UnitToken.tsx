@@ -10,6 +10,7 @@ type Props = {
   attackReady?: boolean;
   attackComplete?: boolean;
   retreatIndicators?: RetreatDirectionIndicator[];
+  ninjaTeleportUsed?: boolean;
   onClick?: () => void;
 };
 
@@ -24,12 +25,15 @@ const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], strin
   "up-left": "↖",
 };
 
-export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], onClick }: Props) {
+export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], ninjaTeleportUsed = false, onClick }: Props) {
+  const ninjaTeleportLabel = unit.type === "ninja"
+    ? ninjaTeleportUsed ? "used" : "available"
+    : undefined;
   return (
     <button
       className={`unit-token ${selected ? "selected" : ""} ${attackTarget ? "attack-target" : ""} ${attackReady ? "attack-ready" : ""} ${attackComplete ? "attack-complete" : ""}`}
       style={{ background: team?.color ?? "#777" }}
-      title={`${team?.name ?? unit.ownerTeamId} ${unit.type} HP:${unit.hp}`}
+      title={`${team?.name ?? unit.ownerTeamId} ${unit.type} HP:${unit.hp}${ninjaTeleportLabel ? ` Ninja teleport: ${ninjaTeleportLabel}` : ""}`}
       onClick={(event) => {
         event.stopPropagation();
         onClick?.();
@@ -37,6 +41,7 @@ export function UnitToken({ unit, team, selected, attackTarget, attackReady, att
     >
       {UNIT_STATS[unit.type].label}
       {unit.type === "infantry" && unit.formation === "heavy" ? <span className="formation-badge">重</span> : null}
+      {unit.type === "ninja" ? <span className={`ninja-teleport-badge ${ninjaTeleportUsed ? "used" : "available"}`} aria-label={`Ninja teleport ${ninjaTeleportLabel}`}>{ninjaTeleportUsed ? "済" : "瞬"}</span> : null}
       {unit.hp > 1 ? <span className="hp-badge">{unit.hp}</span> : null}
       {isRetreating(unit) ? <span className="retreat-badge">R</span> : null}
       {retreatIndicators.map((indicator) => (

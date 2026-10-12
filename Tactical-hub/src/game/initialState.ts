@@ -1,6 +1,6 @@
 import { UNIT_STATS } from "./constants";
 import { testMap4p } from "./maps/testMap4p";
-import type { Base, BaseSlot, GameState, Team, Unit, UnitType } from "./types";
+import { UNIFIED_STRATEGIST_ROLE, type Base, type BaseSlot, type GameState, type Team, type Unit, type UnitType } from "./types";
 
 const teams: Team[] = [
   { id: "team-1", name: "Team 1", color: "#d94a4a", status: "active", homeBaseId: "home-1", controlledBaseIds: ["home-1"], defeatedUnitCount: 0, conqueredTeamIds: [] },
@@ -19,7 +19,7 @@ function placeUnit(base: Base, ownerTeamId: string, type: UnitType, slotId: stri
     position: { kind: "base", baseId: base.id, slotId },
     statuses: [],
   };
-  if (type === "strategist") unit.role = "encourage";
+  if (type === "strategist") unit.role = UNIFIED_STRATEGIST_ROLE;
   return unit;
 }
 

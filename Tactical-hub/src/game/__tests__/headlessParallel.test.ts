@@ -21,7 +21,11 @@ describe("parallel headless batch", () => {
     const existing = runHeadlessBatch(options);
     const parallelEntry = await runParallelHeadlessBatch({ ...options, policyName: "random", workerCount: 1 });
     expect(parallelEntry.matches.map(deterministicResult)).toEqual(existing.matches.map(deterministicResult));
-    expect(parallelEntry).toMatchObject({ requestedWorkerCount: 1, effectiveWorkerCount: 1, totalActionCount: 50 });
+    expect(parallelEntry).toMatchObject({
+      requestedWorkerCount: 1,
+      effectiveWorkerCount: 1,
+      totalActionCount: existing.matches.reduce((sum, match) => sum + match.actionCount, 0),
+    });
   });
 
   it.each(["random", "heuristic"] as const)("is deterministic between one and four requested workers for %s policy", async (policyName) => {

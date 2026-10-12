@@ -11,7 +11,7 @@ export const isTeleportAvailable = (state: GameState, strategistId: string) =>
 
 export function getTeleportStrategists(state: GameState, teamId: string) {
   return state.units
-    .filter((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.role === "teleporter" && alive(unit))
+    .filter((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && alive(unit))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 

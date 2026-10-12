@@ -39,12 +39,12 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
   const attackCandidates = state.phase === "attack_input" && selectedUnitId ? getAttackCandidates(state, selectedUnitId) : [];
   const selectedUnit = state.units.find((unit) => unit.id === selectedUnitId);
   const encourageAreaKeys =
-    selectedUnit && selectedUnit.type === "strategist" && selectedUnit.role === "encourage"
+    selectedUnit && (selectedUnit.type === "strategist" || selectedUnit.type === "king")
       ? getEncourageAreaTileKeys(state, selectedUnit)
       : new Set<string>();
   const retreatIndicators = getRetreatDirectionIndicators(state, selectedUnitId);
   const previewKeys = new Set((state.phase === "strategist_action_input" ? getOwnStrategistPreview(state, manualTeamId) : []).map((entry) => `${entry.x},${entry.y}`));
-  const constructionCandidates = state.phase === "strategist_action_input" && selectedUnit?.ownerTeamId === manualTeamId && selectedUnit.role === "builder"
+  const constructionCandidates = state.phase === "strategist_action_input" && selectedUnit?.ownerTeamId === manualTeamId && selectedUnit.type === "strategist"
     ? constructionMode === "bridge" ? getBridgeCandidates(state, selectedUnit.id) : constructionMode === "obstacle" ? getObstacleCandidates(state, selectedUnit.id).map((cell) => [cell]) : []
     : [];
   const constructionByTile = new Map<string, { x: number; y: number }[]>();
@@ -114,6 +114,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 attackReady={attackReadyIds.has(boardUnit.id)}
                 attackComplete={attackCompleteIds.has(boardUnit.id)}
                 retreatIndicators={boardUnit.id === selectedUnitId ? retreatIndicators : []}
+                ninjaTeleportUsed={state.ninjaTeleportUsedUnitIds?.includes(boardUnit.id)}
                 onClick={() => {
                   const target = attackByUnitId.get(boardUnit.id);
                   if (target) onChooseAttackTarget(target);
@@ -130,6 +131,7 @@ export function BoardView({ state, selectedUnitId, onSelectUnit, onChooseDestina
                 attackReady={attackReadyIds.has(baseUnit.id)}
                 attackComplete={attackCompleteIds.has(baseUnit.id)}
                 retreatIndicators={baseUnit.id === selectedUnitId ? retreatIndicators : []}
+                ninjaTeleportUsed={state.ninjaTeleportUsedUnitIds?.includes(baseUnit.id)}
                 onClick={() => {
                   const target = attackByUnitId.get(baseUnit.id);
                   if (target) onChooseAttackTarget(target);

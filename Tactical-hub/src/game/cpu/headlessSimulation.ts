@@ -146,7 +146,7 @@ export function checkHeadlessInvariants(state: GameState, runtime?: CpuRuntime) 
     if (construction.ownerTeamId && !state.teams.some((team) => team.id === construction.ownerTeamId)) violations.push(`construction owner missing: ${construction.id}/${construction.ownerTeamId}`);
     if (construction.managerUnitId) {
       const manager = unitById.get(construction.managerUnitId);
-      if (!manager || manager.hp <= 0 || manager.position.kind === "removed" || manager.type !== "strategist" || manager.role !== "builder") violations.push(`construction manager invalid: ${construction.id}/${construction.managerUnitId}`);
+      if (!manager || manager.hp <= 0 || manager.position.kind === "removed" || manager.type !== "strategist") violations.push(`construction manager invalid: ${construction.id}/${construction.managerUnitId}`);
       else if (construction.ownerTeamId !== manager.ownerTeamId) violations.push(`construction owner/manager team mismatch: ${construction.id}`);
     }
   }

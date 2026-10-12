@@ -1,5 +1,5 @@
 import type { CpuActionLog, CpuTeamSettings, TeamController } from "../game/cpu/types";
-import type { StrategistRole, Team } from "../game/types";
+import type { Team } from "../game/types";
 
 export type CpuRunnerSpeed = "normal" | "fast" | "instant";
 
@@ -8,9 +8,6 @@ type Props = {
   teams: Team[];
   settings: CpuTeamSettings;
   onControllerChange: (teamId: string, controller: TeamController) => void;
-  initialStrategistRoles?: Record<string, StrategistRole>;
-  onInitialStrategistRoleChange?: (unitId: string, role: StrategistRole) => void;
-  initialStrategistRolesLocked?: boolean;
   running: boolean;
   paused: boolean;
   onStart: () => void;
@@ -51,15 +48,7 @@ export function CpuControlPanel(props: Props) {
           <option value="heuristic_cpu">Heuristic CPU</option>
           <option value="bc_cpu">BC CPU</option>
         </select>
-        {Object.entries(props.initialStrategistRoles ?? {}).filter(([unitId]) => unitId.startsWith(`${team.homeBaseId}-strategist`)).map(([unitId, role]) =>
-          (props.settings[team.id] ?? "human") === "human" ? <label key={unitId}>Initial strategist
-            <select value={role} disabled={props.initialStrategistRolesLocked} onChange={(event) => props.onInitialStrategistRoleChange?.(unitId, event.target.value as StrategistRole)}>
-              <option value="builder">Builder</option>
-              <option value="encourage">Encourage</option>
-              <option value="teleporter">Teleporter</option>
-            </select>
-          </label> : <span key={unitId}>Initial strategist: Random CPU ({role})</span>,
-        )}
+        <span>Initial strategist: Unified (Encourage / Build / Teleport)</span>
       </div>)}
     </div>
     <div className="button-row">

@@ -43,7 +43,7 @@ describe("initial base slots", () => {
     }
   });
 
-  it("sets every initial strategist as an encourage strategist", () => {
+  it("keeps the canonical legacy role value on every unified initial strategist", () => {
     const state = createInitialGameState();
 
     for (const base of state.bases.filter((candidate) => candidate.type === "home")) {

@@ -7,7 +7,7 @@ import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
 import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
-import type { AttackTarget, StrategistRole, UnitPosition } from "./game/types";
+import type { AttackTarget, UnitPosition } from "./game/types";
 import { saveStrategistActionIntent } from "./game/engine/construction";
 import { resolveBattleWithHiddenCpuIntents } from "./game/cpu/visualCpuRunner";
 import { createCpuRuntime, type CpuRuntime, type CpuTeamSettings, type TeamController } from "./game/cpu/types";
@@ -55,15 +55,6 @@ export default function App() {
   useEffect(() => {
     if (selectedUnit && !isUnitVisibleToTeam(state, selectedUnit, effectiveManualTeamId)) setSelectedUnitId(undefined);
   }, [effectiveManualTeamId, selectedUnit, state]);
-  const initialStrategistRolesLocked = state.turnNumber !== 1 || state.movementCompletedTeamIds.length > 0 || state.productionCompletedTeamIdsThisTurn.length > 0 || state.movedUnitIdsThisMovementPhase.length > 0;
-  const initialStrategistRoles = Object.fromEntries(state.units.filter((unit) => unit.type === "strategist" && unit.id.startsWith("home-")).map((unit) => [unit.id, unit.role ?? "encourage"])) as Record<string, StrategistRole>;
-
-  function seededInitialRole(teamId: string) {
-    const roles: StrategistRole[] = ["builder", "encourage", "teleporter"];
-    const hash = [...teamId].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0, cpuRuntime.seed >>> 0);
-    return roles[hash % roles.length];
-  }
-
   const advanceCpu = useCallback(async () => {
     if (cpuAdvancePendingRef.current) return false;
     cpuAdvancePendingRef.current = true;
@@ -232,19 +223,9 @@ export default function App() {
           settings={cpuSettings}
           onControllerChange={(teamId: string, controller: TeamController) => {
             setCpuSettings((current) => ({ ...current, [teamId]: controller }));
-            if (isCpuController(controller) && !initialStrategistRolesLocked) {
-              const role = seededInitialRole(teamId);
-              setState((current) => ({ ...current, units: current.units.map((unit) => unit.ownerTeamId === teamId && unit.type === "strategist" && unit.id.startsWith("home-") ? { ...unit, role } : unit) }));
-            }
             const reset = createCpuRuntime(cpuRuntime.seed);
             runtimeRef.current = reset;
             setCpuRuntime(reset);
-          }}
-          initialStrategistRoles={initialStrategistRoles}
-          initialStrategistRolesLocked={initialStrategistRolesLocked}
-          onInitialStrategistRoleChange={(unitId, role) => {
-            if (initialStrategistRolesLocked) return;
-            setState((current) => ({ ...current, units: current.units.map((unit) => unit.id === unitId ? { ...unit, role } : unit) }));
           }}
           running={cpuRunning}
           paused={cpuPaused}

@@ -32,6 +32,7 @@ import { resolveTeamTeleports } from "./teleport";
 import { isTeamProductionPending } from "./productionSchedule";
 import { createTeamVisibleState, isUnitVisibleToTeam, isWaterNinja, revealNinjasToEachOther } from "../visibility";
 import { resolveBattleRoyaleFinalDuelTurnEnd, syncBattleRoyaleFinalDuel } from "./finalDuel";
+import { getNinjaTeleportDestinations, isNinjaTeleportDestination } from "./ninjaTeleport";
 
 export type MovementStep =
   | { kind: "ground"; from: UnitPosition; to: UnitPosition }
@@ -47,6 +48,7 @@ export type MovementPath = {
   destination: UnitPosition;
   cost: number;
   steps: MovementStep[];
+  special?: "ninja_teleport";
 };
 
 export type MovementValidationResult =
@@ -495,8 +497,15 @@ export function getMovementCandidates(
   if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
   if (semantics === "current") {
     const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
-    return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(createTeamVisibleState(state, unit.ownerTeamId), unitId)
-      .map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
+    return measureLegalSegment("movementRangePathSearch", () => {
+      const visibleState = createTeamVisibleState(state, unit.ownerTeamId);
+      const destinations = new Map(getMovementPaths(visibleState, unitId)
+        .map((path) => [positionKey(path.destination), path.destination] as const));
+      for (const destination of getNinjaTeleportDestinations(visibleState, unitId)) {
+        if (!destinations.has(positionKey(destination))) destinations.set(positionKey(destination), destination);
+      }
+      return [...destinations.values()].filter((position) => !teleportDestinations.has(positionKey(position)));
+    });
   }
   const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
     const visibleState = createTeamVisibleState(state, unit.ownerTeamId);
@@ -514,7 +523,14 @@ export function getMovementCandidates(
     return plannedState;
   });
   const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
-  return measureLegalSegment("movementRangePathSearch", () => getMovementPaths(planningState, unitId).map((path) => path.destination).filter((position) => !teleportDestinations.has(positionKey(position))));
+  return measureLegalSegment("movementRangePathSearch", () => {
+    const destinations = new Map(getMovementPaths(planningState, unitId)
+      .map((path) => [positionKey(path.destination), path.destination] as const));
+    for (const destination of getNinjaTeleportDestinations(planningState, unitId)) {
+      if (!destinations.has(positionKey(destination))) destinations.set(positionKey(destination), destination);
+    }
+    return [...destinations.values()].filter((position) => !teleportDestinations.has(positionKey(position)));
+  });
 }
 
 export function getTeamMovementCandidates(state: GameState, teamId: string) {
@@ -545,9 +561,11 @@ export function validateMovementPath(
   const path = getMovementPaths(state, unit.id).find((candidate) =>
     samePosition(candidate.destination, to),
   );
-  return path
-    ? { valid: true, path }
-    : { valid: false, reason: "no legal movement path" };
+  if (path) return { valid: true, path };
+  if (isNinjaTeleportDestination(state, unit.id, to)) {
+    return { valid: true, path: { destination: to, cost: 0, steps: [], special: "ninja_teleport" } };
+  }
+  return { valid: false, reason: "no legal movement path" };
 }
 
 export function saveMovementIntent(
@@ -673,14 +691,27 @@ function applySingleMovementInPlace(
       return false;
     }
   }
+  const normalPathExists = getMovementPaths(next, unit.id).some((path) => samePosition(path.destination, intent.to));
+  const usedNinjaTeleport = !normalPathExists && isNinjaTeleportDestination(next, unit.id, intent.to);
   const retreatEffect = getRetreatMoveEffect(next, unit, intent.from, intent.to);
   const retreatTargetBaseId = retreatEffect === "start" ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to) : undefined;
   applyPosition(next, unit.id, intent.to);
+  if (usedNinjaTeleport) {
+    next.ninjaTeleportUsedUnitIds = [...new Set([...(next.ninjaTeleportUsedUnitIds ?? []), unit.id])];
+  }
   next.movedUnitIdsThisMovementPhase = [...new Set([...next.movedUnitIdsThisMovementPhase, unit.id])];
   if (retreatEffect === "start" || retreatEffect === "maintain") applyRetreatStatus(next, unit.id, true, retreatTargetBaseId);
   if (retreatEffect === "release" || retreatEffect === "complete") applyRetreatStatus(next, unit.id, false);
   const retreatMessage = retreatEffect === "start" ? " Retreat started." : retreatEffect === "maintain" ? " Retreat maintained." : retreatEffect === "release" ? " Retreat ended." : retreatEffect === "complete" ? " Retreat completed at a friendly base." : "";
-  next.logs.push({ id: `log-move-ok-${next.logs.length}`, turnNumber: next.turnNumber, type: "movement", message: `${unit.id} moved to ${positionKey(intent.to)}.${retreatMessage}`, relatedIds: [unit.id] });
+  next.logs.push({
+    id: `log-move-ok-${next.logs.length}`,
+    turnNumber: next.turnNumber,
+    type: "movement",
+    message: usedNinjaTeleport
+      ? `${unit.id} used ninja teleport to ${positionKey(intent.to)}.${retreatMessage}`
+      : `${unit.id} moved to ${positionKey(intent.to)}.${retreatMessage}`,
+    relatedIds: [unit.id],
+  });
   return true;
 }
 

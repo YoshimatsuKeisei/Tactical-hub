@@ -5,6 +5,7 @@ import {
   getEncouragedUnitIds,
   getEncouragedUnitIdsByStrategist,
   isUnitEncouraged,
+  isUnitEncouragedByStrategist,
 } from "../engine/encouragement";
 import { createInitialGameState } from "../initialState";
 import type { GameState, Unit, UnitPosition, UnitType } from "../types";
@@ -100,7 +101,7 @@ describe("encouragement", () => {
     expect(encouragedIds.has("neutral-near")).toBe(false);
     expect(encouragedIds.has("water-near")).toBe(false);
     expect(encouragedIds.has("removed-near")).toBe(false);
-    expect(encouragedIds.has("home-1-strategist")).toBe(false);
+    expect(isUnitEncouragedByStrategist(state, strategist, strategist)).toBe(false);
   });
 
   it("encourages friendly units in the same base", () => {

@@ -2,7 +2,7 @@ import { UNIT_STATS } from "../game/constants";
 import { getAttackCandidates, saveAttackIntent } from "../game/engine/battle";
 import { getEncourageRadius, getEncouragedUnitIds, getEncouragedUnitIdsByStrategist, isUnitEncouraged } from "../game/engine/encouragement";
 import { commitUnitMovement, getMovementCandidates } from "../game/engine/movement";
-import { getAvailableProductionTypes, saveProductionChoice, STRATEGIST_ROLES } from "../game/engine/production";
+import { getAvailableProductionTypes, saveProductionChoice } from "../game/engine/production";
 import { isTeamProductionPending } from "../game/engine/productionSchedule";
 import { getEligibleRewardBaseIds, getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
 import {
@@ -53,8 +53,8 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
   const nextMovementTeamId = state.movementOrderTeamIds.slice(currentMovementIndex + 1).find((teamId) => !state.movementCompletedTeamIds.includes(teamId));
   const controlledBases = state.bases.filter((base) => activeTeam.controlledBaseIds.includes(base.id) || base.ownerTeamId === activeTeam.id);
   const encouragedUnitIds = getEncouragedUnitIds(state);
-  const encourageStrategists = state.units.filter(
-    (unit) => unit.type === "strategist" && unit.role === "encourage" && unit.position.kind !== "removed",
+  const encourageSources = state.units.filter(
+    (unit) => (unit.type === "strategist" || unit.type === "king") && unit.position.kind !== "removed",
   );
   const selectedRetreatFlags = selectedUnit ? getUnitTurnFlags(state, selectedUnit.id) : undefined;
   const selectedRetreatDebug = selectedUnitId ? getRetreatDebugInfo(state, selectedUnitId) : undefined;
@@ -293,16 +293,16 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
       <section hidden={panelTab !== "phase" || (state.phase !== "movement_input" && state.phase !== "attack_input")}>
         <h2>Encourage</h2>
         <div className="intent-list">
-          {encourageStrategists.length ? (
-            encourageStrategists.map((strategist) => (
-              <div key={strategist.id} className="intent-item">
-                <strong>{strategist.id}</strong>
-                <span>role: encourage / radius: {getEncourageRadius(state, strategist)}</span>
-                <span>targets: {getEncouragedUnitIdsByStrategist(state, strategist).join(", ") || "none"}</span>
+          {encourageSources.length ? (
+            encourageSources.map((source) => (
+              <div key={source.id} className="intent-item">
+                <strong>{source.id}</strong>
+                <span>{source.type === "king" ? "ability: encourage" : "abilities: encourage / build / teleport"} · encourage radius: {getEncourageRadius(state, source)}</span>
+                <span>targets: {getEncouragedUnitIdsByStrategist(state, source).join(", ") || "none"}</span>
               </div>
             ))
           ) : (
-            <p>No encourage strategists.</p>
+            <p>No encouragers.</p>
           )}
           <p>Encouraged units: {[...encouragedUnitIds].sort((a, b) => a.localeCompare(b)).join(", ") || "none"}</p>
         </div>
@@ -317,13 +317,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
               <strong>{base.id}</strong>
               <div className="button-row">
                 {types.length ? (
-                  types.flatMap((unitType) => unitType === "strategist"
-                    ? STRATEGIST_ROLES.map((strategistRole) => (
-                      <button key={`${unitType}-${strategistRole}`} onClick={() => onStateChange(saveProductionChoice(state, { teamId: activeTeam.id, baseId: base.id, unitType, strategistRole }))}>
-                        {UNIT_STATS[unitType].label} ({strategistRole})
-                      </button>
-                    ))
-                    : [<button key={unitType} onClick={() => onStateChange(saveProductionChoice(state, { teamId: activeTeam.id, baseId: base.id, unitType }))}>{UNIT_STATS[unitType].label}</button>])
+                  types.map((unitType) => <button key={unitType} onClick={() => onStateChange(saveProductionChoice(state, { teamId: activeTeam.id, baseId: base.id, unitType }))}>{UNIT_STATS[unitType].label}</button>)
                 ) : (
                   <span>no slot</span>
                 )}
@@ -445,9 +439,9 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
         <h2>Strategist Actions</h2>
         <p>Operating: {activeTeam.name}</p>
         {getBuilderUnits(state, activeTeam.id).length ? <>
-          <p>盤面で建設型軍師を選択してから、設置する設備を選んでください。</p>
+          <p>盤面で軍師を選択してから、設置する設備を選んでください。</p>
           <div className="button-row"><button className={constructionMode === "bridge" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("bridge")}>Choose bridge on board</button><button className={constructionMode === "obstacle" ? "primary" : "secondary"} onClick={() => onConstructionModeChange("obstacle")}>Choose obstacle on board</button><button onClick={() => onConstructionModeChange(undefined)}>Clear board mode</button></div>
-        </> : <p>This team has no builder strategist.</p>}
+        </> : <p>This team has no strategist.</p>}
         {getBuilderUnits(state, activeTeam.id).map((builder) => {
           const bridges = getManagedConstructions(state, builder.id, "bridge");
           const obstacles = getManagedConstructions(state, builder.id, "obstacle");

@@ -100,7 +100,7 @@ describe("HeuristicCpuPolicy", () => {
     expect(policy.getTargetBaseId("team-1", 91)).not.toBe(selected);
   });
 
-  it("passes movement for the king and builder strategist", () => {
+  it("passes movement for the king without freezing a strategist by its legacy builder role", () => {
     const state = movementState();
     const policy = createHeuristicCpuPolicy();
     const runtime = createCpuRuntime(2);
@@ -111,7 +111,7 @@ describe("HeuristicCpuPolicy", () => {
     state.units.find((unit) => unit.id === "home-1-strategist")!.role = "builder";
     const builder = policy(state, runtime, allCpu);
     expect(builder).toMatchObject({ kind: "movement", unitId: "home-1-strategist" });
-    if (builder?.kind === "movement") expect(builder.to).toBeUndefined();
+    if (builder?.kind === "movement") expect(builder.to).toBeDefined();
   });
 
   it("chooses a legal move that strictly reduces distance to the retained target", () => {

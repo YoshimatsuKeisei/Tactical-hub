@@ -23,7 +23,10 @@ export type UnitType =
   | "apprentice_ninja"
   | "strategist";
 
+// Retained as a legacy save/replay and RL feature discriminator. Strategist
+// abilities no longer depend on this value.
 export type StrategistRole = "encourage" | "builder" | "teleporter";
+export const UNIFIED_STRATEGIST_ROLE: StrategistRole = "encourage";
 export type BoardCoord = { x: number; y: number };
 export type ConstructionKind = "bridge" | "obstacle";
 export type Construction = {
@@ -331,6 +334,8 @@ export type GameState = {
   /** Present only while the current immediate-movement team is acting. */
   movementDefendedBaseIdsAtTeamStart?: string[];
   ninjaRevealStates?: NinjaRevealState[];
+  /** Permanent one-use ability state. Missing on legacy states means unused. */
+  ninjaTeleportUsedUnitIds?: string[];
   /** Current battle-royale final duel, once the field has narrowed to two teams. */
   finalDuel?: BattleRoyaleFinalDuelState;
   /** Stored only for terminal results that are not represented by team defeat status. */

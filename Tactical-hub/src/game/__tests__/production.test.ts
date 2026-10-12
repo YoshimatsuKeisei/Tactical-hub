@@ -159,7 +159,7 @@ describe("production", () => {
     expect(produced?.role).toBe("encourage");
   });
 
-  it("exposes each strategist role as a distinct production choice and preserves the selected role", () => {
+  it("exposes one unified strategist choice and canonicalizes legacy role selections", () => {
     let state = createInitialGameState();
     const existing = state.units.find((unit) => unit.id === "home-1-strategist")!;
     const slot = state.bases.find((base) => base.id === "home-1")!.slots.find((candidate) => candidate.unitId === existing.id)!;
@@ -167,10 +167,10 @@ describe("production", () => {
     existing.hp = 0;
     existing.position = { kind: "removed", reason: "defeated" };
     const roles = getProductionCandidates(state, "team-1").filter((choice) => choice.unitType === "strategist").map((choice) => choice.strategistRole).sort();
-    expect(roles).toEqual(["builder", "encourage", "teleporter"]);
+    expect(roles).toEqual(["encourage"]);
     state = saveProductionChoice(state, { teamId: "team-1", baseId: "home-1", unitType: "strategist", strategistRole: "builder" });
     state = submitTeamProduction(state, "team-1");
-    expect(state.units.find((unit) => unit.id.startsWith("home-1-strategist-") && unit.hp > 0)?.role).toBe("builder");
+    expect(state.units.find((unit) => unit.id.startsWith("home-1-strategist-") && unit.hp > 0)?.role).toBe("encourage");
   });
 
   it("caps ninjas at two living units", () => {

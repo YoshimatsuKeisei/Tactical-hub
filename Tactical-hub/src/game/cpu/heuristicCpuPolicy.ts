@@ -24,7 +24,7 @@ function choose<T>(runtime: CpuRuntime, values: readonly T[]) {
 }
 
 function isFixedMover(unit: Unit | undefined) {
-  return unit?.type === "king" || (unit?.type === "strategist" && unit.role === "builder");
+  return unit?.type === "king";
 }
 
 export type HeuristicDistanceCacheStats = { requests: number; searches: number; hits: number; misses: number };

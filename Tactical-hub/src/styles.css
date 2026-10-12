@@ -201,6 +201,27 @@ p {
   text-shadow: none;
 }
 
+.ninja-teleport-badge {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid #1f2937;
+  background: #fef3c7;
+  color: #713f12;
+  font-size: 8px;
+  text-shadow: none;
+}
+
+.ninja-teleport-badge.used {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
 .retreat-badge {
   position: absolute;
   left: -5px;

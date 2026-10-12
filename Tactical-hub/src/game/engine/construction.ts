@@ -22,7 +22,7 @@ export function getConstructionAt(state: GameState, x: number, y: number, kind?:
 }
 
 export function getBuilderUnits(state: GameState, teamId?: string) {
-  return state.units.filter((unit) => unit.type === "strategist" && unit.role === "builder" && unit.hp > 0 && unit.position.kind !== "removed" && (!teamId || unit.ownerTeamId === teamId) && state.teams.find((team) => team.id === unit.ownerTeamId)?.status === "active");
+  return state.units.filter((unit) => unit.type === "strategist" && unit.hp > 0 && unit.position.kind !== "removed" && (!teamId || unit.ownerTeamId === teamId) && state.teams.find((team) => team.id === unit.ownerTeamId)?.status === "active");
 }
 
 export function countLivingStrategists(state: GameState, teamId: string) {

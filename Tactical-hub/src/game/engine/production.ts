@@ -1,9 +1,11 @@
 import { PRODUCIBLE_UNIT_TYPES, UNIT_STATS } from "../constants";
-import type { GameState, ProductionChoice, StrategistRole, Unit, UnitType } from "../types";
+import { UNIFIED_STRATEGIST_ROLE, type GameState, type ProductionChoice, type StrategistRole, type Unit, type UnitType } from "../types";
 import { beginMovementPhase } from "./movement";
 import { isTeamProductionPending } from "./productionSchedule";
 
-export const STRATEGIST_ROLES: StrategistRole[] = ["builder", "encourage", "teleporter"];
+// One production choice is exposed while the legacy role field remains in the
+// data/RL schemas for old states and u40 model-shape compatibility.
+export const STRATEGIST_ROLES: StrategistRole[] = [UNIFIED_STRATEGIST_ROLE];
 
 function nextUnitId(state: GameState, baseId: string, unitType: UnitType) {
   const count = state.units.filter((unit) => unit.id.startsWith(`${baseId}-${unitType}`)).length;
@@ -100,7 +102,7 @@ function applyProductionChoices(next: GameState, choices: ProductionChoice[]) {
       position: { kind: "base", baseId: base.id, slotId: slot.id },
       statuses: [],
     };
-    if (choice.unitType === "strategist") unit.role = choice.strategistRole ?? "encourage";
+    if (choice.unitType === "strategist") unit.role = UNIFIED_STRATEGIST_ROLE;
     slot.unitId = unit.id;
     next.units.push(unit);
     next.logs.push({

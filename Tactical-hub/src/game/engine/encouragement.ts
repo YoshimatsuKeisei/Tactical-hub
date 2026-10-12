@@ -22,8 +22,8 @@ function minDistanceToCells(position: UnitPosition, cells: { x: number; y: numbe
   return Math.min(...ownCells.flatMap((own) => cells.map((cell) => chebyshevDistance(own, cell))));
 }
 
-function isEncourageStrategist(unit: Unit) {
-  return unit.type === "strategist" && unit.role === "encourage";
+function isEncourager(unit: Unit) {
+  return unit.type === "strategist" || unit.type === "king";
 }
 
 function distanceToNearestBase(state: GameState, unit: Unit) {
@@ -46,7 +46,7 @@ export function isWithinEncourageRange(state: GameState, unit: Unit, strategist:
 
 export function isUnitEncouragedByStrategist(state: GameState, unit: Unit, strategist: Unit) {
   if (!isAlive(unit) || !isAlive(strategist)) return false;
-  if (!isEncourageStrategist(strategist)) return false;
+  if (!isEncourager(strategist)) return false;
   if (unit.id === strategist.id) return false;
   if (unit.ownerTeamId !== strategist.ownerTeamId) return false;
   if (!isEncouragablePosition(unit.position)) return false;
@@ -70,7 +70,7 @@ export function getEncouragedUnitIdsByStrategist(state: GameState, strategist: U
 }
 
 export function getEncourageAreaTileKeys(state: GameState, strategist: Unit) {
-  if (!isAlive(strategist) || !isEncourageStrategist(strategist)) return new Set<string>();
+  if (!isAlive(strategist) || !isEncourager(strategist)) return new Set<string>();
 
   const radius = getEncourageRadius(state, strategist);
   const originCells = positionCells(state, strategist.position);

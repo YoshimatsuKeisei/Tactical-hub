@@ -36,6 +36,7 @@ function jumpState(type: Unit["type"] = "ninja") {
   const state = createInitialGameState();
   state.productionCompletedTeamIdsThisTurn = ["team-1"];
   const unit = addUnit(state, "a-obstacle-jumper", type, { kind: "tile", x: 3, y: 1 });
+  if (type === "ninja") state.ninjaTeleportUsedUnitIds = [unit.id];
   const obstacle = addObstacle(state, "jump-obstacle", 4, 1);
   return { state, unit, obstacle };
 }
