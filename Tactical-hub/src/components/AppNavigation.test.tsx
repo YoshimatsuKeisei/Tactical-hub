@@ -29,13 +29,20 @@ describe("AppNavigation", () => {
     const app = renderToStaticMarkup(<App />);
     expect(app).toContain(">HOME<");
     expect(app).toContain("NEW GAME");
-    expect(app.match(/data-nine-slice/g)).toHaveLength(6);
-    expect(app).toContain("home-button-frame.svg");
+    expect(app.match(/data-nine-slice/g)).toHaveLength(7);
+    expect(app).toContain("/ui/home/home-button-frame.png");
+    expect(app).toContain("/ui/home/home-panel-frame.png");
+    expect(app).toContain("home-menu-panel");
+    expect(app).toContain("border-image-slice:210 230 180 230 fill");
+    expect(app).toContain("border-image-slice:320 215 180 215 fill");
+    expect(app).toMatch(/<button[^>]*>NEW GAME<\/button>/);
   });
 
   it("renders every requested menu screen", () => {
     expect(renderScreen("home")).toContain("NEW GAME");
-    expect(renderScreen("new-game")).toContain("ONLINE");
+    const newGame = renderScreen("new-game");
+    expect(newGame).toContain("ONLINE");
+    expect(newGame).not.toContain("data-nine-slice");
     expect(renderScreen("online")).toContain("部屋を作成する");
     expect(renderScreen("friend-match")).toContain("FRIEND MATCH");
     expect(renderScreen("local")).toContain("CPU設定領域");

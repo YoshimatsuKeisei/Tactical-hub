@@ -2,7 +2,13 @@ import type { ReactNode } from "react";
 import type { CpuTeamSettings, TeamController } from "../game/cpu/types";
 import type { Team } from "../game/types";
 import { NineSlice } from "../ui/NineSliceView";
-import { HOME_MENU_BUTTON_SKIN } from "../ui/skins/home";
+import type { NineSliceLayout, NineSliceSkin } from "../ui/nineSlice";
+import {
+  HOME_MENU_BUTTON_LAYOUT,
+  HOME_MENU_BUTTON_SKIN,
+  HOME_MENU_PANEL_LAYOUT,
+  HOME_MENU_PANEL_SKIN,
+} from "../ui/skins/home";
 
 export type MenuScreen =
   | "home"
@@ -39,13 +45,50 @@ export function getBackScreen(screen: MenuScreen): MenuScreen | undefined {
   return "home";
 }
 
-function ScreenLayout({ title, children, onBack }: { title: string; children: ReactNode; onBack?: () => void }) {
-  return <main className="menu-shell">
-    <section className="menu-card" aria-labelledby="screen-title">
+type ScreenFrame = Readonly<{
+  skin: NineSliceSkin;
+  layout?: NineSliceLayout;
+  className?: string;
+}>;
+
+const HOME_PANEL_FRAME: ScreenFrame = Object.freeze({
+  skin: HOME_MENU_PANEL_SKIN,
+  layout: HOME_MENU_PANEL_LAYOUT,
+  className: "home-menu-panel",
+});
+
+function ScreenLayout({
+  title,
+  children,
+  onBack,
+  frame,
+  shellClassName,
+}: {
+  title: string;
+  children: ReactNode;
+  onBack?: () => void;
+  frame?: ScreenFrame;
+  shellClassName?: string;
+}) {
+  const content = <>
       <h1 id="screen-title">{title}</h1>
       {children}
       {onBack ? <button className="menu-button menu-button-back" type="button" onClick={onBack}>BACK</button> : null}
-    </section>
+    </>;
+  const shellClasses = ["menu-shell", shellClassName].filter(Boolean).join(" ");
+
+  return <main className={shellClasses}>
+    {frame
+      ? <NineSlice
+          as="section"
+          skin={frame.skin}
+          {...frame.layout}
+          className={["menu-card", frame.className].filter(Boolean).join(" ")}
+          aria-labelledby="screen-title"
+        >
+          {content}
+        </NineSlice>
+      : <section className="menu-card" aria-labelledby="screen-title">{content}</section>}
   </main>;
 }
 
@@ -73,14 +116,14 @@ export function AppNavigation({ screen, teams, localCpuSettings, onNavigate, onL
   const backScreen = getBackScreen(screen);
   const onBack = backScreen ? () => onNavigate(backScreen) : undefined;
 
-  if (screen === "home") return <ScreenLayout title="HOME">
+  if (screen === "home") return <ScreenLayout title="HOME" frame={HOME_PANEL_FRAME} shellClassName="home-menu-shell">
     <div className="menu-actions home-actions">
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("new-game")}>NEW GAME</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("more-game")}>MORE GAME</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("settings")}>SETTINGS</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("rules")}>RULES</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("friend")}>FRIEND</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("my-page")}>MY PAGE</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("new-game")}>NEW GAME</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("more-game")}>MORE GAME</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("settings")}>SETTINGS</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("rules")}>RULES</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("friend")}>FRIEND</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("my-page")}>MY PAGE</NineSlice>
     </div>
   </ScreenLayout>;
 
