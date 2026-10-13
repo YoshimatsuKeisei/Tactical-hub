@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { CpuTeamSettings, TeamController } from "../game/cpu/types";
 import type { Team } from "../game/types";
+import { NineSlice } from "../ui/NineSliceView";
+import { HOME_MENU_BUTTON_SKIN } from "../ui/skins/home";
 
 export type MenuScreen =
   | "home"
@@ -73,12 +75,12 @@ export function AppNavigation({ screen, teams, localCpuSettings, onNavigate, onL
 
   if (screen === "home") return <ScreenLayout title="HOME">
     <div className="menu-actions home-actions">
-      <button className="menu-button menu-button-primary" type="button" onClick={() => onNavigate("new-game")}>NEW GAME</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("more-game")}>MORE GAME</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("settings")}>SETTINGS</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("rules")}>RULES</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("friend")}>FRIEND</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("my-page")}>MY PAGE</button>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("new-game")}>NEW GAME</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("more-game")}>MORE GAME</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("settings")}>SETTINGS</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("rules")}>RULES</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("friend")}>FRIEND</NineSlice>
+      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} width="100%" height={54} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("my-page")}>MY PAGE</NineSlice>
     </div>
   </ScreenLayout>;
 

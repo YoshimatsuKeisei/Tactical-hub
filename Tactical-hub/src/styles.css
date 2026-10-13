@@ -74,6 +74,19 @@ select {
   color: white;
 }
 
+.home-menu-button {
+  border-radius: 0;
+  color: #fff8df;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .7);
+}
+
+.home-menu-button:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.12);
+}
+
 .menu-button-back {
   width: 100%;
   margin-top: 20px;

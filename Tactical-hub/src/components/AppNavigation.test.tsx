@@ -29,6 +29,8 @@ describe("AppNavigation", () => {
     const app = renderToStaticMarkup(<App />);
     expect(app).toContain(">HOME<");
     expect(app).toContain("NEW GAME");
+    expect(app.match(/data-nine-slice/g)).toHaveLength(6);
+    expect(app).toContain("home-button-frame.svg");
   });
 
   it("renders every requested menu screen", () => {
