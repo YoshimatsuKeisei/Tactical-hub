@@ -1,5 +1,7 @@
 import type { NineSliceLayout, NineSliceSkin } from "../nineSlice";
 
+export const HOME_MENU_BACKGROUND_IMAGE = "/ui/home/home-background.png";
+
 export const HOME_MENU_BUTTON_SLICE = Object.freeze({
   top: 210,
   right: 230,

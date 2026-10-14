@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { CpuTeamSettings, TeamController } from "../game/cpu/types";
 import type { Team } from "../game/types";
 import { NineSlice } from "../ui/NineSliceView";
@@ -6,6 +6,7 @@ import type { NineSliceLayout, NineSliceSkin } from "../ui/nineSlice";
 import {
   HOME_MENU_BUTTON_LAYOUT,
   HOME_MENU_BUTTON_SKIN,
+  HOME_MENU_BACKGROUND_IMAGE,
   HOME_MENU_PANEL_LAYOUT,
   HOME_MENU_PANEL_SKIN,
 } from "../ui/skins/home";
@@ -57,18 +58,24 @@ const HOME_PANEL_FRAME: ScreenFrame = Object.freeze({
   className: "home-menu-panel",
 });
 
+const HOME_MENU_SHELL_STYLE: CSSProperties = Object.freeze({
+  backgroundImage: `url("${HOME_MENU_BACKGROUND_IMAGE}")`,
+});
+
 function ScreenLayout({
   title,
   children,
   onBack,
   frame,
   shellClassName,
+  shellStyle,
 }: {
   title: string;
   children: ReactNode;
   onBack?: () => void;
   frame?: ScreenFrame;
   shellClassName?: string;
+  shellStyle?: CSSProperties;
 }) {
   const content = <>
       <h1 id="screen-title">{title}</h1>
@@ -77,7 +84,7 @@ function ScreenLayout({
     </>;
   const shellClasses = ["menu-shell", shellClassName].filter(Boolean).join(" ");
 
-  return <main className={shellClasses}>
+  return <main className={shellClasses} style={shellStyle}>
     {frame
       ? <NineSlice
           as="section"
@@ -90,6 +97,34 @@ function ScreenLayout({
         </NineSlice>
       : <section className="menu-card" aria-labelledby="screen-title">{content}</section>}
   </main>;
+}
+
+type DecoratedMenuAction = Readonly<{
+  label: string;
+  onClick: () => void;
+}>;
+
+function DecoratedMenuScreen({ title, actions }: { title: string; actions: readonly DecoratedMenuAction[] }) {
+  return <ScreenLayout
+    title={title}
+    frame={HOME_PANEL_FRAME}
+    shellClassName="home-menu-shell"
+    shellStyle={HOME_MENU_SHELL_STYLE}
+  >
+    <div className="menu-actions home-actions">
+      {actions.map((action) => <NineSlice
+        as="button"
+        skin={HOME_MENU_BUTTON_SKIN}
+        {...HOME_MENU_BUTTON_LAYOUT}
+        className="menu-button home-menu-button"
+        type="button"
+        onClick={action.onClick}
+        key={action.label}
+      >
+        {action.label}
+      </NineSlice>)}
+    </div>
+  </ScreenLayout>;
 }
 
 function PlaceholderScreen({ title, description, onBack }: { title: string; description: string; onBack: () => void }) {
@@ -116,24 +151,21 @@ export function AppNavigation({ screen, teams, localCpuSettings, onNavigate, onL
   const backScreen = getBackScreen(screen);
   const onBack = backScreen ? () => onNavigate(backScreen) : undefined;
 
-  if (screen === "home") return <ScreenLayout title="HOME" frame={HOME_PANEL_FRAME} shellClassName="home-menu-shell">
-    <div className="menu-actions home-actions">
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("new-game")}>NEW GAME</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("more-game")}>MORE GAME</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("settings")}>SETTINGS</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("rules")}>RULES</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("friend")}>FRIEND</NineSlice>
-      <NineSlice as="button" skin={HOME_MENU_BUTTON_SKIN} {...HOME_MENU_BUTTON_LAYOUT} className="menu-button home-menu-button" type="button" onClick={() => onNavigate("my-page")}>MY PAGE</NineSlice>
-    </div>
-  </ScreenLayout>;
+  if (screen === "home") return <DecoratedMenuScreen title="HOME" actions={[
+    { label: "NEW GAME", onClick: () => onNavigate("new-game") },
+    { label: "MORE GAME", onClick: () => onNavigate("more-game") },
+    { label: "SETTINGS", onClick: () => onNavigate("settings") },
+    { label: "RULES", onClick: () => onNavigate("rules") },
+    { label: "FRIEND", onClick: () => onNavigate("friend") },
+    { label: "MY PAGE", onClick: () => onNavigate("my-page") },
+  ]} />;
 
-  if (screen === "new-game") return <ScreenLayout title="NEW GAME" onBack={onBack}>
-    <div className="menu-actions">
-      <button className="menu-button menu-button-primary" type="button" onClick={() => onNavigate("online")}>ONLINE</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("friend-match")}>FRIEND</button>
-      <button className="menu-button" type="button" onClick={() => onNavigate("local")}>LOCAL</button>
-    </div>
-  </ScreenLayout>;
+  if (screen === "new-game") return <DecoratedMenuScreen title="NEW GAME" actions={[
+    { label: "ONLINE", onClick: () => onNavigate("online") },
+    { label: "FRIEND", onClick: () => onNavigate("friend-match") },
+    { label: "LOCAL", onClick: () => onNavigate("local") },
+    { label: "BACK", onClick: onBack! },
+  ]} />;
 
   if (screen === "online") return <NetworkMatchScreen title="ONLINE" onBack={onBack!} />;
   if (screen === "friend-match") return <NetworkMatchScreen title="FRIEND MATCH" onBack={onBack!} />;

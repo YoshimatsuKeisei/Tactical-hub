@@ -52,9 +52,14 @@ select {
 .home-menu-shell {
   place-items: center start;
   padding-left: clamp(24px, 7vw, 112px);
+  background-color: #111b28;
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 .home-menu-panel {
+  height: 470px;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -800,6 +805,10 @@ pre {
 
   .home-menu-shell {
     justify-items: center;
+  }
+
+  .home-menu-panel {
+    height: 692px;
   }
 
   .menu-card {

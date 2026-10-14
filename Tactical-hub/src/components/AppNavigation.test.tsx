@@ -32,6 +32,7 @@ describe("AppNavigation", () => {
     expect(app.match(/data-nine-slice/g)).toHaveLength(7);
     expect(app).toContain("/ui/home/home-button-frame.png");
     expect(app).toContain("/ui/home/home-panel-frame.png");
+    expect(app).toContain("/ui/home/home-background.png");
     expect(app).toContain("home-menu-panel");
     expect(app).toContain("border-image-slice:210 230 180 230 fill");
     expect(app).toContain("border-image-slice:320 215 180 215 fill");
@@ -42,7 +43,11 @@ describe("AppNavigation", () => {
     expect(renderScreen("home")).toContain("NEW GAME");
     const newGame = renderScreen("new-game");
     expect(newGame).toContain("ONLINE");
-    expect(newGame).not.toContain("data-nine-slice");
+    expect(newGame.match(/data-nine-slice/g)).toHaveLength(5);
+    expect(newGame).toContain("/ui/home/home-background.png");
+    expect(newGame).toContain("/ui/home/home-panel-frame.png");
+    expect(newGame).toContain("/ui/home/home-button-frame.png");
+    expect(newGame).toMatch(/<button[^>]*>BACK<\/button>/);
     expect(renderScreen("online")).toContain("部屋を作成する");
     expect(renderScreen("friend-match")).toContain("FRIEND MATCH");
     expect(renderScreen("local")).toContain("CPU設定領域");
