@@ -17,12 +17,8 @@ import {
   isGroundPositionConnectedToBase,
 } from "../utils/roadTopology";
 import {
+  clearLegacyRetreatState,
   getBaseControllerTeamId,
-  clearInvalidRetreatTargets,
-  getRetreatMoveEffect,
-  getRetreatTargetBaseIdForMove,
-  isRetreating,
-  withRetreatingStatus,
 } from "./retreat";
 import { measureLegalSegment } from "../cpu/legalEnumerationProfile";
 import { completeSiegeCapture, transferBaseOwnership } from "./capture";
@@ -77,6 +73,7 @@ function getRotatedActiveMovementOrder(state: GameState, startIndex = state.move
 
 function beginMovementPhaseInternal(state: GameState, inPlaceForRl: boolean): GameState {
   const next = inPlaceForRl ? state : structuredClone(state) as GameState;
+  clearLegacyRetreatState(next);
   next.movementOrderTeamIds = getRotatedActiveMovementOrder(next);
   next.movementCompletedTeamIds = [];
   next.productionCompletedTeamIdsThisTurn = [];
@@ -632,17 +629,6 @@ function applyPosition(state: GameState, unitId: string, to: UnitPosition) {
   );
 }
 
-function applyRetreatStatus(
-  state: GameState,
-  unitId: string,
-  retreating: boolean,
-  retreatTargetBaseId?: string,
-) {
-  state.units = state.units.map((unit) =>
-    unit.id === unitId ? withRetreatingStatus(unit, retreating, retreatTargetBaseId) : unit,
-  );
-}
-
 function getDefendedBaseIds(state: GameState) {
   return state.bases.filter((base) => state.units.some((unit) =>
     unit.hp > 0 && unit.position.kind === "base" && unit.position.baseId === base.id && unit.ownerTeamId === base.ownerTeamId,
@@ -658,14 +644,12 @@ function applySingleMovementInPlace(
   const unit = next.units.find((candidate) => candidate.id === intent.unitId);
   if (!unit) return false;
   if (intent.stay) {
-    const wasRetreating = isRetreating(unit);
-    if (wasRetreating) applyRetreatStatus(next, unit.id, false);
     if (markStayMoved) next.movedUnitIdsThisMovementPhase = [...new Set([...next.movedUnitIdsThisMovementPhase, unit.id])];
     next.logs.push({
       id: `log-move-stay-${next.logs.length}`,
       turnNumber: next.turnNumber,
       type: "movement",
-      message: wasRetreating ? `${intent.unitId} stayed and ended retreat.` : `${intent.unitId} stayed.`,
+      message: `${intent.unitId} stayed.`,
       relatedIds: [intent.unitId],
     });
     return true;
@@ -693,23 +677,18 @@ function applySingleMovementInPlace(
   }
   const normalPathExists = getMovementPaths(next, unit.id).some((path) => samePosition(path.destination, intent.to));
   const usedNinjaTeleport = !normalPathExists && isNinjaTeleportDestination(next, unit.id, intent.to);
-  const retreatEffect = getRetreatMoveEffect(next, unit, intent.from, intent.to);
-  const retreatTargetBaseId = retreatEffect === "start" ? getRetreatTargetBaseIdForMove(next, unit, intent.from, intent.to) : undefined;
   applyPosition(next, unit.id, intent.to);
   if (usedNinjaTeleport) {
     next.ninjaTeleportUsedUnitIds = [...new Set([...(next.ninjaTeleportUsedUnitIds ?? []), unit.id])];
   }
   next.movedUnitIdsThisMovementPhase = [...new Set([...next.movedUnitIdsThisMovementPhase, unit.id])];
-  if (retreatEffect === "start" || retreatEffect === "maintain") applyRetreatStatus(next, unit.id, true, retreatTargetBaseId);
-  if (retreatEffect === "release" || retreatEffect === "complete") applyRetreatStatus(next, unit.id, false);
-  const retreatMessage = retreatEffect === "start" ? " Retreat started." : retreatEffect === "maintain" ? " Retreat maintained." : retreatEffect === "release" ? " Retreat ended." : retreatEffect === "complete" ? " Retreat completed at a friendly base." : "";
   next.logs.push({
     id: `log-move-ok-${next.logs.length}`,
     turnNumber: next.turnNumber,
     type: "movement",
     message: usedNinjaTeleport
-      ? `${unit.id} used ninja teleport to ${positionKey(intent.to)}.${retreatMessage}`
-      : `${unit.id} moved to ${positionKey(intent.to)}.${retreatMessage}`,
+      ? `${unit.id} used ninja teleport to ${positionKey(intent.to)}.`
+      : `${unit.id} moved to ${positionKey(intent.to)}.`,
     relatedIds: [unit.id],
   });
   return true;
@@ -723,6 +702,7 @@ export function commitUnitMovement(state: GameState, intent: MovementIntent): Ga
     || state.teleportIntents.some((entry) => entry.targetUnitId === intent.unitId || (!intent.stay && samePosition(entry.to, intent.to)))) return state;
   const source = state.movementDefendedBaseIdsAtTeamStart ? state : { ...state, movementDefendedBaseIdsAtTeamStart: getDefendedBaseIds(state) };
   const next = structuredClone(source) as GameState;
+  clearLegacyRetreatState(next);
   return applySingleMovementInPlace(next, intent, true) ? next : state;
 }
 
@@ -743,6 +723,7 @@ export function commitUnitMovementInPlaceForRl(
   if (!state.movementDefendedBaseIdsAtTeamStart) {
     state.movementDefendedBaseIdsAtTeamStart = getDefendedBaseIds(state);
   }
+  clearLegacyRetreatState(state);
   if (!applySingleMovementInPlace(state, intent, true, prevalidatedForRl)) {
     throw new Error("RL legal movement failed validation in the in-place fast path");
   }
@@ -757,6 +738,7 @@ function resolveCurrentTeamMovement(
   inPlaceForRl = false,
 ): GameState {
   const next = inPlaceForRl ? state : structuredClone(state) as GameState;
+  clearLegacyRetreatState(next);
   resolveTeamTeleports(next, teamId);
   resetInactiveSieges(next);
   const defendedBaseIdsAtStart = new Set(next.movementDefendedBaseIdsAtTeamStart ?? getDefendedBaseIds(next));
@@ -813,7 +795,6 @@ function resolveCurrentTeamMovement(
   }
   defeatTeamsWithoutBases(next);
   syncBattleRoyaleFinalDuel(next);
-  clearInvalidRetreatTargets(next);
   delete next.movementDefendedBaseIdsAtTeamStart;
   next.movementCompletedTeamIds = [...new Set([...next.movementCompletedTeamIds, teamId])];
   next.movementOrderTeamIds = next.movementOrderTeamIds.filter((orderedTeamId) =>

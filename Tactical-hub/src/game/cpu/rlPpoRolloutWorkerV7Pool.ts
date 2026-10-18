@@ -117,6 +117,7 @@ export class PpoRolloutWorkerV7Pool {
     autoRecycle?: boolean;
     recycleSeedStride?: number;
     defeatDiagnostics?: boolean;
+    abilityAudit?: boolean;
   }) {
     if (!Number.isInteger(input.workerCount) || input.workerCount <= 0) {
       throw new Error("PPO V7 rollout workerCount must be a positive integer");
@@ -294,6 +295,9 @@ export class PpoRolloutWorkerV7Pool {
               ...(input.defeatDiagnostics === undefined
                 ? {}
                 : { defeatDiagnostics: input.defeatDiagnostics }),
+              ...(input.abilityAudit === undefined
+                ? {}
+                : { abilityAudit: input.abilityAudit }),
             },
           );
           if (

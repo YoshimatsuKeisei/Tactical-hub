@@ -32,6 +32,7 @@ describe("PPO V7 worker Battle Advantage shaping", () => {
       battleAdvantageShapingBeta: beta,
       safetyMaxTurns: 1_000,
       safetyMaxActions: 1,
+      abilityAudit: true,
     });
 
     try {
@@ -49,6 +50,7 @@ describe("PPO V7 worker Battle Advantage shaping", () => {
       expect(finalized.finalized).toHaveLength(1);
       const item = finalized.finalized[0];
       expect(item.summary.outcomeKind).toBe("time_limit_adjudicated");
+      expect(item.summary.abilityAudit).toMatchObject({ schemaVersion: 1 });
       const step = item.rollout!.trajectory[0];
       const baseReward = item.summary.adjudication!
         .find((team) => team.teamId === actor)!.reward;

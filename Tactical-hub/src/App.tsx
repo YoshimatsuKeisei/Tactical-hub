@@ -5,7 +5,6 @@ import { GameDebugPanel } from "./components/GameDebugPanel";
 import { getAttackCandidates, getTeamAttackCandidates, saveAttackIntent } from "./game/engine/battle";
 import { commitUnitMovement, resolveMovement } from "./game/engine/movement";
 import { resolveProduction, submitTeamProduction } from "./game/engine/production";
-import { isRetreating } from "./game/engine/retreat";
 import { createInitialGameState } from "./game/initialState";
 import type { AttackTarget, UnitPosition } from "./game/types";
 import { saveStrategistActionIntent } from "./game/engine/construction";
@@ -108,7 +107,6 @@ export default function App() {
   function chooseAttackTarget(target: AttackTarget) {
     if (!selectedUnit) return;
     if ((cpuSettings[selectedUnit.ownerTeamId] ?? "human") !== "human") return;
-    if (isRetreating(selectedUnit)) return;
     if (state.turnState.actionIntents.flatMap((intent) => intent.attackIntents ?? []).some((intent) => intent.attackerUnitId === selectedUnit.id)) return;
     setState(
       saveAttackIntent(state, {

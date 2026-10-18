@@ -1,6 +1,5 @@
 import type { GameState, Unit } from "../types";
 import { getPositionCoord } from "../utils/roadTopology";
-import { isRetreating } from "./retreat";
 
 export function isHeavyInfantry(unit: Unit | undefined): unit is Unit & { formation: "heavy" } {
   return Boolean(unit?.type === "infantry" && unit.formation === "heavy");
@@ -8,7 +7,7 @@ export function isHeavyInfantry(unit: Unit | undefined): unit is Unit & { format
 
 function isAvailableNormalInfantry(state: GameState, unit: Unit, teamId: string) {
   if (unit.ownerTeamId !== teamId || unit.type !== "infantry" || unit.formation || unit.hp <= 0) return false;
-  if (unit.position.kind === "removed" || unit.position.kind === "water" || isRetreating(unit)) return false;
+  if (unit.position.kind === "removed" || unit.position.kind === "water") return false;
   if (state.teleportIntents.some((intent) => intent.targetUnitId === unit.id)) return false;
   return !state.turnState.actionIntents.some((intent) =>
     intent.movementIntents.some((movement) => movement.unitId === unit.id),

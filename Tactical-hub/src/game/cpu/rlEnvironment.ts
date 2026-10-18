@@ -84,6 +84,8 @@ export type RlRewardFunction = (state: GameState, result: Omit<RlResult, "reward
 export type RlEnvironmentInstrumentation = {
   cpuStep?: CpuStepInstrumentation;
   onEnumerate?: (milliseconds: number, phase: GameState["phase"], decisionCount: number) => void;
+  onBeforeApply?: (state: Readonly<GameState>, decision: Readonly<CpuDecision>) => void;
+  onAfterApply?: (state: Readonly<GameState>, decision: Readonly<CpuDecision>) => void;
 };
 
 export type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision };
@@ -301,6 +303,7 @@ export class RlEnvironment {
   }
 
   private apply(decision: CpuDecision) {
+    this.instrumentation?.onBeforeApply?.(this.state, decision);
     const settings: CpuTeamSettings = Object.fromEntries(activeTeamIds(this.state).map((teamId) => [teamId, "random_cpu"]));
     const result = advanceCpuOneStep(this.state, this.runtime, settings, () => decision, {
       logMode: "none",
@@ -311,6 +314,7 @@ export class RlEnvironment {
     if (!result.applied) throw new Error("RL action was not applied");
     this.state = result.state;
     this.runtime = result.runtime;
+    this.instrumentation?.onAfterApply?.(this.state, decision);
   }
 
   private advanceAutomatic() {

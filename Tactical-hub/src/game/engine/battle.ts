@@ -11,8 +11,7 @@ import type {
 import { positionKey } from "../utils/position";
 import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, getRoadAttackDistanceWithinRange, type RoadAttackTopologyContext } from "../utils/roadTopology";
 import { getEncouragedUnitIds } from "./encouragement";
-import { buildUnitTurnFlag, clearInvalidRetreatTargets, getLegalRetreatRouteDistance, isRetreating } from "./retreat";
-import { getMovementCandidates } from "./movement";
+import { buildUnitTurnFlag, clearLegacyRetreatState } from "./retreat";
 import { beginStrategistActionPhase, beginStrategistActionPhaseInPlaceForRl } from "./construction";
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
 import { getSiegeState, recordDefenderKill, recordEffectiveBaseAttacks, resetInactiveSieges } from "./siege";
@@ -233,13 +232,10 @@ function getAttackDenominators(
     ? isHeavyInfantry(target) ? 6 : HEAVY_INFANTRY_ATTACK_DENOMINATORS[target.type] ?? getBaseAttackDenominator(attacker.type, target.type, context)
     : getBaseAttackDenominator(attacker.type, target.type, context);
   if (baseSuccessDenominator === null) return undefined;
-  let finalSuccessDenominator = applyEncouragementToDenominator(
+  const finalSuccessDenominator = applyEncouragementToDenominator(
     baseSuccessDenominator,
     encouraged,
   );
-  if (target.type === "infantry" && isRetreating(target)) {
-    finalSuccessDenominator *= 2;
-  }
   return { baseSuccessDenominator, finalSuccessDenominator, encouraged };
 }
 
@@ -360,7 +356,6 @@ export function getAttackCandidates(
 function getAttackCandidatesCore(state: GameState, attackerUnitId: string, context: AttackEnumerationContext, profile: boolean): AttackTarget[] {
   const attacker = context.unitById.get(attackerUnitId);
   if (!attacker || !isAlive(attacker)) return [];
-  if (isRetreating(attacker)) return [];
 
   const range = UNIT_STATS[attacker.type].range;
   if (range <= 0) return [];
@@ -436,8 +431,6 @@ export function saveAttackIntent(
   state: GameState,
   intent: AttackIntent,
 ): GameState {
-  const attacker = state.units.find((unit) => unit.id === intent.attackerUnitId);
-  if (attacker && isRetreating(attacker) && !intent.pass) return state;
   const existing = state.turnState.actionIntents.find(
     (candidate) => candidate.teamId === intent.teamId,
   );
@@ -595,21 +588,11 @@ function resolveBattleInternal(
       structuredClone(unit.position) as UnitPosition,
     ]),
   );
-  const events = intents.flatMap((intent, index) => {
-    if (intent.pass || !intent.target) return [];
-    const attacker = next.units.find(
-      (unit) => unit.id === intent.attackerUnitId,
-    );
-    if (attacker && isRetreating(attacker)) {
-      battleLog(
-        battleLogs,
-        `${attacker.id} attack intent was invalid because the unit is retreating.`,
-        [attacker.id],
-      );
-      return [];
-    }
-    return battleEventForIntent(next, encouragedUnitIds, intent, index);
-  });
+  const events = intents.flatMap((intent, index) =>
+    intent.pass || !intent.target
+      ? []
+      : battleEventForIntent(next, encouragedUnitIds, intent, index),
+  );
   recordEffectiveBaseAttacks(next, events.flatMap((event) => {
     const attacker = next.units.find((unit) => unit.id === event.attackerUnitId);
     const target = next.units.find((unit) => unit.id === event.target.unitId);
@@ -717,22 +700,6 @@ function resolveBattleInternal(
     })
     .filter((flag): flag is NonNullable<typeof flag> => Boolean(flag));
 
-  for (const flag of next.unitTurnFlags.filter(
-    (candidate) => candidate.retreatEligible,
-  )) {
-    const role =
-      flag.attackedInPreviousBattle && flag.wasTargetedInPreviousBattle
-        ? "attacker and target"
-        : flag.attackedInPreviousBattle
-          ? "attacker"
-          : "target";
-    battleLog(
-      battleLogs,
-      `${flag.unitId} became retreat eligible as a valid battle ${role} near an enemy-controlled base.`,
-      [flag.unitId],
-    );
-  }
-
   next.logs.push(
     ...battleLogs.map((log, index) => ({
       id: `log-battle-${next.logs.length + index}`,
@@ -782,22 +749,7 @@ function resolveBattleInternal(
   }
   defeatTeamsWithoutBases(next, kingDefeatedTeamIds);
   syncBattleRoyaleFinalDuel(next);
-  next.unitTurnFlags = next.unitTurnFlags.map((flag) => {
-    if (!flag.retreatEligible) return flag;
-    const unit = next.units.find((candidate) => candidate.id === flag.unitId);
-    const team = unit ? next.teams.find((candidate) => candidate.id === unit.ownerTeamId) : undefined;
-    const currentRoute = unit ? getLegalRetreatRouteDistance(next, unit.ownerTeamId, unit.position) : undefined;
-    const hasRetreatStep = Boolean(unit && currentRoute && getMovementCandidates(next, unit.id).some((destination) => {
-      const route = getLegalRetreatRouteDistance(next, unit.ownerTeamId, destination);
-      return route && route.distance < currentRoute.distance;
-    }));
-    if (unit && isAlive(unit) && team?.status === "active" && currentRoute && hasRetreatStep) return flag;
-    return { ...flag, retreatEligible: false, retreatEligibilityReason: "no legal route to a currently controlled friendly base" };
-  });
-  next.units = next.units.map((unit) => isAlive(unit) && next.teams.find((team) => team.id === unit.ownerTeamId)?.status === "active"
-    ? unit
-    : { ...unit, statuses: unit.statuses.filter((status) => status.kind !== "retreating") });
-  clearInvalidRetreatTargets(next);
+  clearLegacyRetreatState(next);
   captured = captured || kingDefeatApplied;
   resetInactiveSieges(next);
   if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {

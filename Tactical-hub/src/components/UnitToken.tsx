@@ -1,5 +1,4 @@
 import { UNIT_STATS } from "../game/constants";
-import { isRetreating, type RetreatDirectionIndicator } from "../game/engine/retreat";
 import type { Team, Unit } from "../game/types";
 
 type Props = {
@@ -9,23 +8,11 @@ type Props = {
   attackTarget?: boolean;
   attackReady?: boolean;
   attackComplete?: boolean;
-  retreatIndicators?: RetreatDirectionIndicator[];
   ninjaTeleportUsed?: boolean;
   onClick?: () => void;
 };
 
-const directionArrows: Record<RetreatDirectionIndicator["directionLabel"], string> = {
-  up: "↑",
-  "up-right": "↗",
-  right: "→",
-  "down-right": "↘",
-  down: "↓",
-  "down-left": "↙",
-  left: "←",
-  "up-left": "↖",
-};
-
-export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, retreatIndicators = [], ninjaTeleportUsed = false, onClick }: Props) {
+export function UnitToken({ unit, team, selected, attackTarget, attackReady, attackComplete, ninjaTeleportUsed = false, onClick }: Props) {
   const ninjaTeleportLabel = unit.type === "ninja"
     ? ninjaTeleportUsed ? "used" : "available"
     : undefined;
@@ -43,17 +30,6 @@ export function UnitToken({ unit, team, selected, attackTarget, attackReady, att
       {unit.type === "infantry" && unit.formation === "heavy" ? <span className="formation-badge">重</span> : null}
       {unit.type === "ninja" ? <span className={`ninja-teleport-badge ${ninjaTeleportUsed ? "used" : "available"}`} aria-label={`Ninja teleport ${ninjaTeleportLabel}`}>{ninjaTeleportUsed ? "済" : "瞬"}</span> : null}
       {unit.hp > 1 ? <span className="hp-badge">{unit.hp}</span> : null}
-      {isRetreating(unit) ? <span className="retreat-badge">R</span> : null}
-      {retreatIndicators.map((indicator) => (
-        <span
-          key={indicator.key}
-          className={`retreat-indicator retreat-indicator-${indicator.key} direction-${indicator.directionLabel}`}
-          aria-hidden="true"
-        >
-          <span>{directionArrows[indicator.directionLabel]}</span>
-          <span>{indicator.label}</span>
-        </span>
-      ))}
     </button>
   );
 }

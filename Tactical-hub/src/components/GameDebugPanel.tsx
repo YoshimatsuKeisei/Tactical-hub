@@ -1,19 +1,10 @@
 import { UNIT_STATS } from "../game/constants";
 import { getAttackCandidates, saveAttackIntent } from "../game/engine/battle";
 import { getEncourageRadius, getEncouragedUnitIds, getEncouragedUnitIdsByStrategist, isUnitEncouraged } from "../game/engine/encouragement";
-import { commitUnitMovement, getMovementCandidates } from "../game/engine/movement";
+import { getMovementCandidates } from "../game/engine/movement";
 import { getAvailableProductionTypes, saveProductionChoice } from "../game/engine/production";
 import { isTeamProductionPending } from "../game/engine/productionSchedule";
 import { getEligibleRewardBaseIds, getPendingRewardRequests, placeRewardUnit } from "../game/engine/reward";
-import {
-  getNearestEnemyBaseDistance,
-  getNearestFriendlyBaseDistance,
-  getRetreatDebugInfo,
-  getRetreatMoveEffect,
-  getUnitTurnFlags,
-  isRetreating,
-  isUnitRetreatEligible,
-} from "../game/engine/retreat";
 import type { GameState } from "../game/types";
 import { positionKey } from "../game/utils/position";
 import { assignConstructionCapacityBonus, assignConstructionManager, getBuilderUnits, getManagedConstructions, resolveStrategistActions, saveStrategistActionIntent, submitStrategistActions } from "../game/engine/construction";
@@ -56,12 +47,6 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
   const encourageSources = state.units.filter(
     (unit) => (unit.type === "strategist" || unit.type === "king") && unit.position.kind !== "removed",
   );
-  const selectedRetreatFlags = selectedUnit ? getUnitTurnFlags(state, selectedUnit.id) : undefined;
-  const selectedRetreatDebug = selectedUnitId ? getRetreatDebugInfo(state, selectedUnitId) : undefined;
-  const selectedFriendlyBaseDistance = selectedUnit
-    ? getNearestFriendlyBaseDistance(state, selectedUnit.ownerTeamId, selectedUnit.position)
-    : undefined;
-  const selectedEnemyBaseDistance = selectedUnit ? getNearestEnemyBaseDistance(state, selectedUnit.ownerTeamId, selectedUnit.position) : undefined;
   const pendingRewards = getPendingRewardRequests(state);
   const productionPending = state.currentMovementTeamId
     ? isTeamProductionPending(state, state.currentMovementTeamId)
@@ -96,16 +81,6 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
           <strong>{selectedUnit ? `${selectedUnit.id} (${selectedUnit.type})` : "none"}</strong>
           <span>Encouraged</span>
           <strong>{selectedUnit ? (isUnitEncouraged(state, selectedUnit) ? "yes" : "no") : "-"}</strong>
-          <span>Retreat</span>
-          <strong>
-            {selectedUnit
-              ? isRetreating(selectedUnit)
-                ? "retreating"
-                : isUnitRetreatEligible(state, selectedUnit)
-                  ? "eligible"
-                  : "no"
-              : "-"}
-          </strong>
           {state.phase === "movement_input" ? <>
             <span>Moves</span><strong>{movementIntents.length}</strong>
             <span>Movement order</span><strong>{state.movementOrderTeamIds.join(" → ") || "-"}</strong>
@@ -177,82 +152,13 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
       ) : null}
 
       <section hidden={panelTab !== "phase" || state.phase !== "movement_input" || productionPending}>
-        <h2>Retreat</h2>
+        <h2>Movement</h2>
         {selectedUnit ? (
           <div className="intent-list">
             <div className="intent-item">
               <strong>{selectedUnit.id}</strong>
-              <span>status: {isRetreating(selectedUnit) ? "retreating" : "normal"}</span>
-              <span>eligible: {selectedRetreatDebug?.eligible ? "yes" : "no"}</span>
-              <span>
-                friendly base:{" "}
-                {selectedFriendlyBaseDistance
-                  ? `${selectedFriendlyBaseDistance.baseIds.join(", ")} / distance ${selectedFriendlyBaseDistance.distance}`
-                  : "none"}
-              </span>
-              <span>
-                enemy base:{" "}
-                {selectedEnemyBaseDistance
-                  ? `${selectedEnemyBaseDistance.baseIds.join(", ")} / distance ${selectedEnemyBaseDistance.distance}`
-                  : "none"}
-              </span>
-              {selectedRetreatFlags ? (
-                <>
-                  <span>
-                    last battle: attacked {selectedRetreatFlags.attackedInPreviousBattle ? "yes" : "no"} / targeted{" "}
-                    {selectedRetreatFlags.wasTargetedInPreviousBattle ? "yes" : "no"} / survived{" "}
-                    {selectedRetreatFlags.survivedPreviousBattle ? "yes" : "no"}
-                  </span>
-                  {selectedRetreatDebug ? (
-                    <>
-                      <span>
-                        debug: attacker {selectedRetreatDebug.wasAttacker ? "yes" : "no"} / targeted{" "}
-                        {selectedRetreatDebug.wasTargeted ? "yes" : "no"} / participated{" "}
-                        {selectedRetreatDebug.participatedInBattle ? "yes" : "no"}
-                      </span>
-                      <span>battle position kind: {selectedRetreatDebug.battlePositionKind ?? "-"}</span>
-                      <span>
-                        nearest hostile base: {selectedRetreatDebug.nearestHostileBaseId ?? "-"} / controller:{" "}
-                        {selectedRetreatDebug.nearestHostileBaseController ?? "-"}
-                      </span>
-                      <span>
-                        hostile base distance at battle: {selectedRetreatDebug.nearestHostileBaseDistanceAtBattle ?? "-"} / within 3:{" "}
-                        {selectedRetreatDebug.withinHostileBaseRangeAtBattle ? "yes" : "no"}
-                      </span>
-                      <span>failure reasons: {selectedRetreatDebug.failureReasons.join(", ") || "-"}</span>
-                    </>
-                  ) : null}
-                  <span>
-                    eligibility reason: {selectedRetreatFlags.retreatEligibilityReason ?? (selectedRetreatFlags.retreatEligible ? "eligible" : "unknown")}
-                  </span>
-                  <span>
-                    enemy base within 3 at battle: {selectedRetreatFlags.enemyBaseWithin3AtBattleStart ? "yes" : "no"} / battle distance:{" "}
-                    {selectedRetreatFlags.enemyBaseDistanceAtBattleStart ?? "-"}
-                  </span>
-                  <span>position at battle: {selectedRetreatFlags.positionAtBattleStart ? positionKey(selectedRetreatFlags.positionAtBattleStart) : "-"}</span>
-                </>
-              ) : (
-                <span>last battle: none</span>
-              )}
+              <span>candidates: {movementCandidates.length}</span>
             </div>
-            {isRetreating(selectedUnit) ? (
-              <button
-                className="secondary"
-                onClick={() =>
-                  onStateChange(
-                    commitUnitMovement(state, {
-                      teamId: selectedUnit.ownerTeamId,
-                      unitId: selectedUnit.id,
-                      from: selectedUnit.position,
-                      to: selectedUnit.position,
-                      stay: true,
-                    }),
-                  )
-                }
-              >
-                Save Stay / End Retreat
-              </button>
-            ) : null}
             {(manualUnitInteractionEnabled ? getHeavyInfantryMergeCandidates(state, selectedUnit.id) : []).map((candidate) => (
               <button
                 key={`merge-${candidate.id}`}
@@ -262,16 +168,6 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
                 重装歩兵に合体: {candidate.id}
               </button>
             ))}
-            {movementCandidates.length ? (
-              movementCandidates.map((position) => (
-                <div key={positionKey(position)} className="intent-item">
-                  <strong>{positionKey(position)}</strong>
-                  <span>retreat: {getRetreatMoveEffect(state, selectedUnit, selectedUnit.position, position)}</span>
-                </div>
-              ))
-            ) : (
-              <p>No movement candidates.</p>
-            )}
           </div>
         ) : (
           <p>No unit selected.</p>
@@ -355,9 +251,7 @@ export function GameDebugPanel({ state, selectedUnitId, manualTeamId, onManualTe
       <section hidden={panelTab !== "phase" || state.phase !== "attack_input"}>
         <h2>Attack</h2>
         <div className="intent-list">
-          {selectedUnit && isRetreating(selectedUnit) ? (
-            <p>Retreating units cannot attack.</p>
-          ) : attackCandidates.length ? (
+          {attackCandidates.length ? (
             attackCandidates.map((target) => {
               const targetUnit = state.units.find((unit) => unit.id === target.unitId);
               return (

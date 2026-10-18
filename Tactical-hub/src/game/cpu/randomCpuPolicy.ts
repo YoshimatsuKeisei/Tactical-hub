@@ -68,7 +68,7 @@ function decideRandomCpu(state: GameState, runtime: CpuRuntime, settings: CpuTea
     const unitId = timed(timing, state.phase, "unitBaseEquipmentSearch", () => getTeamMovementUnitIds(state, teamId).find((id) => !runtime.processedKeys.includes(`movement:${teamId}:${id}`)));
     if (unitId) {
       const unit = state.units.find((entry) => entry.id === unitId);
-      const category = unit?.statuses.some((status) => status.kind === "retreating") ? "retreat" : unit?.type === "ninja" ? "ninjaMovement" : "movement";
+      const category = unit?.type === "ninja" ? "ninjaMovement" : "movement";
       const destinations = timed(timing, state.phase, category, () => getMovementCandidates(state, unitId));
       timed(timing, state.phase, "postProcessing", () => destinations.sort((left, right) => positionKey(left).localeCompare(positionKey(right))));
       const options = timed(timing, state.phase, "confirmPass", () => [undefined, ...destinations]);

@@ -31,6 +31,7 @@ import {
   countPpoEpisodeOutcomes,
   isPpoLearnableOutcomeKind,
 } from "./rlPpoTerminalOutcome";
+import { aggregatePpoAbilityAudits } from "./rlAbilityAudit";
 
 type FastBatchRetentionRecord = {
   retentionId: string;
@@ -73,6 +74,7 @@ export type PpoFastBatchV7WorkersInput = {
   validationWorkerCount?: number;
   skipValidation?: boolean;
   rolloutWorkerCount?: number;
+  abilityAudit?: boolean;
   client?: PythonPpoClient;
 };
 
@@ -297,6 +299,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       battleAdvantageShapingBeta,
       safetyMaxTurns,
       safetyMaxActions,
+      abilityAudit: input.abilityAudit,
     });
 
     const rolloutStarted = performance.now();
@@ -784,6 +787,16 @@ export async function runPpoFastBatchV7WorkersSmoke(
       finalTurns: perMatchBalance.map((match) => match.finalTurnNumber),
       perMatch: perMatchBalance,
     };
+    const abilityAudit = input.abilityAudit
+      ? aggregatePpoAbilityAudits(summaries.map((summary) => {
+          if (!summary.abilityAudit) throw new Error(`Missing ability audit for env=${summary.environmentIndex}`);
+          return {
+            environmentIndex: summary.environmentIndex,
+            seed: summary.seed,
+            audit: summary.abilityAudit,
+          };
+        }))
+      : undefined;
 
     const finalRetentionStats = await client.retentionStats();
     const diagnostics = await client.diagnostics();
@@ -837,6 +850,7 @@ export async function runPpoFastBatchV7WorkersSmoke(
       },
       mergeLegalActionCount,
       balanceAnalysis,
+      ...(abilityAudit ? { abilityAudit } : {}),
       update,
       saved,
       bestSaved,

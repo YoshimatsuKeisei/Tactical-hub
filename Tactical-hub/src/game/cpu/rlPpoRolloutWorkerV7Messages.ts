@@ -14,6 +14,7 @@ import {
   type PpoEpisodeOutcomeKind,
 } from "./rlPpoTerminalOutcome";
 import type { PpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
+import type { PpoAbilityAuditMatch } from "./rlAbilityAudit";
 
 export type PpoRolloutWorkerV7EpisodeSummary = {
   environmentIndex: number;
@@ -26,6 +27,7 @@ export type PpoRolloutWorkerV7EpisodeSummary = {
   reason: string;
   limitReason?: PpoTimeLimitReason;
   adjudication?: PpoTeamAdjudication[];
+  abilityAudit?: PpoAbilityAuditMatch;
 };
 export type PpoRolloutWorkerV7Finalized = {
   environmentIndex: number;
@@ -69,7 +71,7 @@ export type PpoRolloutWorkerV7Timing = {
   gameStepMs: number;
 };
 export type PpoRolloutWorkerV7Request =
-  | { type: "init"; requestId: number; workerId: number; environments: Array<{environmentIndex:number; seed:number}>; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; battleAdvantageShapingBeta: number; safetyMaxTurns: number; safetyMaxActions: number; autoRecycle?: boolean; recycleSeedStride?: number; defeatDiagnostics?: boolean }
+  | { type: "init"; requestId: number; workerId: number; environments: Array<{environmentIndex:number; seed:number}>; featureSpec: RlFeatureSpecV2; hyperparameters: PpoHyperparameters; battleAdvantageShapingBeta: number; safetyMaxTurns: number; safetyMaxActions: number; autoRecycle?: boolean; recycleSeedStride?: number; defeatDiagnostics?: boolean; abilityAudit?: boolean }
   | { type: "setAutoRecycle"; requestId: number; enabled: boolean }
   | { type: "getDiagnostics"; requestId: number }
   | { type: "getDefeatDiagnostics"; requestId: number }

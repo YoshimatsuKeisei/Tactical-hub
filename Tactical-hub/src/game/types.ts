@@ -49,6 +49,7 @@ export type StrategistActionIntent = {
 export type StrategistCooldown = { strategistUnitId: string; kind: ConstructionKind; availableFromTurn: number };
 
 export type UnitStatus =
+  /** Legacy save/checkpoint compatibility only. New rules never create or consume this status. */
   | { kind: "retreating"; retreatTargetBaseId: string; remainingTurns?: number; sourceId?: string }
   | { kind: "encouraged"; remainingTurns?: number; sourceId?: string }
   | { kind: "cannot_attack"; remainingTurns?: number; sourceId?: string };
@@ -189,12 +190,15 @@ export type UnitTurnFlags = {
   positionAtBattleStart?: UnitPosition;
   enemyBaseDistanceAtBattleStart?: number;
   enemyBaseWithin3AtBattleStart?: boolean;
+  /** Legacy save compatibility only; kept empty by the current rules. */
   retreatFriendlyBaseIdsAtEligibility?: string[];
+  /** Legacy save compatibility only; kept empty by the current rules. */
   retreatHostileBaseIdsAtEligibility?: string[];
   wasAliveAtBattleStart: boolean;
   survivedPreviousBattle: boolean;
   attackedInPreviousBattle: boolean;
   wasTargetedInPreviousBattle: boolean;
+  /** Legacy Observation column backing field; always false under the current rules. */
   retreatEligible: boolean;
   retreatEligibilityReason?: string;
 };

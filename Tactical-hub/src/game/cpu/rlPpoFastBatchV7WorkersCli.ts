@@ -3,6 +3,8 @@ import { PythonPpoClient } from "./pythonPpoClient";
 import { parseBattleAdvantageShapingBeta } from "./rlPpoBattleAdvantageShaping";
 import { isPpoShapingDiagnosticsEnabled } from "./rlPpoShapingDiagnostics";
 import { formatPpoCliJson } from "./rlPpoCliJson";
+import { writeFile } from "node:fs/promises";
+import { formatPpoAbilityAuditMarkdown } from "./rlAbilityAudit";
 
 const args = process.argv.slice(2);
 if (args.includes("--profile")) process.env.PPO_PROFILE = "1";
@@ -81,6 +83,7 @@ const result = await runPpoFastBatchV7WorkersSmoke({
     parseBattleAdvantageShapingBeta(args),
   shapingDiagnostics:
     isPpoShapingDiagnosticsEnabled(args),
+  abilityAudit: args.includes("--ability-audit"),
 
   hyperparameters: {
     learningRate: numeric("--learning-rate", 3e-4),
@@ -114,5 +117,12 @@ const result = await runPpoFastBatchV7WorkersSmoke({
     },
   }),
 });
+
+if (result.abilityAudit && value("--ability-audit-json")) {
+  await writeFile(value("--ability-audit-json")!, JSON.stringify(result.abilityAudit, null, 2) + "\n", "utf8");
+}
+if (result.abilityAudit && value("--ability-audit-markdown")) {
+  await writeFile(value("--ability-audit-markdown")!, formatPpoAbilityAuditMarkdown(result.abilityAudit), "utf8");
+}
 
 process.stdout.write(formatPpoCliJson(result));

@@ -3,7 +3,7 @@ import { getBridgePositionAt } from "../utils/roadTopology";
 import { getTile, getUnitAtBoardCell, positionKey } from "../utils/position";
 import { getOperationalAreaTiles } from "./construction";
 import { isWithinEncourageRange } from "./encouragement";
-import { getRetreatMoveEffect, getRetreatTargetBaseIdForMove, withRetreatingStatus } from "./retreat";
+import { clearLegacyRetreatState } from "./retreat";
 
 const alive = (unit: Unit) => unit.hp > 0 && unit.position.kind !== "removed";
 export const isTeleportAvailable = (state: GameState, strategistId: string) =>
@@ -92,6 +92,7 @@ function place(state: GameState, unit: Unit, to: UnitPosition) {
 }
 
 export function resolveTeamTeleports(state: GameState, teamId: string) {
+  clearLegacyRetreatState(state);
   const intents = state.teleportIntents.filter((entry) => entry.teamId === teamId).sort((a, b) => a.strategistUnitId.localeCompare(b.strategistUnitId));
   state.teleportIntents = state.teleportIntents.filter((entry) => entry.teamId !== teamId);
   for (const intent of intents) {
@@ -101,11 +102,7 @@ export function resolveTeamTeleports(state: GameState, teamId: string) {
       state.logs.push({ id: `log-teleport-fail-${state.logs.length}`, turnNumber: state.turnNumber, type: "movement", message: `${intent.strategistUnitId} teleport failed revalidation.`, relatedIds: [intent.strategistUnitId, intent.targetUnitId] });
       continue;
     }
-    const effect = getRetreatMoveEffect(state, target, target.position, destination);
-    const retreatBaseId = effect === "start" ? getRetreatTargetBaseIdForMove(state, target, target.position, destination) : undefined;
     place(state, target, destination);
-    if (effect === "start" || effect === "maintain") Object.assign(target, withRetreatingStatus(target, true, retreatBaseId));
-    if (effect === "release" || effect === "complete") Object.assign(target, withRetreatingStatus(target, false));
     state.movedUnitIdsThisMovementPhase.push(target.id);
     state.teleportCooldowns = [...state.teleportCooldowns.filter((entry) => entry.strategistUnitId !== intent.strategistUnitId), { strategistUnitId: intent.strategistUnitId, availableFromTurn: state.turnNumber + 5 }];
     state.logs.push({ id: `log-teleport-ok-${state.logs.length}`, turnNumber: state.turnNumber, type: "movement", message: `${intent.strategistUnitId} teleported ${target.id} to ${positionKey(destination)}.`, relatedIds: [intent.strategistUnitId, target.id] });

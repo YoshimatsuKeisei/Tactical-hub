@@ -45,6 +45,7 @@ import {
   createFinalDuelDrawPpoRewards,
 } from "./rlPpoTerminalOutcome";
 import { createPpoTurnDiagnostics } from "./rlPpoTurnDiagnostics";
+import { PpoAbilityAuditTracker } from "./rlAbilityAudit";
 
 if (!parentPort) {
   throw new Error("PPO V7 rollout worker requires worker_threads parentPort");
@@ -72,6 +73,7 @@ type WorkerSlot = {
   finished: boolean;
   reason?: string;
   pending?: PendingDecision;
+  abilityAuditRef: { current?: PpoAbilityAuditTracker };
 };
 
 let workerId = -1;
@@ -83,6 +85,7 @@ let safetyMaxActions = 0;
 let autoRecycle = false;
 let recycleSeedStride = 1;
 let defeatDiagnostics = false;
+let abilityAuditEnabled = false;
 let slots: WorkerSlot[] = [];
 let pendingDefeatDiagnosticEvents: PpoDefeatDiagnosticEventV8[] = [];
 
@@ -110,7 +113,7 @@ function measure<T>(
   }
 }
 
-function createEnvironment() {
+function createEnvironment(abilityAuditRef: WorkerSlot["abilityAuditRef"]) {
   return new RlEnvironmentV2(
     undefined,
     true,
@@ -120,6 +123,8 @@ function createEnvironment() {
         rlPrevalidatedMovement: true,
         rlInPlaceProduction: true,
       },
+      onBeforeApply: (state, decision) => abilityAuditRef.current?.beforeApply(state, decision),
+      onAfterApply: (state, decision) => abilityAuditRef.current?.afterApply(state, decision),
     },
   );
 }
@@ -202,6 +207,9 @@ async function finalizeSlot(
     turnDiagnostics,
     outcomeKind: "abnormal_truncated",
     reason: reason ?? result.endReason,
+    ...(slot.abilityAuditRef.current
+      ? { abilityAudit: slot.abilityAuditRef.current.finalize(slot.environment.getStateForValidation()) }
+      : {}),
   };
   let baseRewards: Record<string, number> | undefined;
   const terminalOutcome = classifyPpoGameTerminalOutcome(result, reason);
@@ -272,6 +280,9 @@ async function finalizeSlot(
   if (autoRecycle) {
     slot.seed += recycleSeedStride;
     slot.environment.reset(slot.seed, 4);
+    slot.abilityAuditRef.current = abilityAuditEnabled
+      ? new PpoAbilityAuditTracker(slot.environment.getStateForValidation())
+      : undefined;
     slot.encoderCache = createRlObservationEncoderCache();
     slot.trajectory = [];
     slot.shapingRuntime = createPpoBattleAdvantageShapingRuntime(
@@ -308,14 +319,19 @@ async function handleInit(
   autoRecycle = message.autoRecycle ?? false;
   recycleSeedStride = message.recycleSeedStride ?? 1;
   defeatDiagnostics = message.defeatDiagnostics ?? false;
+  abilityAuditEnabled = message.abilityAudit ?? false;
   if (!Number.isInteger(recycleSeedStride) || recycleSeedStride <= 0) {
     throw new Error(
       "PPO V7 rollout recycleSeedStride must be a positive integer",
     );
   }
   slots = message.environments.map((entry) => {
-    const environment = createEnvironment();
+    const abilityAuditRef: WorkerSlot["abilityAuditRef"] = {};
+    const environment = createEnvironment(abilityAuditRef);
     environment.reset(entry.seed, 4);
+    abilityAuditRef.current = abilityAuditEnabled
+      ? new PpoAbilityAuditTracker(environment.getStateForValidation())
+      : undefined;
     const slot: WorkerSlot = {
       environmentIndex: entry.environmentIndex,
       seed: entry.seed,
@@ -328,6 +344,7 @@ async function handleInit(
       ),
       generation: 0,
       finished: false,
+      abilityAuditRef,
     };
     if (defeatDiagnostics) {
       slot.defeatDiagnosticTracker =
@@ -390,6 +407,10 @@ async function prepareRound(
         if (slot.finished) continue slotLoop;
         continue;
       }
+      slot.abilityAuditRef.current?.observeDecisionPoint(
+        slot.environment.getStateForValidation(),
+        legal,
+      );
       if (observation.turnNumber > safetyMaxTurns) {
         slot.reason = "safety_turn_limit";
         const item = await finalizeSlot(slot);

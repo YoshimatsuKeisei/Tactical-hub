@@ -5,7 +5,7 @@ import { BoardView } from "./BoardView";
 import { GameDebugPanel } from "./GameDebugPanel";
 
 describe("unified strategist UI", () => {
-  it("shows encourage and construction controls for a legacy teleporter role", () => {
+  it("keeps construction controls without rendering an encouragement range overlay", () => {
     const state = createInitialGameState();
     const strategist = state.units.find((unit) => unit.id === "home-1-strategist")!;
     strategist.role = "teleporter";
@@ -22,7 +22,7 @@ describe("unified strategist UI", () => {
       onChooseConstruction={vi.fn()}
     />);
 
-    expect(html).toContain("encourage-highlighted");
+    expect(html).not.toContain("encourage-highlighted");
     expect(html).toContain("construction-preview");
   });
 

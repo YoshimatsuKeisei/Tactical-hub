@@ -266,7 +266,7 @@ function encodeUnit(context: Context, unit: Unit, schemaVersion: 1 | 2) {
     coord ? normalized(coord.y, context.observation.map.height) : 0,
     ...baseVector(context, unit.position.kind === "base" ? unit.position.baseId : undefined),
     ...oneHot(unit.role, STRATEGIST_ROLES),
-    Number(unit.statuses.some((status) => status.kind === "retreating")),
+    0, // Reserved legacy retreating column; keep its position for checkpoint compatibility.
     Number(unit.statuses.some((status) => status.kind === "encouraged")),
     Number(unit.statuses.some((status) => status.kind === "cannot_attack")),
     remainingTurns,
@@ -275,7 +275,7 @@ function encodeUnit(context: Context, unit: Unit, schemaVersion: 1 | 2) {
     Number(flag?.survivedPreviousBattle ?? false),
     Number(flag?.attackedInPreviousBattle ?? false),
     Number(flag?.wasTargetedInPreviousBattle ?? false),
-    Number(flag?.retreatEligible ?? false),
+    0, // Reserved legacy retreatEligible column; keep its position for checkpoint compatibility.
     finite(flag?.enemyBaseDistanceAtBattleStart),
     Number(flag?.enemyBaseWithin3AtBattleStart ?? false),
     ...teamVector(context, unit.ownerTeamId),

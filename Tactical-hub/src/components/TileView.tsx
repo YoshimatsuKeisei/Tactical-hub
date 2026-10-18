@@ -14,7 +14,6 @@ type Props = {
   tile: Tile;
   highlighted: boolean;
   attackHighlighted?: boolean;
-  encourageHighlighted?: boolean;
   constructionPreview?: boolean;
   bridgeCandidateMarker?: boolean;
   onPointerEnter?: () => void;
@@ -28,7 +27,6 @@ export function TileView({
   tile,
   highlighted,
   attackHighlighted = false,
-  encourageHighlighted = false,
   constructionPreview = false,
   bridgeCandidateMarker = false,
   onPointerEnter,
@@ -40,8 +38,8 @@ export function TileView({
   return (
     <button
       className={`tile ${tile.terrain} ${highlighted ? "highlighted" : ""} ${attackHighlighted ? "attack-highlighted" : ""} ${
-        encourageHighlighted ? "encourage-highlighted" : ""
-      } ${constructionPreview ? "construction-preview" : ""} ${bridgeCandidateMarker ? "bridge-candidate-marker" : ""} ${bridge ? "active-bridge" : ""} ${obstacle ? "active-obstacle" : ""
+        constructionPreview ? "construction-preview" : ""
+      } ${bridgeCandidateMarker ? "bridge-candidate-marker" : ""} ${bridge ? "active-bridge" : ""} ${obstacle ? "active-obstacle" : ""
       }`}
       onClick={onClick}
       onPointerEnter={onPointerEnter}

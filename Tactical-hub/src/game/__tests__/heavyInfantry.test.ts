@@ -96,12 +96,17 @@ describe("heavy infantry", () => {
     ["non-infantry", (unit: Unit) => { unit.type = "archer"; }],
     ["dead", (unit: Unit) => { unit.hp = 0; }],
     ["removed", (unit: Unit) => { unit.position = { kind: "removed", reason: "defeated" }; }],
-    ["retreating", (unit: Unit) => { unit.statuses = [{ kind: "retreating", retreatTargetBaseId: "home-1" }]; }],
     ["heavy", (unit: Unit) => { unit.formation = "heavy"; }],
   ] as const)("rejects a %s partner", (_label, alter) => {
     const { state, first, second } = positionedFixture({ kind: "tile", x: 4, y: 1 }, { kind: "tile", x: 5, y: 1 });
     alter(second);
     expect(getHeavyInfantryMergeCandidates(state, first.id)).toEqual([]);
+  });
+
+  it("ignores a serialized legacy retreat status when selecting a merge partner", () => {
+    const { state, first, second } = positionedFixture({ kind: "tile", x: 4, y: 1 }, { kind: "tile", x: 5, y: 1 });
+    second.statuses = [{ kind: "retreating", retreatTargetBaseId: "home-1" }];
+    expect(getHeavyInfantryMergeCandidates(state, first.id).map((unit) => unit.id)).toEqual([second.id]);
   });
 
   it("can attack once in the following attack phase after merging", () => {

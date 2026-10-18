@@ -238,7 +238,7 @@ function unitRef(context: EncodingContext, unitId: string | undefined): number[]
     coord ? normalized(coord.y, context.observation.map.height) : 0,
     baseSlot ? baseSlot.localRow : 0,
     baseSlot ? baseSlot.localCol : 0,
-    Number(unit.statuses.some((status) => status.kind === "retreating")),
+    0, // Reserved legacy retreating column; keep its position for checkpoint compatibility.
     Number(unit.statuses.some((status) => status.kind === "encouraged")),
     Number(unit.statuses.some((status) => status.kind === "cannot_attack")),
     ...oneHot(unit.role, RL_STRATEGIST_ROLES),
@@ -420,7 +420,7 @@ function writeUnitRefSparse(
     : undefined;
   writer.emit(baseSlot ? baseSlot.localRow : 0);
   writer.emit(baseSlot ? baseSlot.localCol : 0);
-  writer.emit(Number(unit.statuses.some((status) => status.kind === "retreating")));
+  writer.emit(0); // Reserved legacy retreating column; keep its position for checkpoint compatibility.
   writer.emit(Number(unit.statuses.some((status) => status.kind === "encouraged")));
   writer.emit(Number(unit.statuses.some((status) => status.kind === "cannot_attack")));
   writer.oneHot(unit.role, RL_STRATEGIST_ROLES);
