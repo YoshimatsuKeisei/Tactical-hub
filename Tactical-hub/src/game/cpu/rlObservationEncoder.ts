@@ -863,8 +863,21 @@ function encodeRlObservationForVersion(
   const encodedBases = bases.map((base) => encodeBase(context, base, maxBaseSlots));
   const baseWidth = encodedBases[0]?.length ?? 0;
   const maxConstructions = observation.map.tiles.length;
-  if (observation.constructions.length > maxConstructions) throw new Error(`RL Observation contains ${observation.constructions.length} constructions, exceeding safe capacity ${maxConstructions}`);
-  const sortedConstructions = [...observation.constructions].sort((left, right) => {
+  let constructionsForEncoding = observation.constructions;
+  if (constructionsForEncoding.length > maxConstructions) {
+    // A reset construction remains in the game history but no longer affects
+    // the board. Only when necessary, omit oldest inactive history rows from
+    // the encoded view; never mutate GameState or drop active structures.
+    const excess = constructionsForEncoding.length - maxConstructions;
+    const inactive = constructionsForEncoding.filter((entry) => !entry.active)
+      .sort((left, right) => left.placedTurn - right.placedTurn || left.id.localeCompare(right.id));
+    if (inactive.length < excess) {
+      throw new Error(`RL Observation contains ${constructionsForEncoding.length} constructions, with ${constructionsForEncoding.length - inactive.length} active, exceeding safe capacity ${maxConstructions}`);
+    }
+    const omitted = new Set(inactive.slice(0, excess));
+    constructionsForEncoding = constructionsForEncoding.filter((entry) => !omitted.has(entry));
+  }
+  const sortedConstructions = [...constructionsForEncoding].sort((left, right) => {
     const a = left.tiles[0], b = right.tiles[0];
     return (a?.y ?? 999) - (b?.y ?? 999) || (a?.x ?? 999) - (b?.x ?? 999) || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id);
   });
