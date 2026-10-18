@@ -1,0 +1,18 @@
+{
+  "id": "keisabo/tactical-hub-u54-newrules-ability-audit",
+  "title": "Tactical-hub u54 new rules ability audit",
+  "code_file": "tth-u54-newrules-ability-audit.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "kernel_sources": [
+    "keisabo/tactical-hub-u52-one-update-balance-trial"
+  ],
+  "competition_sources": [],
+  "model_sources": [],
+  "machine_shape": "NvidiaTeslaT4"
+}

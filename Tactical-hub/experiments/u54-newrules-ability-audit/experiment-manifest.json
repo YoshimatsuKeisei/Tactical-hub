@@ -1,0 +1,53 @@
+{
+  "experimentName": "u54-newrules-ability-audit",
+  "marker": "TTH_U54_NEWRULES_ABILITY_AUDIT_20261019",
+  "sourceKernel": "keisabo/tactical-hub-u52-one-update-balance-trial",
+  "targetKernel": "keisabo/tactical-hub-u54-newrules-ability-audit",
+  "baselineCommit": "cbfc438209784f85ec6d4bbcfea7a09bb9c71b10",
+  "newRulesCommit": "650483a14c76925c21b3d7e9fd1bcf4085f685b7",
+  "sourceArchiveSHA256": "ded32a52fa497463b721344ea57e4e68a5cadc3a0f27ccfbd963d276c32d7e58",
+  "notebookSHA256": "9d8841aa00d5a5dfd45e3345ac9650e5a6b3ffca7d4fe00f7acd089ff2b3dc78",
+  "sourceCheckpoint": {
+    "file": "ppo-u53-oneupdate-trial.pt",
+    "sha256": "cce23ec427ee350071244690840e787455baa1651b4d60ce779a7951ae42222a",
+    "updateCount": 53,
+    "episodeCount": 410,
+    "trainerSeed": 7
+  },
+  "target": {
+    "updateCount": 54,
+    "episodeCount": 418,
+    "matchCount": 8,
+    "gameSeeds": [417, 418, 419, 420, 421, 422, 423, 424]
+  },
+  "workload": {
+    "rolloutWorkers": 4,
+    "validationWorkers": 2,
+    "maxDecisionsPerMatch": 50000,
+    "maxTotalDecisions": 400000,
+    "maxTurns": 1000,
+    "replayChunkSize": 32,
+    "memoryLogInterval": 5000,
+    "battleAdvantageShapingBeta": 0.02
+  },
+  "hyperparameters": {
+    "learningRate": 0.0003,
+    "gamma": 0.99,
+    "gaeLambda": 0.95,
+    "clipEpsilon": 0.2,
+    "valueCoefficient": 0.5,
+    "entropyCoefficient": 0.01,
+    "maxGradientNorm": 0.5
+  },
+  "featureSpecFile": "feature-spec-u53.json",
+  "statisticsSchemaVersion": 1,
+  "outputs": {
+    "checkpoint": "ppo-u54-newrules-ability-audit.pt",
+    "report": "production-update-report-u54-newrules-ability-audit.json",
+    "abilityAuditJson": "ability-audit-u54-newrules.json",
+    "abilityAuditMarkdown": "ability-audit-u54-newrules.md"
+  },
+  "officialPromotion": "NO",
+  "kagglePushPerformed": false,
+  "trainingPerformed": false
+}
