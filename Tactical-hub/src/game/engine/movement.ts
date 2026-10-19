@@ -53,6 +53,12 @@ export type MovementValidationResult =
 
 export type MovementSemantics = "current" | "legacy_batched";
 
+export type MovementCandidateDetail = {
+  destination: UnitPosition;
+  path?: MovementPath;
+  ninjaTeleport: boolean;
+};
+
 const directions = [-1, 0, 1]
   .flatMap((dx) => [-1, 0, 1].map((dy) => ({ dx, dy })))
   .filter(({ dx, dy }) => dx || dy);
@@ -483,25 +489,27 @@ export function getMovementPaths(
   return [...results.values()];
 }
 
-export function getMovementCandidates(
+export function getMovementCandidateDetails(
   state: GameState,
   unitId: string,
   semantics: MovementSemantics = "current",
-): UnitPosition[] {
+): MovementCandidateDetail[] {
   const unit = state.units.find((candidate) => candidate.id === unitId);
   if (state.phase === "movement_input" && unit?.ownerTeamId !== state.currentMovementTeamId) return [];
   if (state.movedUnitIdsThisMovementPhase.includes(unitId) || state.teleportIntents.some((intent) => intent.targetUnitId === unitId)) return [];
-  if (state.phase !== "movement_input" || !unit) return getMovementPaths(state, unitId).map((path) => path.destination);
+  if (state.phase !== "movement_input" || !unit) {
+    return getMovementPaths(state, unitId).map((path) => ({ destination: path.destination, path, ninjaTeleport: false }));
+  }
   if (semantics === "current") {
     const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
     return measureLegalSegment("movementRangePathSearch", () => {
       const visibleState = createTeamVisibleState(state, unit.ownerTeamId);
-      const destinations = new Map(getMovementPaths(visibleState, unitId)
-        .map((path) => [positionKey(path.destination), path.destination] as const));
+      const destinations = new Map<string, MovementCandidateDetail>(getMovementPaths(visibleState, unitId)
+        .map((path) => [positionKey(path.destination), { destination: path.destination, path, ninjaTeleport: false }] as const));
       for (const destination of getNinjaTeleportDestinations(visibleState, unitId)) {
-        if (!destinations.has(positionKey(destination))) destinations.set(positionKey(destination), destination);
+        if (!destinations.has(positionKey(destination))) destinations.set(positionKey(destination), { destination, ninjaTeleport: true });
       }
-      return [...destinations.values()].filter((position) => !teleportDestinations.has(positionKey(position)));
+      return [...destinations.values()].filter((entry) => !teleportDestinations.has(positionKey(entry.destination)));
     });
   }
   const planningState = measureLegalSegment("boardOccupancyGeneration", () => {
@@ -521,13 +529,21 @@ export function getMovementCandidates(
   });
   const teleportDestinations = new Set(state.teleportIntents.map((intent) => positionKey(intent.to)));
   return measureLegalSegment("movementRangePathSearch", () => {
-    const destinations = new Map(getMovementPaths(planningState, unitId)
-      .map((path) => [positionKey(path.destination), path.destination] as const));
+    const destinations = new Map<string, MovementCandidateDetail>(getMovementPaths(planningState, unitId)
+      .map((path) => [positionKey(path.destination), { destination: path.destination, path, ninjaTeleport: false }] as const));
     for (const destination of getNinjaTeleportDestinations(planningState, unitId)) {
-      if (!destinations.has(positionKey(destination))) destinations.set(positionKey(destination), destination);
+      if (!destinations.has(positionKey(destination))) destinations.set(positionKey(destination), { destination, ninjaTeleport: true });
     }
-    return [...destinations.values()].filter((position) => !teleportDestinations.has(positionKey(position)));
+    return [...destinations.values()].filter((entry) => !teleportDestinations.has(positionKey(entry.destination)));
   });
+}
+
+export function getMovementCandidates(
+  state: GameState,
+  unitId: string,
+  semantics: MovementSemantics = "current",
+): UnitPosition[] {
+  return getMovementCandidateDetails(state, unitId, semantics).map((entry) => entry.destination);
 }
 
 export function getTeamMovementCandidates(state: GameState, teamId: string) {

@@ -1,11 +1,8 @@
 import type { GameState, UnitPosition, UnitType } from "../types";
-import { isUnitEncouragedByStrategist } from "../engine/encouragement";
-import { getMovementPaths, type MovementPath } from "../engine/movement";
-import { getNinjaTeleportDestinations } from "../engine/ninjaTeleport";
-import { getPositionCoord } from "../utils/roadTopology";
 import { positionKey } from "../utils/position";
 import type { CpuDecision } from "./types";
-import type { RlLegalAction } from "./rlEnvironment";
+import type { RlDecisionAuditHint, RlLegalAction } from "./rlEnvironment";
+import type { BattleResolutionAuditEvent } from "../engine/battle";
 
 export const PPO_ABILITY_AUDIT_SCHEMA_VERSION = 1;
 export const AUDITED_PRODUCTION_UNIT_TYPES = [
@@ -29,6 +26,12 @@ export type PpoAbilityAuditMatch = {
     passCount: number;
     counts: Record<ProductionUnitType, number>;
     shares: Record<ProductionUnitType, number>;
+    successCount: number;
+    failureCount: number;
+    successCounts: Record<ProductionUnitType, number>;
+    failureCounts: Record<ProductionUnitType, number>;
+    successRates: Record<ProductionUnitType, number>;
+    successfulShares: Record<ProductionUnitType, number>;
     strategistRoleCounts: Record<StrategistRole, number>;
     specialUnitCount: number;
     specialUnitShare: number;
@@ -81,38 +84,6 @@ export type PpoAbilityAuditAggregate = PpoAbilityAuditMatch & {
 const emptyRecord = <K extends string>(keys: readonly K[]) =>
   Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
 
-function isObstacleJumpPath(state: GameState, path: MovementPath) {
-  return path.steps.some((step) => {
-    if (step.kind !== "ground") return false;
-    const from = getPositionCoord(state, step.from);
-    const to = getPositionCoord(state, step.to);
-    if (!from || !to) return false;
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) !== 2 || (dx !== 0 && Math.abs(dx) !== 2) || (dy !== 0 && Math.abs(dy) !== 2)) return false;
-    const x = from.x + Math.sign(dx);
-    const y = from.y + Math.sign(dy);
-    return state.constructions.some((entry) =>
-      entry.active
-      && entry.kind === "obstacle"
-      && entry.tiles.some((cell) => cell.x === x && cell.y === y),
-    );
-  });
-}
-
-function encouragementSource(state: GameState, attackerUnitId: string): EncouragementSource {
-  const attacker = state.units.find((unit) => unit.id === attackerUnitId);
-  if (!attacker) return "none";
-  let strategist = false;
-  let king = false;
-  for (const source of state.units) {
-    if (!isUnitEncouragedByStrategist(state, attacker, source)) continue;
-    if (source.type === "strategist") strategist = true;
-    if (source.type === "king") king = true;
-  }
-  return strategist && king ? "both" : strategist ? "strategist" : king ? "king" : "none";
-}
-
 type PendingMovement = {
   unitId: string;
   destinationKey: string;
@@ -120,8 +91,24 @@ type PendingMovement = {
   obstacleJump: boolean;
 };
 
+type PendingProduction = {
+  teamId: string;
+  baseId: string;
+  unitType: ProductionUnitType;
+};
+
+const logSignature = (log: GameState["logs"][number]) => JSON.stringify([
+  log.id,
+  log.turnNumber,
+  log.type,
+  log.message,
+  log.relatedIds ?? [],
+]);
+
 export class PpoAbilityAuditTracker {
   private readonly productionCounts = emptyRecord(AUDITED_PRODUCTION_UNIT_TYPES);
+  private readonly productionSuccessCounts = emptyRecord(AUDITED_PRODUCTION_UNIT_TYPES);
+  private readonly productionFailureCounts = emptyRecord(AUDITED_PRODUCTION_UNIT_TYPES);
   private readonly strategistRoleCounts = emptyRecord(STRATEGIST_ROLES);
   private productionSelectionCount = 0;
   private productionPassCount = 0;
@@ -162,13 +149,18 @@ export class PpoAbilityAuditTracker {
   private readonly ninjaObstacleUsers = new Set<string>();
   private readonly activeSubmersions = new Map<string, { enteredTurn: number; lastTurn: number }>();
   private readonly incompleteReasons: Record<string, number> = {};
-  private readonly plannedAttacks = new Map<string, EncouragementSource>();
+  private readonly observedBattleEventKeys = new Set<string>();
+  private readonly pendingProductionByTeam = new Map<string, PendingProduction>();
   private readonly pendingConstructionKinds = new Map<string, "bridge" | "obstacle">();
   private readonly observedConstructionIds = new Set<string>();
-  private readonly observedLogIds = new Set<string>();
   private readonly observedOpportunityKeys = new Set<string>();
+  private readonly movementHints = new Map<string, RlDecisionAuditHint>();
+  private logSnapshot: string[];
+  private logArrayReference: GameState["logs"];
   private beforePositions = new Map<string, UnitPosition>();
   private beforeConstructionIds = new Set<string>();
+  private beforeUnitIds = new Set<string>();
+  private resolvingProductionChoices: PendingProduction[] = [];
   private pendingMovement?: PendingMovement;
 
   constructor(initialState: GameState) {
@@ -176,7 +168,8 @@ export class PpoAbilityAuditTracker {
     for (const ninja of initialState.units.filter((unit) => unit.type === "ninja" && unit.position.kind === "water")) {
       this.activeSubmersions.set(ninja.id, { enteredTurn: initialState.turnNumber, lastTurn: initialState.turnNumber });
     }
-    for (const log of initialState.logs) this.observedLogIds.add(log.id);
+    this.logSnapshot = initialState.logs.map(logSignature);
+    this.logArrayReference = initialState.logs;
     for (const construction of initialState.constructions) this.observedConstructionIds.add(construction.id);
   }
 
@@ -184,26 +177,24 @@ export class PpoAbilityAuditTracker {
     for (const unit of state.units) if (unit.type === "ninja") this.ninjaIds.add(unit.id);
   }
 
-  observeDecisionPoint(state: GameState, legal: readonly RlLegalAction[]) {
+  observeDecisionPoint(
+    state: GameState,
+    legal: readonly RlLegalAction[],
+    movementAuditHints: readonly RlDecisionAuditHint[] = [],
+  ) {
     this.trackNinjas(state);
-    const movement = legal.find((action) => action.actionType === "movement" && action.unitId);
-    if (movement?.unitId) {
-      const unit = state.units.find((entry) => entry.id === movement.unitId);
-      if (unit?.type === "ninja") {
-        const paths = getMovementPaths(state, unit.id);
-        const normalKeys = new Set(paths.map((path) => positionKey(path.destination)));
-        const teleportOnly = getNinjaTeleportDestinations(state, unit.id)
-          .some((destination) => !normalKeys.has(positionKey(destination)));
-        const obstacleJump = paths.some((path) => isObstacleJumpPath(state, path));
-        const baseKey = `${state.turnNumber}:${state.phase}:${unit.id}`;
-        if (teleportOnly && !this.observedOpportunityKeys.has(`${baseKey}:ninja-teleport`)) {
-          this.observedOpportunityKeys.add(`${baseKey}:ninja-teleport`);
-          this.ninjaTeleportOpportunities += 1;
-        }
-        if (obstacleJump && !this.observedOpportunityKeys.has(`${baseKey}:obstacle-jump`)) {
-          this.observedOpportunityKeys.add(`${baseKey}:obstacle-jump`);
-          this.ninjaObstacleOpportunities += 1;
-        }
+    this.movementHints.clear();
+    for (const hint of movementAuditHints) this.movementHints.set(`${hint.unitId}:${hint.destinationKey}`, hint);
+    const movementUnitId = movementAuditHints[0]?.unitId;
+    if (movementUnitId) {
+      const baseKey = `${state.turnNumber}:${state.phase}:${movementUnitId}`;
+      if (movementAuditHints.some((hint) => hint.ninjaTeleport) && !this.observedOpportunityKeys.has(`${baseKey}:ninja-teleport`)) {
+        this.observedOpportunityKeys.add(`${baseKey}:ninja-teleport`);
+        this.ninjaTeleportOpportunities += 1;
+      }
+      if (movementAuditHints.some((hint) => hint.obstacleJump) && !this.observedOpportunityKeys.has(`${baseKey}:obstacle-jump`)) {
+        this.observedOpportunityKeys.add(`${baseKey}:obstacle-jump`);
+        this.ninjaObstacleOpportunities += 1;
       }
     }
     const strategistTeleport = legal.some((action) => action.actionType === "teleport" && !action.isPass);
@@ -215,17 +206,61 @@ export class PpoAbilityAuditTracker {
     }
   }
 
+  observeBattleResolution(events: readonly BattleResolutionAuditEvent[]) {
+    for (const event of events) {
+      const key = `${event.turnNumber}:${event.id}:${event.attackerUnitId}:${event.targetUnitId}`;
+      if (this.observedBattleEventKeys.has(key)) continue;
+      this.observedBattleEventKeys.add(key);
+      this.totalAttacks += 1;
+      const source: EncouragementSource = event.encouraged ? event.encouragementSource : "none";
+      if (source === "none") {
+        this.unencouragedAttacks += 1;
+        continue;
+      }
+      this.encouragedAttacks += 1;
+      if (event.hit) this.encouragedHits += 1;
+      else this.encouragedMisses += 1;
+      if (source === "strategist" || source === "both") this.strategistEncouragedAttacks += 1;
+      if (source === "king" || source === "both") this.kingEncouragedAttacks += 1;
+      if (source === "both") this.bothEncouragedAttacks += 1;
+    }
+  }
+
   beforeApply(state: GameState, decision: CpuDecision) {
     this.trackNinjas(state);
+    this.alignLogSnapshot(state.logs);
     this.beforePositions = new Map(state.units.filter((unit) => unit.type === "ninja").map((unit) => [unit.id, structuredClone(unit.position) as UnitPosition]));
     this.beforeConstructionIds = new Set(state.constructions.map((entry) => entry.id));
+    this.beforeUnitIds = new Set(state.units.map((unit) => unit.id));
+    this.resolvingProductionChoices = [];
     this.pendingMovement = undefined;
+
+    if (decision.kind === "resolve_production" || decision.kind === "submit_team_production") {
+      const teamId = decision.kind === "submit_team_production" ? decision.teamId : undefined;
+      const seenTeams = new Set<string>();
+      this.resolvingProductionChoices = state.turnState.actionIntents
+        .filter((intent) => !teamId || intent.teamId === teamId)
+        .flatMap((intent) => intent.productionChoices)
+        .filter((choice) => {
+          if (seenTeams.has(choice.teamId)) return false;
+          seenTeams.add(choice.teamId);
+          return AUDITED_PRODUCTION_UNIT_TYPES.includes(choice.unitType as ProductionUnitType);
+        })
+        .map((choice) => ({ teamId: choice.teamId, baseId: choice.baseId, unitType: choice.unitType as ProductionUnitType }));
+    }
 
     if (decision.kind === "production") {
       if (!decision.choice) this.productionPassCount += 1;
       else if (AUDITED_PRODUCTION_UNIT_TYPES.includes(decision.choice.unitType as ProductionUnitType)) {
+        const previous = this.pendingProductionByTeam.get(decision.choice.teamId);
+        if (previous) this.failProduction(previous);
         this.productionSelectionCount += 1;
         this.productionCounts[decision.choice.unitType as ProductionUnitType] += 1;
+        this.pendingProductionByTeam.set(decision.choice.teamId, {
+          teamId: decision.choice.teamId,
+          baseId: decision.choice.baseId,
+          unitType: decision.choice.unitType as ProductionUnitType,
+        });
         if (decision.choice.unitType === "strategist" && decision.choice.strategistRole) {
           this.strategistRoleCounts[decision.choice.strategistRole] += 1;
         }
@@ -241,24 +276,16 @@ export class PpoAbilityAuditTracker {
       }
     } else if (decision.kind === "teleport" && decision.intent) {
       this.strategistTeleportInstructions += 1;
-    } else if (decision.kind === "attack" && !decision.intent.pass && decision.intent.target) {
-      this.plannedAttacks.set(
-        `${state.turnNumber}:${decision.intent.attackerUnitId}:${decision.intent.target.unitId}`,
-        encouragementSource(state, decision.intent.attackerUnitId),
-      );
     } else if (decision.kind === "movement" && decision.to) {
       const destination = decision.to;
       const unit = state.units.find((entry) => entry.id === decision.unitId);
       if (unit?.type === "ninja") {
-        const paths = getMovementPaths(state, unit.id);
-        const path = paths.find((entry) => positionKey(entry.destination) === positionKey(destination));
-        const ninjaTeleport = !path && getNinjaTeleportDestinations(state, unit.id)
-          .some((candidate) => positionKey(candidate) === positionKey(destination));
+        const hint = this.movementHints.get(`${unit.id}:${positionKey(destination)}`);
         this.pendingMovement = {
           unitId: unit.id,
           destinationKey: positionKey(destination),
-          ninjaTeleport,
-          obstacleJump: Boolean(path && isObstacleJumpPath(state, path)),
+          ninjaTeleport: hint?.ninjaTeleport ?? false,
+          obstacleJump: hint?.obstacleJump ?? false,
         };
       }
     }
@@ -266,6 +293,21 @@ export class PpoAbilityAuditTracker {
 
   afterApply(state: GameState, decision: CpuDecision) {
     this.trackNinjas(state);
+    if (this.resolvingProductionChoices.length) {
+      const newUnits = state.units.filter((unit) => !this.beforeUnitIds.has(unit.id));
+      for (const choice of this.resolvingProductionChoices) {
+        const pending = this.pendingProductionByTeam.get(choice.teamId);
+        if (!pending || pending.baseId !== choice.baseId || pending.unitType !== choice.unitType) continue;
+        const produced = newUnits.some((unit) => unit.ownerTeamId === choice.teamId
+          && unit.type === choice.unitType
+          && unit.position.kind === "base"
+          && unit.position.baseId === choice.baseId);
+        if (produced) this.productionSuccessCounts[choice.unitType] += 1;
+        else this.failProduction(choice);
+        this.pendingProductionByTeam.delete(choice.teamId);
+      }
+      this.resolvingProductionChoices = [];
+    }
     const newConstructions = state.constructions.filter((entry) =>
       !this.beforeConstructionIds.has(entry.id) && !this.observedConstructionIds.has(entry.id),
     );
@@ -282,9 +324,7 @@ export class PpoAbilityAuditTracker {
       if (construction.managerUnitId) this.pendingConstructionKinds.delete(construction.managerUnitId);
     }
 
-    for (const log of state.logs) {
-      if (this.observedLogIds.has(log.id)) continue;
-      this.observedLogIds.add(log.id);
+    for (const log of this.consumeNewLogs(state.logs)) {
       if (log.type === "construction" && /placement failed|prerequisite disappeared/.test(log.message)) {
         const strategistId = log.relatedIds?.find((id) => this.pendingConstructionKinds.has(id));
         const kind = strategistId ? this.pendingConstructionKinds.get(strategistId) : undefined;
@@ -296,23 +336,6 @@ export class PpoAbilityAuditTracker {
       if (log.type === "movement" && / teleported .* to /.test(log.message)) {
         this.strategistTeleportSuccess += 1;
         this.strategistTeleportedUnits += 1;
-      }
-      if (log.type === "battle") {
-        const match = /^(.+?) -> (.+?) base .*result: (success|failure)/.exec(log.message);
-        if (!match) continue;
-        const source = this.plannedAttacks.get(`${log.turnNumber}:${match[1]}:${match[2]}`) ?? "none";
-        const hit = match[3] === "success";
-        this.totalAttacks += 1;
-        if (source === "none") {
-          this.unencouragedAttacks += 1;
-        } else {
-          this.encouragedAttacks += 1;
-          if (hit) this.encouragedHits += 1;
-          else this.encouragedMisses += 1;
-          if (source === "strategist" || source === "both") this.strategistEncouragedAttacks += 1;
-          if (source === "king" || source === "both") this.kingEncouragedAttacks += 1;
-          if (source === "both") this.bothEncouragedAttacks += 1;
-        }
       }
     }
 
@@ -361,6 +384,43 @@ export class PpoAbilityAuditTracker {
     this.pendingMovement = undefined;
   }
 
+  private failProduction(choice: PendingProduction) {
+    this.productionFailureCounts[choice.unitType] += 1;
+  }
+
+  private alignLogSnapshot(logs: GameState["logs"]) {
+    if (logs === this.logArrayReference && logs.length === this.logSnapshot.length) return;
+    const signatures = logs.map(logSignature);
+    const matches = signatures.length === this.logSnapshot.length
+      && signatures.every((signature, index) => signature === this.logSnapshot[index]);
+    if (!matches) this.logSnapshot = signatures;
+    this.logArrayReference = logs;
+  }
+
+  private consumeNewLogs(logs: GameState["logs"]) {
+    let prefixMatches = logs.length >= this.logSnapshot.length;
+    if (prefixMatches && this.logSnapshot.length) {
+      const indices = new Set([0, Math.floor((this.logSnapshot.length - 1) / 2), this.logSnapshot.length - 1]);
+      prefixMatches = [...indices].every((index) => logSignature(logs[index]) === this.logSnapshot[index]);
+    }
+    if (prefixMatches) {
+      const added = logs.slice(this.logSnapshot.length);
+      this.logSnapshot.push(...added.map(logSignature));
+      this.logArrayReference = logs;
+      return added;
+    }
+
+    const signatures = logs.map(logSignature);
+    let commonPrefix = 0;
+    while (commonPrefix < signatures.length
+      && commonPrefix < this.logSnapshot.length
+      && signatures[commonPrefix] === this.logSnapshot[commonPrefix]) commonPrefix += 1;
+    const added = logs.slice(commonPrefix);
+    this.logSnapshot = signatures;
+    this.logArrayReference = logs;
+    return added;
+  }
+
   private recordIncomplete(reason: string) {
     this.ninjaSubmersionIncomplete += 1;
     this.incompleteReasons[reason] = (this.incompleteReasons[reason] ?? 0) + 1;
@@ -368,6 +428,8 @@ export class PpoAbilityAuditTracker {
 
   finalize(state: GameState): PpoAbilityAuditMatch {
     this.trackNinjas(state);
+    for (const pending of this.pendingProductionByTeam.values()) this.failProduction(pending);
+    this.pendingProductionByTeam.clear();
     for (const ninjaId of this.activeSubmersions.keys()) {
       this.recordIncomplete("match_ended_while_submerged");
       this.activeSubmersions.delete(ninjaId);
@@ -381,6 +443,8 @@ export class PpoAbilityAuditTracker {
     this.obstacleFailures += Math.max(0, this.obstacleInstructions - this.obstacleSuccess - this.obstacleFailures);
     this.strategistTeleportFailures += Math.max(0, this.strategistTeleportInstructions - this.strategistTeleportSuccess - this.strategistTeleportFailures);
     const specialUnitCount = this.productionCounts.engineer + this.productionCounts.ninja + this.productionCounts.strategist;
+    const productionSuccessCount = Object.values(this.productionSuccessCounts).reduce((total, count) => total + count, 0);
+    const productionFailureCount = Object.values(this.productionFailureCounts).reduce((total, count) => total + count, 0);
     return {
       schemaVersion: PPO_ABILITY_AUDIT_SCHEMA_VERSION,
       production: {
@@ -388,6 +452,12 @@ export class PpoAbilityAuditTracker {
         passCount: this.productionPassCount,
         counts: { ...this.productionCounts },
         shares: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, this.productionSelectionCount ? this.productionCounts[type] / this.productionSelectionCount : 0])) as Record<ProductionUnitType, number>,
+        successCount: productionSuccessCount,
+        failureCount: productionFailureCount,
+        successCounts: { ...this.productionSuccessCounts },
+        failureCounts: { ...this.productionFailureCounts },
+        successRates: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, this.productionCounts[type] ? this.productionSuccessCounts[type] / this.productionCounts[type] : 0])) as Record<ProductionUnitType, number>,
+        successfulShares: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, productionSuccessCount ? this.productionSuccessCounts[type] / productionSuccessCount : 0])) as Record<ProductionUnitType, number>,
         strategistRoleCounts: { ...this.strategistRoleCounts },
         specialUnitCount,
         specialUnitShare: this.productionSelectionCount ? specialUnitCount / this.productionSelectionCount : 0,
@@ -435,14 +505,22 @@ export function aggregatePpoAbilityAudits(
   matches: Array<{ environmentIndex: number; seed: number; audit: PpoAbilityAuditMatch }>,
 ): PpoAbilityAuditAggregate {
   const counts = emptyRecord(AUDITED_PRODUCTION_UNIT_TYPES);
+  const successCounts = emptyRecord(AUDITED_PRODUCTION_UNIT_TYPES);
+  const failureCounts = emptyRecord(AUDITED_PRODUCTION_UNIT_TYPES);
   const roles = emptyRecord(STRATEGIST_ROLES);
   const sum = (select: (audit: PpoAbilityAuditMatch) => number) => matches.reduce((total, match) => total + select(match.audit), 0);
   for (const { audit } of matches) {
-    for (const type of AUDITED_PRODUCTION_UNIT_TYPES) counts[type] += audit.production.counts[type];
+    for (const type of AUDITED_PRODUCTION_UNIT_TYPES) {
+      counts[type] += audit.production.counts[type];
+      successCounts[type] += audit.production.successCounts[type];
+      failureCounts[type] += audit.production.failureCounts[type];
+    }
     for (const role of STRATEGIST_ROLES) roles[role] += audit.production.strategistRoleCounts[role];
   }
   const selectionCount = sum((audit) => audit.production.selectionCount);
   const specialUnitCount = counts.engineer + counts.ninja + counts.strategist;
+  const productionSuccessCount = Object.values(successCounts).reduce((total, count) => total + count, 0);
+  const productionFailureCount = Object.values(failureCounts).reduce((total, count) => total + count, 0);
   const ninjaIds = new Set(matches.flatMap((match) => match.audit.ninja.appearedUnitIds.map((id) => `${match.environmentIndex}:${id}`)));
   const teleportIds = new Set(matches.flatMap((match) => match.audit.ninja.teleportUserIds.map((id) => `${match.environmentIndex}:${id}`)));
   const obstacleIds = new Set(matches.flatMap((match) => match.audit.ninja.obstacleJumpUserIds.map((id) => `${match.environmentIndex}:${id}`)));
@@ -458,6 +536,12 @@ export function aggregatePpoAbilityAudits(
       passCount: sum((audit) => audit.production.passCount),
       counts,
       shares: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, selectionCount ? counts[type] / selectionCount : 0])) as Record<ProductionUnitType, number>,
+      successCount: productionSuccessCount,
+      failureCount: productionFailureCount,
+      successCounts,
+      failureCounts,
+      successRates: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, counts[type] ? successCounts[type] / counts[type] : 0])) as Record<ProductionUnitType, number>,
+      successfulShares: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, productionSuccessCount ? successCounts[type] / productionSuccessCount : 0])) as Record<ProductionUnitType, number>,
       averagePerMatch: Object.fromEntries(AUDITED_PRODUCTION_UNIT_TYPES.map((type) => [type, matches.length ? counts[type] / matches.length : 0])) as Record<ProductionUnitType, number>,
       strategistRoleCounts: roles,
       specialUnitCount,
@@ -511,10 +595,11 @@ export function formatPpoAbilityAuditMarkdown(audit: PpoAbilityAuditAggregate) {
     "",
     "## Production",
     "",
-    "| Unit | Count | Share | Per match |",
-    "|---|---:|---:|---:|",
-    ...AUDITED_PRODUCTION_UNIT_TYPES.map((type) => `| ${type} | ${audit.production.counts[type]} | ${(audit.production.shares[type] * 100).toFixed(2)}% | ${audit.production.averagePerMatch[type].toFixed(3)} |`),
+    "| Unit | Selected | Selection share | Successful | Failed | Success rate | Successful share | Per match |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ...AUDITED_PRODUCTION_UNIT_TYPES.map((type) => `| ${type} | ${audit.production.counts[type]} | ${(audit.production.shares[type] * 100).toFixed(2)}% | ${audit.production.successCounts[type]} | ${audit.production.failureCounts[type]} | ${(audit.production.successRates[type] * 100).toFixed(2)}% | ${(audit.production.successfulShares[type] * 100).toFixed(2)}% | ${audit.production.averagePerMatch[type].toFixed(3)} |`),
     "",
+    `Selections / successful / failed: ${audit.production.selectionCount} / ${audit.production.successCount} / ${audit.production.failureCount}`,
     `New three unit share: ${(audit.production.specialUnitShare * 100).toFixed(2)}%`,
     "",
     "## Strategist",

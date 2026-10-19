@@ -51,6 +51,9 @@ describe("PPO V7 worker Battle Advantage shaping", () => {
       const item = finalized.finalized[0];
       expect(item.summary.outcomeKind).toBe("time_limit_adjudicated");
       expect(item.summary.abilityAudit).toMatchObject({ schemaVersion: 1 });
+      expect(item.summary.abilityAudit!.production.selectionCount).toBe(
+        item.summary.abilityAudit!.production.successCount + item.summary.abilityAudit!.production.failureCount,
+      );
       const step = item.rollout!.trajectory[0];
       const baseReward = item.summary.adjudication!
         .find((team) => team.teamId === actor)!.reward;

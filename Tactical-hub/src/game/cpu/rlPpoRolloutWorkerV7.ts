@@ -122,6 +122,7 @@ function createEnvironment(abilityAuditRef: WorkerSlot["abilityAuditRef"]) {
         rlInPlacePhaseTransitions: true,
         rlPrevalidatedMovement: true,
         rlInPlaceProduction: true,
+        onBattleResolved: (events) => abilityAuditRef.current?.observeBattleResolution(events),
       },
       onBeforeApply: (state, decision) => abilityAuditRef.current?.beforeApply(state, decision),
       onAfterApply: (state, decision) => abilityAuditRef.current?.afterApply(state, decision),
@@ -410,6 +411,7 @@ async function prepareRound(
       slot.abilityAuditRef.current?.observeDecisionPoint(
         slot.environment.getStateForValidation(),
         legal,
+        slot.environment.getDecisionAuditHintsForValidation(actor),
       );
       if (observation.turnNumber > safetyMaxTurns) {
         slot.reason = "safety_turn_limit";

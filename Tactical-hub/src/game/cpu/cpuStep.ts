@@ -1,4 +1,4 @@
-import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent } from "../engine/battle";
+import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent, type BattleResolutionObserver } from "../engine/battle";
 import { resolveStrategistActions, resolveStrategistActionsInPlaceForRl, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
 import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, submitMovementInPlaceForRl, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction, submitTeamProductionInPlaceForRl } from "../engine/production";
@@ -33,6 +33,7 @@ export type CpuStepInstrumentation = {
   onApply?: (milliseconds: number, decision: CpuDecision, phaseBefore: GameState["phase"], phaseAfter: GameState["phase"], turnBefore: number, turnAfter: number) => void;
   onLog?: (milliseconds: number) => void;
   onDecision?: (decision: CpuDecision) => void;
+  onBattleResolved?: BattleResolutionObserver;
 };
 function log(runtime: CpuRuntime, state: GameState, teamId: string | undefined, action: string, detail?: string, error?: string, instrumentation?: CpuStepInstrumentation) {
   const started = instrumentation?.onLog ? performance.now() : 0;
@@ -137,8 +138,8 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
       for (const intent of runtime.hiddenAttackIntents) writeLog(intent.teamId, intent.pass ? "attack pass" : "attack", `${intent.attackerUnitId}${intent.target ? ` -> ${intent.target.unitId}` : ""}`);
       next = runtime.hiddenAttackIntents.reduce((current, intent) => saveAttackIntent(current, intent), state);
       next = instrumentation?.rlInPlacePhaseTransitions
-        ? resolveBattleInPlaceForRl(next, injectedRng(runtime))
-        : resolveBattle(next, injectedRng(runtime));
+        ? resolveBattleInPlaceForRl(next, injectedRng(runtime), instrumentation?.onBattleResolved)
+        : resolveBattle(next, injectedRng(runtime), instrumentation?.onBattleResolved);
       writeLog(undefined, "resolve simultaneous battle");
       break;
     }

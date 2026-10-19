@@ -1,12 +1,13 @@
 import { getAttackCandidates, getTeamAttackerUnitIds } from "../engine/battle";
 import { getBuilderUnits, getStrategistActionCandidatesForUnit } from "../engine/construction";
-import { getMovementCandidates, getTeamMovementUnitIds, type MovementSemantics } from "../engine/movement";
+import { getMovementCandidateDetails, getTeamMovementUnitIds, type MovementPath, type MovementSemantics } from "../engine/movement";
 import { getProductionCandidatesForBase } from "../engine/production";
 import { isTeamProductionPending } from "../engine/productionSchedule";
 import { getRewardPlacementCandidates } from "../engine/reward";
 import { getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
 import type { GameState, StrategistActionKind, StrategistRole, UnitPosition } from "../types";
 import { positionKey } from "../utils/position";
+import { getPositionCoord } from "../utils/roadTopology";
 import { advanceCpuOneStep, syncCpuContext, type CpuStepInstrumentation } from "./cpuStep";
 import { createHeadlessInitialState, getHeadlessProgressSignature } from "./headlessSimulation";
 import { getRandomCpuDecision } from "./randomCpuPolicy";
@@ -88,7 +89,15 @@ export type RlEnvironmentInstrumentation = {
   onAfterApply?: (state: Readonly<GameState>, decision: Readonly<CpuDecision>) => void;
 };
 
-export type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision };
+export type RlDecisionAuditHint = {
+  actionKey: string;
+  unitId: string;
+  destinationKey: string;
+  ninjaTeleport: boolean;
+  obstacleJump: boolean;
+};
+
+export type EnumeratedDecision = { action: RlLegalAction; decision: CpuDecision; auditHint?: RlDecisionAuditHint };
 
 const activeTeamIds = (state: GameState) => state.teams.filter((team) => !team.isNeutral && team.status === "active").map((team) => team.id);
 const tileId = (position: UnitPosition) => positionKey(position);
@@ -138,6 +147,21 @@ function wrap(decisions: CpuDecision[]): EnumeratedDecision[] {
   return decisions.map((decision) => ({ decision, action: describeRlDecision(decision) }));
 }
 
+function isObstacleJumpPath(state: GameState, path: MovementPath) {
+  return path.steps.some((step) => {
+    if (step.kind !== "ground") return false;
+    const from = getPositionCoord(state, step.from);
+    const to = getPositionCoord(state, step.to);
+    if (!from || !to) return false;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) !== 2 || (dx !== 0 && Math.abs(dx) !== 2) || (dy !== 0 && Math.abs(dy) !== 2)) return false;
+    const x = from.x + Math.sign(dx);
+    const y = from.y + Math.sign(dy);
+    return state.constructions.some((entry) => entry.active && entry.kind === "obstacle" && entry.tiles.some((cell) => cell.x === x && cell.y === y));
+  });
+}
+
 export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, teamEligible: (teamId: string) => boolean = () => true, movementSemantics: MovementSemantics = "current"): EnumeratedDecision[] {
   syncCpuContext(runtime, state);
   const active = activeTeamIds(state);
@@ -172,11 +196,27 @@ export function enumerateRlDecisions(state: GameState, runtime: CpuRuntime, team
     const unitId = getTeamMovementUnitIds(visibleState, teamId).find((id) => !runtime.processedKeys.includes(`movement:${teamId}:${id}`));
     if (unitId) {
       const actorKey = `movement:${teamId}:${unitId}`;
-      const destinations = getMovementCandidates(visibleState, unitId, movementSemantics).sort((left, right) => tileId(left).localeCompare(tileId(right)));
-      return wrap([
-        { kind: "movement", teamId, actorKey, unitId },
-        ...destinations.map((to): CpuDecision => ({ kind: "movement", teamId, actorKey, unitId, to })),
-      ]);
+      const details = getMovementCandidateDetails(visibleState, unitId, movementSemantics)
+        .sort((left, right) => tileId(left.destination).localeCompare(tileId(right.destination)));
+      const pass = wrap([{ kind: "movement", teamId, actorKey, unitId }]);
+      return [
+        ...pass,
+        ...details.map((detail): EnumeratedDecision => {
+          const decision: CpuDecision = { kind: "movement", teamId, actorKey, unitId, to: detail.destination };
+          const action = describeRlDecision(decision);
+          return {
+            decision,
+            action,
+            auditHint: {
+              actionKey: action.actionKey,
+              unitId,
+              destinationKey: positionKey(detail.destination),
+              ninjaTeleport: detail.ninjaTeleport,
+              obstacleJump: Boolean(detail.path && isObstacleJumpPath(visibleState, detail.path)),
+            },
+          };
+        }),
+      ];
     }
     const strategistUnitId = getTeleportStrategists(state, teamId).map((unit) => unit.id).find((id) => !runtime.processedKeys.includes(`teleport:${teamId}:${id}`));
     if (strategistUnitId) {
@@ -364,6 +404,12 @@ export class RlEnvironment {
     return this.decisions.map((entry) => entry.action);
   }
 
+  /** Read-only, non-schema metadata derived during legal-action enumeration for optional audit observers. */
+  getDecisionAuditHintsForValidation(teamId: string): readonly RlDecisionAuditHint[] {
+    if (teamId !== this.getCurrentActorTeamId()) return [];
+    return this.decisions.flatMap((entry) => entry.auditHint ? [entry.auditHint] : []);
+  }
+
   stepWithoutObservation(actionKeyValue: string) {
     const selected = this.decisions.find((entry) => entry.action.actionKey === actionKeyValue);
     if (!selected) throw new Error(`Illegal or stale RL actionKey: ${actionKeyValue}`);
@@ -440,6 +486,9 @@ export class RlEnvironment {
 
   /** Transient state view for synchronous headless validation only. Callers must not mutate or retain it. */
   getStateForValidation(): GameState { return this.state; }
+
+  /** Read-only RNG cursor for determinism/performance validation; it is not part of observations or trajectories. */
+  getRngStateForValidation(): number { return this.runtime.rngState; }
 
 }
 

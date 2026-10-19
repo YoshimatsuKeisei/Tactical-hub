@@ -10,7 +10,7 @@ import type {
 } from "../types";
 import { positionKey } from "../utils/position";
 import { canAttackAcrossRoadTopology, createRoadAttackTopologyContext, getPositionCoord, getRoadAttackDistance, getRoadAttackDistanceWithinRange, type RoadAttackTopologyContext } from "../utils/roadTopology";
-import { getEncouragedUnitIds } from "./encouragement";
+import { getEncouragedUnitIds, isUnitEncouragedByStrategist } from "./encouragement";
 import { buildUnitTurnFlag, clearLegacyRetreatState } from "./retreat";
 import { beginStrategistActionPhase, beginStrategistActionPhaseInPlaceForRl } from "./construction";
 import { completeSiegeCapture, selectCaptureTeam } from "./capture";
@@ -31,6 +31,29 @@ type BattleLogDraft = {
   message: string;
   relatedIds?: string[];
 };
+
+export type BattleResolutionAuditEvent = {
+  id: string;
+  turnNumber: number;
+  attackerUnitId: string;
+  targetUnitId: string;
+  encouraged: boolean;
+  encouragementSource: "none" | "strategist" | "king" | "both";
+  hit: boolean;
+};
+
+export type BattleResolutionObserver = (events: readonly BattleResolutionAuditEvent[]) => void;
+
+function encouragementSourceForAudit(state: GameState, attacker: Unit): BattleResolutionAuditEvent["encouragementSource"] {
+  let strategist = false;
+  let king = false;
+  for (const source of state.units) {
+    if (!isUnitEncouragedByStrategist(state, attacker, source)) continue;
+    if (source.type === "strategist") strategist = true;
+    if (source.type === "king") king = true;
+  }
+  return strategist && king ? "both" : strategist ? "strategist" : king ? "king" : "none";
+}
 
 const SUCCESS_DENOMINATORS: Partial<
   Record<UnitType, Partial<Record<UnitType, number>>>
@@ -568,6 +591,7 @@ function resolveBattleInternal(
   state: GameState,
   rng: () => number,
   inPlaceForRl: boolean,
+  observer?: BattleResolutionObserver,
 ): GameState {
   const next = inPlaceForRl ? state : structuredClone(state) as GameState;
   const neutralIntents: AttackIntent[] = next.units
@@ -614,12 +638,24 @@ function resolveBattleInternal(
     next.units.filter(isAlive).map((unit) => unit.id),
   );
 
+  const auditEvents: BattleResolutionAuditEvent[] = [];
   const hitEvents = events.filter((event) => {
     const attacker = next.units.find(
       (unit) => unit.id === event.attackerUnitId,
     );
     const target = next.units.find((unit) => unit.id === event.target.unitId);
     const hit = rng() < 1 / event.finalSuccessDenominator;
+    if (observer && attacker) {
+      auditEvents.push({
+        id: event.id,
+        turnNumber: next.turnNumber,
+        attackerUnitId: event.attackerUnitId,
+        targetUnitId: event.target.unitId,
+        encouraged: event.encouraged,
+        encouragementSource: encouragementSourceForAudit(next, attacker),
+        hit,
+      });
+    }
     const prefix = `${event.attackerUnitId} -> ${event.target.unitId} base 1/${event.baseSuccessDenominator}, encouraged: ${
       event.encouraged ? "yes" : "no"
     }, final 1/${event.finalSuccessDenominator}`;
@@ -632,6 +668,7 @@ function resolveBattleInternal(
 
     return Boolean(attacker && target && hit);
   });
+  observer?.(auditEvents);
 
   const damageByUnitId = new Map<string, number>();
   for (const event of hitEvents) {
@@ -766,14 +803,16 @@ function resolveBattleInternal(
 export function resolveBattle(
   state: GameState,
   rng: () => number = Math.random,
+  observer?: BattleResolutionObserver,
 ): GameState {
-  return resolveBattleInternal(state, rng, false);
+  return resolveBattleInternal(state, rng, false, observer);
 }
 
 /** RL-only owned-state battle resolution without whole-state phase clones. */
 export function resolveBattleInPlaceForRl(
   state: GameState,
   rng: () => number = Math.random,
+  observer?: BattleResolutionObserver,
 ): GameState {
-  return resolveBattleInternal(state, rng, true);
+  return resolveBattleInternal(state, rng, true, observer);
 }
