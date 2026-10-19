@@ -4,9 +4,9 @@
   "sourceKernel": "keisabo/tactical-hub-u52-one-update-balance-trial",
   "targetKernel": "keisabo/tactical-hub-u54-newrules-ability-audit",
   "baselineCommit": "cbfc438209784f85ec6d4bbcfea7a09bb9c71b10",
-  "newRulesCommit": "096ad1daff4975db8697f728b8590d94de5b3f88",
-  "sourceArchiveSHA256": "19660d33a67d401c7e99453dffcb1433e0b727e9b8352a4577b19bb35bab2dec",
-  "notebookSHA256": "e3b531dd2abecf967e3a0f1cf8706934a9e81d9f6a5c5ec946e0c68bbf034e2a",
+  "newRulesCommit": "e0223f1b0c06465bda43982f8cec43456f6797a8",
+  "sourceArchiveSHA256": "7eeb68ef36f50ec6af505462a466092945332335358065d64b2b0bf1a744c297",
+  "notebookSHA256": "4c23b3a48eb6040c84926c59529476c8715022c8632faf26cdc3f0ffa8c6fc78",
   "sourceCheckpoint": {
     "file": "ppo-u53-oneupdate-trial.pt",
     "sha256": "cce23ec427ee350071244690840e787455baa1651b4d60ce779a7951ae42222a",
@@ -49,6 +49,7 @@
   },
   "localValidationArtifacts": {
     "abilityAuditPerformance": "ability-audit-performance-5000.json",
+    "abilityAuditPerformanceBeforeNoActorFix": "ability-audit-performance-5000-before-no-actor-fix.json",
     "uiVsPpoGameplayAudit": "ui-vs-ppo-gameplay-audit.md"
   },
   "officialPromotion": "NO",
