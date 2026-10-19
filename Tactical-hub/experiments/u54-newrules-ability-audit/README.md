@@ -2,6 +2,8 @@
 
 Prepared-only Kaggle experiment. It resumes the validated u53 checkpoint for exactly one PPO update on game seeds 417–424. No push or training is performed by preparation.
 
+Fixed game/audit commit: `096ad1daff4975db8697f728b8590d94de5b3f88`. The local 5,000-decision ON/OFF benchmark is recorded in `ability-audit-performance-5000.json`; the read-only UI/PPO gameplay comparison is in `ui-vs-ppo-gameplay-audit.md`.
+
 The Notebook checks the fixed source commit/archive hash, u53 checkpoint hash and counters, exact Feature Spec equality, strict model/optimizer resume, Replay/Validation counts, production composition, and ability-audit accounting before emitting uniquely named u54 artifacts.
 
 Local verification:

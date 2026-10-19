@@ -4,9 +4,9 @@
   "sourceKernel": "keisabo/tactical-hub-u52-one-update-balance-trial",
   "targetKernel": "keisabo/tactical-hub-u54-newrules-ability-audit",
   "baselineCommit": "cbfc438209784f85ec6d4bbcfea7a09bb9c71b10",
-  "newRulesCommit": "650483a14c76925c21b3d7e9fd1bcf4085f685b7",
-  "sourceArchiveSHA256": "ded32a52fa497463b721344ea57e4e68a5cadc3a0f27ccfbd963d276c32d7e58",
-  "notebookSHA256": "9d8841aa00d5a5dfd45e3345ac9650e5a6b3ffca7d4fe00f7acd089ff2b3dc78",
+  "newRulesCommit": "096ad1daff4975db8697f728b8590d94de5b3f88",
+  "sourceArchiveSHA256": "19660d33a67d401c7e99453dffcb1433e0b727e9b8352a4577b19bb35bab2dec",
+  "notebookSHA256": "e3b531dd2abecf967e3a0f1cf8706934a9e81d9f6a5c5ec946e0c68bbf034e2a",
   "sourceCheckpoint": {
     "file": "ppo-u53-oneupdate-trial.pt",
     "sha256": "cce23ec427ee350071244690840e787455baa1651b4d60ce779a7951ae42222a",
@@ -46,6 +46,10 @@
     "report": "production-update-report-u54-newrules-ability-audit.json",
     "abilityAuditJson": "ability-audit-u54-newrules.json",
     "abilityAuditMarkdown": "ability-audit-u54-newrules.md"
+  },
+  "localValidationArtifacts": {
+    "abilityAuditPerformance": "ability-audit-performance-5000.json",
+    "uiVsPpoGameplayAudit": "ui-vs-ppo-gameplay-audit.md"
   },
   "officialPromotion": "NO",
   "kagglePushPerformed": false,
