@@ -5,7 +5,7 @@ import { getProductionCandidatesForBase } from "../engine/production";
 import { isTeamProductionPending } from "../engine/productionSchedule";
 import { getRewardPlacementCandidates } from "../engine/reward";
 import { getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
-import type { GameState } from "../types";
+import type { GameState, ProductionChoice } from "../types";
 import { positionKey } from "../utils/position";
 import type { CpuDecision, CpuRuntime, CpuTeamSettings } from "./types";
 import { withLegalProfileSink } from "./legalEnumerationProfile";
@@ -23,6 +23,8 @@ function choose<T>(runtime: CpuRuntime, values: T[]) {
 
 const activeTeamIds = (state: GameState) => state.teams.filter((team) => team.status === "active").map((team) => team.id);
 const isCpu = (settings: CpuTeamSettings, teamId: string) => settings[teamId] === "random_cpu";
+const RANDOM_CPU_PRODUCTION_TYPES = new Set<ProductionChoice["unitType"]>(["infantry", "archer", "cavalry"]);
+const randomCpuProductionCandidates = (candidates: ProductionChoice[]) => candidates.filter((choice) => RANDOM_CPU_PRODUCTION_TYPES.has(choice.unitType));
 
 export type LegalEnumerationTiming = { category: string; phase: GameState["phase"]; milliseconds: number };
 type PolicyTiming = { enumerationMs: number; record?: (entry: LegalEnumerationTiming) => void };
@@ -43,7 +45,7 @@ function decideRandomCpu(state: GameState, runtime: CpuRuntime, settings: CpuTea
       const baseIds = timed(timing, state.phase, "unitBaseEquipmentSearch", () => state.bases.filter((base) => base.ownerTeamId === teamId).map((base) => base.id).sort());
       for (const baseId of baseIds) {
         if (runtime.processedKeys.includes(`production:${teamId}:${baseId}`)) continue;
-        const candidates = timed(timing, state.phase, "production", () => getProductionCandidatesForBase(state, teamId, baseId));
+        const candidates = timed(timing, state.phase, "production", () => randomCpuProductionCandidates(getProductionCandidatesForBase(state, teamId, baseId)));
         if (candidates.length) return { kind: "production", teamId, actorKey: `production:${teamId}:${baseId}`, choice: choose(runtime, candidates) };
       }
       runtime.completedProductionTeamIds.push(teamId);
@@ -60,7 +62,7 @@ function decideRandomCpu(state: GameState, runtime: CpuRuntime, settings: CpuTea
       const baseIds = timed(timing, state.phase, "unitBaseEquipmentSearch", () => state.bases.filter((base) => base.ownerTeamId === teamId).map((base) => base.id).sort());
       for (const baseId of baseIds) {
         if (runtime.processedKeys.includes(`movement-production:${teamId}:${baseId}`)) continue;
-        const candidates = timed(timing, state.phase, "production", () => getProductionCandidatesForBase(state, teamId, baseId));
+        const candidates = timed(timing, state.phase, "production", () => randomCpuProductionCandidates(getProductionCandidatesForBase(state, teamId, baseId)));
         if (candidates.length) return { kind: "production", teamId, actorKey: `movement-production:${teamId}:${baseId}`, choice: choose(runtime, candidates) };
       }
       return timed(timing, state.phase, "confirmPass", () => ({ kind: "submit_team_production", teamId } as const));

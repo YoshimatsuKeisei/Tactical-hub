@@ -112,7 +112,9 @@ export function normalizeRewardPlacementState(state: GameState): GameState {
     !request.completed
     && !request.expired
     && Boolean(getRewardRequestInvalidReason(state, request)));
-  if (!hasInvalidRequest) return state;
+  const shouldResumeSettledRewardPhase = state.phase === "reward_placement"
+    && getPendingRewardRequests(state).length === 0;
+  if (!hasInvalidRequest && !shouldResumeSettledRewardPhase) return state;
   const next = structuredClone(state) as GameState;
   expireInvalidRewardRequests(next);
   return resumeAfterRewardPlacement(next);

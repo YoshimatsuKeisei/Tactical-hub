@@ -190,4 +190,20 @@ describe("mandatory reward and compensation placement flow", () => {
     expect(normalized.turnState.phase).toBe("attack_input");
     expect(normalized.phaseAfterRewards).toBeUndefined();
   });
+
+  it("resumes a saved reward phase whose requests were already settled", () => {
+    const state = enterRewardPhase(createInitialGameState(), [
+      { ...request("legacy-expired"), expired: true, expirationReason: "recipient_not_active_player" },
+      { ...request("legacy-completed"), completed: true },
+    ], "attack_input");
+
+    const normalized = normalizeRewardPlacementState(state);
+
+    expect(normalized).not.toBe(state);
+    expect(getPendingRewardRequests(normalized)).toHaveLength(0);
+    expect(normalized.rewardPlacementRequests).toEqual(state.rewardPlacementRequests);
+    expect(normalized.phase).toBe("attack_input");
+    expect(normalized.turnState.phase).toBe("attack_input");
+    expect(normalized.phaseAfterRewards).toBeUndefined();
+  });
 });

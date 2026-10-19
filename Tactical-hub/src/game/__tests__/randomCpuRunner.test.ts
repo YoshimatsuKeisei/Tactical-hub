@@ -25,6 +25,41 @@ function runSteps(count: number, seed: number, settings = allCpu()) {
 }
 
 describe("Phase 5-B Random CPU and Visual Runner", () => {
+  it("limits Random CPU production to infantry, archer, or cavalry in both production schedules", () => {
+    const allowed = ["infantry", "archer", "cavalry"];
+    for (let seed = 1; seed <= 64; seed += 1) {
+      const sequentialState = createInitialGameState();
+      const sequential = getRandomCpuDecision(sequentialState, createCpuRuntime(seed), { ...allHuman(), "team-1": "random_cpu" });
+      expect(sequential?.kind).toBe("production");
+      if (sequential?.kind === "production") expect(allowed).toContain(sequential.choice?.unitType);
+
+      const simultaneousState = createInitialGameState();
+      simultaneousState.phase = simultaneousState.turnState.phase = "production";
+      const simultaneous = getRandomCpuDecision(simultaneousState, createCpuRuntime(seed), { ...allHuman(), "team-1": "random_cpu" });
+      expect(simultaneous?.kind).toBe("production");
+      if (simultaneous?.kind === "production") expect(allowed).toContain(simultaneous.choice?.unitType);
+    }
+  });
+
+  it("uses the existing production passes when no basic Random CPU unit can be produced", () => {
+    const sequentialState = createInitialGameState();
+    for (const slot of sequentialState.bases.find((base) => base.id === "home-1")!.slots) slot.unitId ??= `occupied-${slot.id}`;
+    expect(getRandomCpuDecision(
+      sequentialState,
+      createCpuRuntime(65),
+      { ...allHuman(), "team-1": "random_cpu" },
+    )).toEqual({ kind: "submit_team_production", teamId: "team-1" });
+
+    const simultaneousState = structuredClone(sequentialState);
+    simultaneousState.phase = simultaneousState.turnState.phase = "production";
+    for (const team of simultaneousState.teams) if (team.id !== "team-1") team.status = "defeated";
+    expect(getRandomCpuDecision(
+      simultaneousState,
+      createCpuRuntime(66),
+      { ...allHuman(), "team-1": "random_cpu" },
+    )).toEqual({ kind: "resolve_production", teamId: "all" });
+  });
+
   it("routes random, heuristic, and human teams to only their configured controller", () => {
     const calls: string[] = [];
     const heuristic = createHeuristicCpuPolicy();
