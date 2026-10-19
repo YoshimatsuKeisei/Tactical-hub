@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "measuredAt": "2026-10-19T08:35:18.896Z",
+  "measuredAt": "2026-10-19T09:56:15.736Z",
   "environment": {
     "node": "v24.15.0",
     "platform": "win32",
@@ -8,15 +8,9 @@
   },
   "decisionCount": 5000,
   "firstSeed": 417,
-  "lastSeed": 418,
-  "matchCount": 2,
-  "completedEpisodeBoundaries": [
-    {
-      "seed": 417,
-      "reason": "no_actor",
-      "actionCount": 2442
-    }
-  ],
+  "lastSeed": 417,
+  "matchCount": 1,
+  "completedEpisodeBoundaries": [],
   "determinism": {
     "actionKeysAndOrderMatch": true,
     "stateHashesMatch": true,
@@ -25,36 +19,36 @@
     "episodeBoundariesMatch": true
   },
   "traceGeneration": {
-    "wallMilliseconds": 16050.057300000002,
-    "cpuMilliseconds": 13719
+    "wallMilliseconds": 16743.5542,
+    "cpuMilliseconds": 16188
   },
   "baseline": {
-    "wallMilliseconds": 15009.978600000002,
-    "cpuMilliseconds": 12765,
+    "wallMilliseconds": 15958.096999999998,
+    "cpuMilliseconds": 15436,
     "memory": {
-      "start": { "rss": 196661248, "heapUsed": 53366088 },
-      "peak": { "rss": 335118336, "heapUsed": 156308688 },
-      "end": { "rss": 318189568, "heapUsed": 112369480 }
+      "start": { "rss": 202895360, "heapUsed": 59334504 },
+      "peak": { "rss": 275124224, "heapUsed": 153360520 },
+      "end": { "rss": 228749312, "heapUsed": 83432728 }
     }
   },
   "audited": {
-    "wallMilliseconds": 15092.753099999998,
-    "cpuMilliseconds": 13126,
-    "observerMilliseconds": 422.5369000000028,
+    "wallMilliseconds": 16448.973899999997,
+    "cpuMilliseconds": 15501,
+    "observerMilliseconds": 232.36250000068685,
     "memory": {
-      "start": { "rss": 318283776, "heapUsed": 112375832 },
-      "peak": { "rss": 334979072, "heapUsed": 137300904 },
-      "end": { "rss": 302268416, "heapUsed": 74722032 }
+      "start": { "rss": 228749312, "heapUsed": 83439080 },
+      "peak": { "rss": 337281024, "heapUsed": 126325800 },
+      "end": { "rss": 274190336, "heapUsed": 43514064 }
     }
   },
   "overhead": {
-    "additionalMilliseconds": 82.7744999999959,
-    "relativePercent": 0.5514631446576206,
-    "observerSharePercent": 2.7996012205354557
+    "additionalMilliseconds": 490.8768999999993,
+    "relativePercent": 3.0760365725311694,
+    "observerSharePercent": 1.4126261091622676
   },
   "abilityAuditInvariant": {
-    "productionSelections": 64,
-    "productionResolved": 64,
+    "productionSelections": 59,
+    "productionResolved": 59,
     "noUnresolvedProductionSelections": true
   }
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveBattle } from "../engine/battle";
 import { getMovementCandidates, saveMovementIntent, submitMovement } from "../engine/movement";
 import { submitTeamProduction } from "../engine/production";
-import { getRewardPlacementCandidates, placeRewardUnit } from "../engine/reward";
+import { enqueueRewardRequest, getPendingRewardRequests, getRewardPlacementCandidates, normalizeRewardPlacementState, placeRewardUnit } from "../engine/reward";
 import { createInitialGameState } from "../initialState";
 import type { GameState, RewardPlacementRequest, RewardType } from "../types";
 
@@ -121,5 +121,72 @@ describe("mandatory reward and compensation placement flow", () => {
     const state = createInitialGameState();
     state.phase = state.turnState.phase = "attack_input";
     expect(resolveBattle(state, () => 0).phase).toBe("strategist_action_input");
+  });
+
+  it.each([
+    ["neutral", "neutral", "neutral-north"],
+    ["defeated", "team-1", "home-1"],
+    ["eliminated", "team-1", "home-1"],
+  ] as const)("rejects reward placement for a %s recipient without creating a unit", (status, teamId, baseId) => {
+    const state = createInitialGameState();
+    const team = state.teams.find((candidate) => candidate.id === teamId)!;
+    if (status !== "neutral") team.status = status;
+    enterRewardPhase(state, [{ ...request(`invalid-${status}`), teamId, sourceBaseId: baseId, fixedBaseId: baseId, eligibleBaseIds: [baseId] }]);
+    const unitCount = state.units.length;
+    const slots = structuredClone(state.bases.map((base) => [base.id, base.slots.map((slot) => slot.unitId)]));
+
+    const resolved = placeRewardUnit(state, `invalid-${status}`, baseId, "infantry");
+
+    expect(resolved.units).toHaveLength(unitCount);
+    expect(resolved.bases.map((base) => [base.id, base.slots.map((slot) => slot.unitId)])).toEqual(slots);
+    expect(resolved.rewardPlacementRequests.find((entry) => entry.id === `invalid-${status}`)).toMatchObject({
+      expired: true,
+      expirationReason: "recipient_not_active_player",
+    });
+    expect(resolved.phase).toBe("strategist_action_input");
+  });
+
+  it("rejects a fixed reward base not owned by the recipient", () => {
+    const state = enterRewardPhase(createInitialGameState(), [{
+      ...request("foreign-fixed"),
+      fixedBaseId: "home-2",
+      sourceBaseId: "home-2",
+      eligibleBaseIds: ["home-2"],
+    }]);
+    const unitCount = state.units.length;
+    const slots = structuredClone(state.bases.map((base) => [base.id, base.slots.map((slot) => slot.unitId)]));
+
+    const resolved = placeRewardUnit(state, "foreign-fixed", "home-2", "infantry");
+
+    expect(resolved.units).toHaveLength(unitCount);
+    expect(resolved.bases.map((base) => [base.id, base.slots.map((slot) => slot.unitId)])).toEqual(slots);
+    expect(resolved.rewardPlacementRequests[0]).toMatchObject({ expired: true, expirationReason: "fixed_base_not_owned_by_recipient" });
+    expect(resolved.phase).toBe("strategist_action_input");
+  });
+
+  it("does not enqueue rewards for neutral, defeated, eliminated, or foreign fixed-base recipients", () => {
+    const state = createInitialGameState();
+    const team1 = state.teams.find((team) => team.id === "team-1")!;
+    expect(enqueueRewardRequest(state, { teamId: "neutral", rewardType: "capture_reward", sourceBaseId: "neutral-north", fixedBaseId: "neutral-north" })).toBeUndefined();
+    expect(enqueueRewardRequest(state, { teamId: "team-1", rewardType: "capture_reward", sourceBaseId: "home-2", fixedBaseId: "home-2" })).toBeUndefined();
+    team1.status = "defeated";
+    expect(enqueueRewardRequest(state, { teamId: "team-1", rewardType: "capture_reward", sourceBaseId: "home-1", fixedBaseId: "home-1" })).toBeUndefined();
+    team1.status = "eliminated";
+    expect(enqueueRewardRequest(state, { teamId: "team-1", rewardType: "capture_reward", sourceBaseId: "home-1", fixedBaseId: "home-1" })).toBeUndefined();
+    expect(state.rewardPlacementRequests).toHaveLength(0);
+  });
+
+  it("expires an invalid legacy request and resumes its saved continuation phase", () => {
+    const state = createInitialGameState();
+    state.teams.find((team) => team.id === "team-1")!.status = "defeated";
+    enterRewardPhase(state, [request("legacy-defeated")], "attack_input");
+
+    const normalized = normalizeRewardPlacementState(state);
+
+    expect(getPendingRewardRequests(normalized)).toHaveLength(0);
+    expect(normalized.rewardPlacementRequests[0]).toMatchObject({ expired: true, expirationReason: "recipient_not_active_player" });
+    expect(normalized.phase).toBe("attack_input");
+    expect(normalized.turnState.phase).toBe("attack_input");
+    expect(normalized.phaseAfterRewards).toBeUndefined();
   });
 });

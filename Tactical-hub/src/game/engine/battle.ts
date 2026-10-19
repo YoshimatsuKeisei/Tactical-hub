@@ -21,6 +21,7 @@ import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, typ
 import { isHeavyInfantry } from "./heavyInfantry";
 import { isUnitVisibleToTeam } from "../visibility";
 import { syncBattleRoyaleFinalDuel } from "./finalDuel";
+import { expireInvalidRewardRequests, getPendingRewardRequests } from "./reward";
 
 type AttackDenominatorContext = {
   targetInBase: boolean;
@@ -789,7 +790,8 @@ function resolveBattleInternal(
   clearLegacyRetreatState(next);
   captured = captured || kingDefeatApplied;
   resetInactiveSieges(next);
-  if (next.rewardPlacementRequests.some((request) => !request.completed && !request.expired)) {
+  expireInvalidRewardRequests(next);
+  if (getPendingRewardRequests(next).length) {
     next.phaseAfterRewards = "strategist_action_input";
     next.phase = "reward_placement";
   } else next.phase = "strategist_action_input";

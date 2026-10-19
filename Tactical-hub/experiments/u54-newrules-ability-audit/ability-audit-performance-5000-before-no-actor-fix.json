@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-10-19T08:35:18.896Z",
+  "environment": {
+    "node": "v24.15.0",
+    "platform": "win32",
+    "architecture": "x64"
+  },
+  "decisionCount": 5000,
+  "firstSeed": 417,
+  "lastSeed": 418,
+  "matchCount": 2,
+  "completedEpisodeBoundaries": [
+    {
+      "seed": 417,
+      "reason": "no_actor",
+      "actionCount": 2442
+    }
+  ],
+  "determinism": {
+    "actionKeysAndOrderMatch": true,
+    "stateHashesMatch": true,
+    "rngCursorsMatch": true,
+    "terminalResultsMatch": true,
+    "episodeBoundariesMatch": true
+  },
+  "traceGeneration": {
+    "wallMilliseconds": 16050.057300000002,
+    "cpuMilliseconds": 13719
+  },
+  "baseline": {
+    "wallMilliseconds": 15009.978600000002,
+    "cpuMilliseconds": 12765,
+    "memory": {
+      "start": { "rss": 196661248, "heapUsed": 53366088 },
+      "peak": { "rss": 335118336, "heapUsed": 156308688 },
+      "end": { "rss": 318189568, "heapUsed": 112369480 }
+    }
+  },
+  "audited": {
+    "wallMilliseconds": 15092.753099999998,
+    "cpuMilliseconds": 13126,
+    "observerMilliseconds": 422.5369000000028,
+    "memory": {
+      "start": { "rss": 318283776, "heapUsed": 112375832 },
+      "peak": { "rss": 334979072, "heapUsed": 137300904 },
+      "end": { "rss": 302268416, "heapUsed": 74722032 }
+    }
+  },
+  "overhead": {
+    "additionalMilliseconds": 82.7744999999959,
+    "relativePercent": 0.5514631446576206,
+    "observerSharePercent": 2.7996012205354557
+  },
+  "abilityAuditInvariant": {
+    "productionSelections": 64,
+    "productionResolved": 64,
+    "noUnresolvedProductionSelections": true
+  }
+}

@@ -1,7 +1,7 @@
 import type { GameState, KingCampaignState, SiegeState, UnitPosition } from "../types";
 import { requestSiegeRewards, selectCaptureTeam, transferBaseOwnership } from "./capture";
 import { clearKingCampaignsForTeam, selectConquestTeam } from "./kingCampaign";
-import { enqueueRewardRequest } from "./reward";
+import { enqueueRewardRequest, expireInvalidRewardRequests } from "./reward";
 
 export type FallenBasePlan = { baseId: string; defendingTeamId: string; siege: SiegeState; candidateTeamIds: string[]; intendedCaptureTeamId?: string };
 export type DefeatedKingPlan = { kingUnitId: string; kingTeamId: string; candidateTeamIds: string[]; campaign: KingCampaignState };
@@ -25,6 +25,7 @@ function removeTeamUnits(state: GameState, teamId: string) {
 
 function markTeamDefeated(state: GameState, teamId: string, reason: string) {
   state.teams = state.teams.map((team) => team.id === teamId ? { ...team, status: "defeated" } : team);
+  expireInvalidRewardRequests(state);
   state.logs.push({ id: `log-team-defeated-${state.logs.length}`, turnNumber: state.turnNumber, type: "battle", message: `${reason}: ${teamId}`, relatedIds: [teamId] });
   removeTeamUnits(state, teamId);
   clearKingCampaignsForTeam(state, teamId);
@@ -63,9 +64,21 @@ export function resolveKingDefeats(state: GameState, defeatedKings: DefeatedKing
   }
 
   const plan = defeatedKings[0];
-  const conquestTeamId = selectConquestTeam(plan.campaign, plan.candidateTeamIds, rng);
-  if (!conquestTeamId) return false;
+  const conquestTeamId = selectConquestTeam(state, plan.campaign, plan.candidateTeamIds, rng);
   const bases = ownedBases(state, plan.kingTeamId);
+  if (!conquestTeamId) {
+    markTeamDefeated(state, plan.kingTeamId, "King defeated without an eligible conqueror");
+    state.constructions = state.constructions.map((construction) =>
+      construction.ownerTeamId === plan.kingTeamId
+        ? { ...construction, ownerTeamId: undefined, managerUnitId: undefined }
+        : construction,
+    );
+    for (const base of bases) {
+      transferBaseOwnership(state, base.id, "neutral");
+      state.logs.push({ id: `log-base-neutralized-${state.logs.length}`, turnNumber: state.turnNumber, type: "capture", message: `Base neutralized because no eligible conqueror exists: ${base.id}`, relatedIds: [base.id, plan.kingTeamId] });
+    }
+    return true;
+  }
   state.logs.push({ id: `log-conquest-team-${state.logs.length}`, turnNumber: state.turnNumber, type: "battle", message: `征服チーム: ${conquestTeamId} / ${plan.kingUnitId}`, relatedIds: [conquestTeamId, plan.kingUnitId] });
   markTeamDefeated(state, plan.kingTeamId, "王撃破による敗北");
   state.constructions = state.constructions.map((construction) =>

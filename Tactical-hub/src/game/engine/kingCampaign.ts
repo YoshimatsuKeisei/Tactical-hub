@@ -35,8 +35,13 @@ export function recordKingDamage(state: GameState, kingUnitId: string, kingTeamI
   state.logs.push({ id: `log-king-damage-${state.logs.length}`, turnNumber: state.turnNumber, type: "battle", message: `王への累積ダメージ更新: ${attackingTeamId} → ${kingUnitId} +${damage}`, relatedIds: [kingUnitId, attackingTeamId] });
 }
 
-export function selectConquestTeam(campaign: KingCampaignState, candidateTeamIds: string[], rng: () => number) {
-  let candidates = [...new Set(candidateTeamIds)].filter((teamId) => teamId !== campaign.kingTeamId);
+export function selectConquestTeam(state: GameState, campaign: KingCampaignState, candidateTeamIds: string[], rng: () => number) {
+  let candidates = [...new Set(candidateTeamIds)].filter((teamId) => {
+    const team = state.teams.find((candidate) => candidate.id === teamId);
+    return teamId !== campaign.kingTeamId
+      && team?.status === "active"
+      && !team.isNeutral;
+  });
   if (candidates.length <= 1) return candidates[0];
   const entry = (teamId: string) => campaign.contributions.find((candidate) => candidate.teamId === teamId);
   const maxDamage = Math.max(...candidates.map((teamId) => entry(teamId)?.cumulativeDamage ?? 0));

@@ -2,7 +2,7 @@ import { resolveBattle, resolveBattleInPlaceForRl, saveAttackIntent, type Battle
 import { resolveStrategistActions, resolveStrategistActionsInPlaceForRl, saveStrategistActionIntent, submitStrategistActions, submitStrategistActionsInPlaceForRl } from "../engine/construction";
 import { commitUnitMovement, commitUnitMovementInPlaceForRl, saveMovementIntent, submitLegacyMovement, submitMovement, submitMovementInPlaceForRl, type MovementSemantics } from "../engine/movement";
 import { resolveProduction, saveProductionChoice, submitTeamProduction, submitTeamProductionInPlaceForRl } from "../engine/production";
-import { placeRewardUnit } from "../engine/reward";
+import { normalizeRewardPlacementState, placeRewardUnit } from "../engine/reward";
 import { saveTeleportIntent } from "../engine/teleport";
 import { mergeHeavyInfantry } from "../engine/heavyInfantry";
 import type { GameState } from "../types";
@@ -63,6 +63,12 @@ export function advanceCpuOneStep(state: GameState, sourceRuntime: CpuRuntime, s
     runtime.stoppedReason = `CPU safety limit ${runtime.maxAppliedSteps} reached`;
     log(runtime, state, undefined, "stop", undefined, runtime.stoppedReason, instrumentation);
     return { state, runtime, applied: false };
+  }
+  const normalizedRewardState = normalizeRewardPlacementState(state);
+  if (normalizedRewardState !== state) {
+    syncCpuContext(runtime, normalizedRewardState);
+    log(runtime, normalizedRewardState, undefined, "expire invalid reward requests", undefined, undefined, instrumentation);
+    return { state: normalizedRewardState, runtime, applied: true };
   }
   const policyStarted = instrumentation?.onPolicy ? performance.now() : 0;
   const decision = policy(state, runtime, settings);

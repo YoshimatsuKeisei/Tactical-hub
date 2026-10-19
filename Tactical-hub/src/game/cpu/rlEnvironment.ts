@@ -3,7 +3,7 @@ import { getBuilderUnits, getStrategistActionCandidatesForUnit } from "../engine
 import { getMovementCandidateDetails, getTeamMovementUnitIds, type MovementPath, type MovementSemantics } from "../engine/movement";
 import { getProductionCandidatesForBase } from "../engine/production";
 import { isTeamProductionPending } from "../engine/productionSchedule";
-import { getRewardPlacementCandidates } from "../engine/reward";
+import { getPendingRewardRequests, getRewardPlacementCandidates, normalizeRewardPlacementState } from "../engine/reward";
 import { getTeleportDestinationCandidates, getTeleportStrategists, getTeleportTargetCandidates } from "../engine/teleport";
 import type { GameState, StrategistActionKind, StrategistRole, UnitPosition } from "../types";
 import { positionKey } from "../utils/position";
@@ -316,7 +316,7 @@ export function buildRlObservation(state: GameState, teamId: string, actorTeamId
     teleportIntents: state.teleportIntents.filter((intent) => intent.teamId === teamId),
     teleportCooldowns: state.teleportCooldowns,
     rewardPlacementRequests: state.rewardPlacementRequests,
-    pendingRewardRequestIds: state.rewardPlacementRequests.filter((request) => !request.completed && !request.expired).map((request) => request.id),
+    pendingRewardRequestIds: getPendingRewardRequests(state).map((request) => request.id),
     phaseAfterRewards: state.phaseAfterRewards,
   };
 }
@@ -360,6 +360,12 @@ export class RlEnvironment {
   private advanceAutomatic() {
     for (let guard = 0; guard < 100; guard += 1) {
       if (this.isTerminal()) { this.decisions = []; return; }
+      const normalizedRewardState = normalizeRewardPlacementState(this.state);
+      if (normalizedRewardState !== this.state) {
+        this.state = normalizedRewardState;
+        syncCpuContext(this.runtime, this.state);
+        continue;
+      }
       const enumerateStarted = this.instrumentation?.onEnumerate ? performance.now() : 0;
       this.decisions = this.schemaVersion === 1
         ? enumerateRlDecisions(this.state, this.runtime, () => true, this.movementSemantics)

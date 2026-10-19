@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defeatTeamsWithoutBases, resolveKingDefeats, type DefeatedKingPlan, type FallenBasePlan } from "../engine/defeat";
+import { getAttackCandidates, resolveBattle } from "../engine/battle";
 import { getKingCampaign, recordKingAttackTurns, recordKingDamage, selectConquestTeam } from "../engine/kingCampaign";
 import { createInitialGameState } from "../initialState";
 import type { KingCampaignState, SiegeState } from "../types";
@@ -33,13 +34,23 @@ describe("王攻略と勢力敗北", () => {
   });
 
   it("単独の王撃破候補は過去貢献に関係なく征服する", () => {
-    expect(selectConquestTeam(campaign(), ["team-1"], () => 0.9)).toBe("team-1");
+    const state = createInitialGameState();
+    expect(selectConquestTeam(state, campaign(), ["team-1"], () => 0.9)).toBe("team-1");
   });
 
   it("複数候補は累積ダメージ、攻撃ターン、注入乱数の順で決める", () => {
-    expect(selectConquestTeam(campaign(), ["team-1", "team-3"], () => 0)).toBe("team-3");
+    const state = createInitialGameState();
+    expect(selectConquestTeam(state, campaign(), ["team-1", "team-3"], () => 0)).toBe("team-3");
     const tied = campaign(); tied.contributions[0] = { teamId: "team-1", cumulativeDamage: 4, effectiveAttackTurns: 3 };
-    expect(selectConquestTeam(tied, ["team-1", "team-3"], () => 0)).toBe("team-1");
+    expect(selectConquestTeam(state, tied, ["team-1", "team-3"], () => 0)).toBe("team-1");
+  });
+
+  it("excludes neutral, defeated, and eliminated teams from conquest", () => {
+    const state = createInitialGameState();
+    state.teams.find((team) => team.id === "team-3")!.status = "defeated";
+    state.teams.find((team) => team.id === "team-4")!.status = "eliminated";
+    expect(selectConquestTeam(state, campaign(), ["neutral", "team-3", "team-4"], () => 0)).toBeUndefined();
+    expect(selectConquestTeam(state, campaign(), ["neutral", "team-1"], () => 0)).toBe("team-1");
   });
 
   it("王撃破で全残存駒を消し全拠点を継承して拠点ごとの褒賞を作る", () => {
@@ -51,6 +62,49 @@ describe("王攻略と勢力敗北", () => {
     expect(state.bases.filter((base) => base.id === "home-2").every((base) => base.ownerTeamId === "team-1")).toBe(true);
     expect(state.rewardPlacementRequests.filter((request) => request.rewardType === "king_conquest_reward" && request.fixedBaseId === "home-2")).toHaveLength(1);
     expect(state.kingCampaignStates.some((entry) => entry.kingTeamId === "team-2")).toBe(false);
+  });
+
+  it("defeats the king team without conquest rewards when neutral is the only attacker", () => {
+    const state = createInitialGameState();
+    const value = campaign();
+    value.contributions.push({ teamId: "neutral", cumulativeDamage: 1, effectiveAttackTurns: 1 });
+    state.kingCampaignStates.push(value);
+
+    expect(resolveKingDefeats(state, [defeatPlan(value, ["neutral"])], [], () => 0)).toBe(true);
+    expect(state.teams.find((team) => team.id === "team-2")?.status).toBe("defeated");
+    expect(state.units.filter((unit) => unit.ownerTeamId === "team-2").every((unit) => unit.position.kind === "removed")).toBe(true);
+    expect(state.bases.find((base) => base.id === "home-2")?.ownerTeamId).toBe("neutral");
+    expect(state.teams.find((team) => team.id === "neutral")?.conqueredTeamIds ?? []).toEqual([]);
+    expect(state.rewardPlacementRequests).toHaveLength(0);
+  });
+
+  it("continues after an actual neutral attack defeats a king without entering reward placement", () => {
+    const state = createInitialGameState();
+    state.phase = state.turnState.phase = "attack_input";
+    const king = state.units.find((unit) => unit.id === "home-2-king")!;
+    const kingBase = state.bases.find((base) => base.id === "home-2")!;
+    kingBase.slots.find((slot) => slot.unitId === king.id)!.unitId = undefined;
+    king.position = { kind: "tile", x: 7, y: 1 };
+    king.hp = 1;
+
+    const neutralArcher = state.units.find((unit) => unit.id === "neutral-north-archer")!;
+    const neutralBase = state.bases.find((base) => base.id === "neutral-north")!;
+    neutralBase.slots.find((slot) => slot.unitId === neutralArcher.id)!.unitId = undefined;
+    neutralArcher.position = { kind: "tile", x: 4, y: 1 };
+    for (const unit of state.units.filter((unit) => unit.ownerTeamId === "neutral" && unit.id !== neutralArcher.id)) {
+      unit.hp = 0;
+      unit.position = { kind: "removed", reason: "defeated" };
+    }
+    for (const otherKing of state.units.filter((unit) => unit.type === "king" && unit.id !== king.id)) {
+      otherKing.hp = 0;
+      otherKing.position = { kind: "removed", reason: "defeated" };
+    }
+
+    expect(getAttackCandidates(state, neutralArcher.id)[0]?.unitId).toBe(king.id);
+    const resolved = resolveBattle(state, () => 0);
+    expect(resolved.teams.find((team) => team.id === "team-2")?.status).toBe("defeated");
+    expect(resolved.rewardPlacementRequests).toHaveLength(0);
+    expect(resolved.phase).toBe("strategist_action_input");
   });
 
   it("征服チームより累積ダメージが厳密に多い全チームへ王攻略補償を作る", () => {
